@@ -1,0 +1,84 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Changelog</title><style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#5b6577;--line:#d9dee7;--code:#f3f5f8;--acc:#0b5cad;--side:#f7f8fb;--warn:#fff7e0;--warnb:#e3b341}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e4e8ef;--mut:#9aa5b8;--line:#2b3140;--code:#1d222c;--acc:#6cb2ff;--side:#191d25;--warn:#2a2412;--warnb:#a07c1c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:20px 16px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow:auto}
+nav .t{font-weight:700;margin:0 0 12px}
+nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+nav a:hover{background:var(--code)}
+nav a.cur{background:var(--acc);color:#fff}
+main{flex:1;min-width:0;max-width:60rem;padding:28px 36px 80px}
+h1{font-size:2rem;margin:.2em 0 .6em}
+h2{font-size:1.45rem;margin:2em 0 .6em;padding-bottom:.25em;border-bottom:1px solid var(--line)}
+h3{font-size:1.15rem;margin:1.6em 0 .4em}
+a{color:var(--acc)}
+code{background:var(--code);padding:.12em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.45;position:relative}
+pre code{background:none;padding:0;font-size:.86rem}
+table{border-collapse:collapse;display:block;overflow:auto;max-width:100%;margin:1em 0}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin:1em 0;padding:.6em 1em;background:var(--warn);border-left:4px solid var(--warnb);border-radius:4px}
+blockquote p{margin:.3em 0}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.copy{position:absolute;top:6px;right:6px;font:12px system-ui;padding:3px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--mut);cursor:pointer}
+footer{margin-top:3em;color:var(--mut);font-size:13px}
+@media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
+@media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html" class="cur">Changelog</a></nav><main><h1 id="changelog">Changelog</h1>
+<h2 id="200">2.0.0</h2>
+<p>A rewrite for multi-device, multi-certificate use. Not backwards compatible with 1.x: the shell-sourced
+<code>*.conf</code> of the earlier script is replaced by the INI format described in <code>docs/CONFIGURATION.md</code>.</p>
+<h3 id="added">Added</h3>
+<ul>
+<li>Configuration file with <code>[defaults]</code>, <code>[f5:NAME]</code>, <code>[cert:NAME]</code> and <code>[deploy:NAME]</code> sections:
+  many BIG-IPs, many certificates, many deployments, environments (<code>env</code>), per-section overrides.</li>
+<li>Selection by <code>--deploy</code>, <code>--env</code>, <code>--f5</code>, <code>--lineage</code> (certbot) and <code>--all</code>; no accidental fleet run.</li>
+<li>Several profiles per deployment, updated in <strong>one tmsh transaction</strong>; entry-level updates
+  (<code>profile = NAME:ENTRY</code>) that leave other entries untouched, so dual RSA+ECDSA profiles work.</li>
+<li>Profiles in other partitions (<code>/Partition/NAME</code>) and a per-BIG-IP <code>partition</code>.</li>
+<li>Optional chain; a <code>fullchain</code> + key can be given alone and is split automatically.</li>
+<li><code>--check</code> (exit 4 when out of date), <code>--dry-run</code>, <code>--validate</code>, <code>--list</code>, <code>--discover</code>,
+  <code>--list-backups</code>, <code>--rollback --set TS</code>.</li>
+<li>Automatic rollback when verification fails; exit code 3; <code>CRITICAL</code> (exit 5) if the rollback fails.</li>
+<li>Verification endpoints, probed from the BIG-IP or from the local host, with SNI support.</li>
+<li>Backups on the BIG-IP and locally with SHA-256 checksums; a <strong>self-verifying restore script</strong> that also
+  reinstalls objects that were pruned or deleted.</li>
+<li>Retention (<code>keep</code>) for backup sets and for certificate versions.</li>
+<li>Locking on this host <strong>and on the BIG-IP</strong>, so different hosts cannot interleave.</li>
+<li>Refusal to act on a BIG-IP whose configuration is not fully loaded, or which is standby.</li>
+<li>Distinct exit codes; a summary table; optional log file.</li>
+<li><code>f5-cert-install.sh</code> for manually uploaded certificates: <code>READY</code>-marker uploads, validation and rejection
+  with a <code>FAILED</code> explanation, symlink refusal, atomic release switch, retention, push retry, <code>--status</code>.</li>
+<li>Offline test suites (236 + 154 assertions) and a BIG-IP integration suite (20 scenarios).</li>
+</ul>
+<h3 id="security">Security</h3>
+<ul>
+<li>The configuration is parsed, never sourced; every value is validated against a strict character set.</li>
+<li>Names read back from the BIG-IP are validated before use.</li>
+<li>Chain verification is skipped (warn) or refused (<code>chain_check = fail</code>) on OpenSSL older than 1.1.0, whose
+  <code>verify -partial_chain</code> is unreliable.</li>
+<li>Private keys only touch a private tmpfs scratch directory, a private staging directory on the BIG-IP
+  (<code>mktemp -d</code>, removed on exit and on signals) and mode-0600 backups.</li>
+<li>Host keys are verified by default; public-key authentication only; no forwarding.</li>
+<li>No pathname expansion (<code>set -f</code>); no <code>eval</code>; arguments to remote scripts are individually shell-quoted.</li>
+</ul>
+<h3 id="changed">Changed</h3>
+<ul>
+<li>Object and backup timestamps are <strong>UTC</strong>. (If you have 1.x objects named in local time, their order relative to
+  new names depends on your offset from UTC; they age out under <code>keep</code> like any other.)</li>
+<li>Object names are versioned (<code>&lt;prefix&gt;-cert-&lt;time&gt;.pem</code>) and profiles are repointed atomically; the
+  fixed-name objects are optional (<code>fixed_names = yes</code>, or when no profile is listed).</li>
+<li>Fingerprints and expiry are read from the BIG-IP with tmsh rather than by reading the filestore.</li>
+</ul>
+<h2 id="1x">1.x</h2>
+<p>Single-host shell script with a sourced configuration and one certificate. Superseded by 2.0.0.</p><footer>Generated from <code>CHANGELOG.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
+document.querySelectorAll('pre').forEach(function(p){
+  if(!navigator.clipboard){return}
+  var b=document.createElement('button');b.className='copy';b.textContent='Copy';
+  b.onclick=function(){navigator.clipboard.writeText(p.innerText.replace(/\nCopy$/,'')).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})};
+  p.appendChild(b);
+});
+</script></body></html>

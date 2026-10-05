@@ -1,0 +1,244 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Testing</title><style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#5b6577;--line:#d9dee7;--code:#f3f5f8;--acc:#0b5cad;--side:#f7f8fb;--warn:#fff7e0;--warnb:#e3b341}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e4e8ef;--mut:#9aa5b8;--line:#2b3140;--code:#1d222c;--acc:#6cb2ff;--side:#191d25;--warn:#2a2412;--warnb:#a07c1c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:20px 16px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow:auto}
+nav .t{font-weight:700;margin:0 0 12px}
+nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+nav a:hover{background:var(--code)}
+nav a.cur{background:var(--acc);color:#fff}
+main{flex:1;min-width:0;max-width:60rem;padding:28px 36px 80px}
+h1{font-size:2rem;margin:.2em 0 .6em}
+h2{font-size:1.45rem;margin:2em 0 .6em;padding-bottom:.25em;border-bottom:1px solid var(--line)}
+h3{font-size:1.15rem;margin:1.6em 0 .4em}
+a{color:var(--acc)}
+code{background:var(--code);padding:.12em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.45;position:relative}
+pre code{background:none;padding:0;font-size:.86rem}
+table{border-collapse:collapse;display:block;overflow:auto;max-width:100%;margin:1em 0}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin:1em 0;padding:.6em 1em;background:var(--warn);border-left:4px solid var(--warnb);border-radius:4px}
+blockquote p{margin:.3em 0}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.copy{position:absolute;top:6px;right:6px;font:12px system-ui;padding:3px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--mut);cursor:pointer}
+footer{margin-top:3em;color:var(--mut);font-size:13px}
+@media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
+@media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html" class="cur">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a></nav><main><h1 id="testing">Testing</h1>
+<p>There are two suites in <code>tests/</code>. Together they are the evidence that the tool behaves as documented.
+<strong>Run both after any change to the script.</strong></p>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th>Needs</th>
+<th>Changes anything?</th>
+<th>Covers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tests/offline.sh</code></td>
+<td>Linux, bash, openssl; <strong>no BIG-IP</strong></td>
+<td>No (works in a temp dir)</td>
+<td>Configuration parsing and validation, injection attempts, selection, certificate validation</td>
+</tr>
+<tr>
+<td><code>tests/install.sh</code></td>
+<td>Linux, bash, openssl; <strong>no BIG-IP</strong></td>
+<td>No (works in a temp dir)</td>
+<td><code>f5-cert-install.sh</code>: READY handling, validation and rejection, symlink refusal, atomic install, retention, push retry, locking</td>
+</tr>
+<tr>
+<td><code>tests/f5.sh</code></td>
+<td>Linux, SSH access to a <strong>lab BIG-IP</strong></td>
+<td><strong>Yes</strong>: creates and removes <code>zzz-*</code> objects</td>
+<td>Real deployments, rollback, retention, locking, interruption, partitions, SSH trust</td>
+</tr>
+</tbody>
+</table>
+<p><code>tests/lib.sh</code> holds shared helpers, including a small <strong>test PKI</strong> (root, intermediate, RSA and ECDSA leaves,
+expired and not-yet-valid certificates) generated with <code>openssl ca</code>, so no real certificate or key is used.</p>
+<h2 id="running-the-offline-suite">Running the offline suite</h2>
+<pre><code class="language-bash">tests/offline.sh                 # prints PASS / FAIL / SKIP per assertion and a total
+T_VERBOSE=1 tests/offline.sh     # show output for failures
+</code></pre>
+<p>Exit status is non-zero if any assertion failed. It needs a Linux host: the certificate tests use absolute
+paths and GNU tools. (On Windows, Git Bash's native <code>openssl</code> cannot open MSYS <code>/tmp</code> paths, so the certificate
+cases fail there; run the suite on Linux or in WSL.)</p>
+<p>What it covers:</p>
+<ul>
+<li><strong>Command line</strong>: <code>--version</code>, <code>--help</code>, unknown options, missing values, selector refusal, <code>--opt=value</code>.</li>
+<li><strong>Accepted configuration forms</strong>: minimal, CRLF line endings, quoted values, comma lists, tabs, IPv6, all
+  profile and verify syntaxes, non-ASCII in comments.</li>
+<li><strong>Structural errors</strong>: unknown sections and settings, duplicate sections and settings, settings outside a
+  section, garbage lines, byte-order marks, non-ASCII and control characters.</li>
+<li><strong>Cross-reference errors</strong>: missing host/cert/files, undefined references, two deployments fighting over a
+  profile or an object prefix.</li>
+<li><strong>Value validation and injection</strong>: ~40 hostile values (<code>;</code>, <code>$(...)</code>, backticks, pipes, leading hyphen,
+  spaces, <code>..</code>, <code>//</code>, braces, out-of-range numbers, bad enumerations). Each must be refused <strong>and must not
+  execute anything</strong> (a marker file is checked).</li>
+<li><strong>File permissions</strong>: world- and group-writable configurations are refused.</li>
+<li><strong>Selection</strong>: <code>--deploy</code>, <code>--env</code>, <code>--f5</code>, <code>--lineage</code>, <code>--all</code>, disabled deployments.</li>
+<li><strong>Certificate validation</strong>: valid RSA, ECDSA, no chain, fullchain-only, mismatched chain (warn / fail / off),
+  key mismatch, expired, not yet valid, <code>min_days_valid</code>, encrypted key, PKCS#1 key, combined PEM, multi-cert
+  <code>cert</code>, two keys in one file, garbage, empty and oversized files, certbot-style symlinks, explicit overrides,
+  a readable key warning, and that no scratch directory is left behind.</li>
+</ul>
+<h2 id="running-the-big-ip-suite">Running the BIG-IP suite</h2>
+<blockquote>
+<p><strong>Use a lab device.</strong> The suite creates client-ssl profiles, two virtual servers, certificates and keys,
+one partition and backup directories, all named <code>zzz-*</code>, and removes them afterwards (even after a failure).
+It does not touch anything else, but it does change the device while it runs.</p>
+</blockquote>
+<p>Requirements on the BIG-IP: SSH key login for root; two <strong>unused</strong> IP addresses in a subnet the BIG-IP has a
+self IP in (used as test virtual-server addresses on port 443; they are probed from the BIG-IP itself).</p>
+<pre><code class="language-bash">export F5_TEST_CONFIRM=yes
+export F5_TEST_HOST=10.0.0.11
+export F5_TEST_KEY=/root/.ssh/f5_push_ecdsa
+export F5_TEST_VS_A=10.1.10.77        # optional; these are the defaults
+export F5_TEST_VS_B=10.1.10.78
+tests/f5.sh                            # about 20-40 minutes
+F5_TEST_ONLY=&quot;s2 s9&quot; tests/f5.sh       # just some scenarios
+</code></pre>
+<p>The suite refuses to start without <code>F5_TEST_CONFIRM=yes</code>. It needs <code>ssh-keyscan</code> (to pin the host key for its
+own connections) and pins nothing outside its temporary directory.</p>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>What it proves</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>s1</strong> read-only</td>
+<td><code>--check</code>, <code>--dry-run</code>, <code>--discover</code> change nothing and make no backup</td>
+</tr>
+<tr>
+<td><strong>s2</strong> first deploy</td>
+<td>two profiles switched together; the virtual server serves the new certificate; change saved to <code>bigip.conf</code>; backup present on both sides, checksums verified, modes 0700/0600; no staging directory or lock left</td>
+</tr>
+<tr>
+<td><strong>s3</strong> idempotence</td>
+<td>a second run is a no-op with no new backup; <code>--force</code> redeploys</td>
+</tr>
+<tr>
+<td><strong>s4</strong> renewal</td>
+<td>the old objects are retained; both old and new fingerprints are exactly as expected</td>
+</tr>
+<tr>
+<td><strong>s5</strong> manual rollback</td>
+<td>restores the previous objects and what the virtual server serves; a missing set fails harmlessly; a <strong>tampered backup is refused</strong></td>
+</tr>
+<tr>
+<td><strong>s6</strong> restore after deletion</td>
+<td>rollback <strong>reinstalls</strong> a deleted object from its backup PEM, byte-identical</td>
+</tr>
+<tr>
+<td><strong>s7</strong> pre-flight failures</td>
+<td>missing profile, inheriting profile, ambiguous multi-entry profile, missing entry, missing partition, expired certificate: each fails <strong>with the BIG-IP provably unchanged</strong></td>
+</tr>
+<tr>
+<td><strong>s8</strong> dual RSA+ECDSA</td>
+<td>only the named entry changes; a transaction the BIG-IP rejects leaves every profile unchanged and removes the objects it created</td>
+</tr>
+<tr>
+<td><strong>s9</strong> auto-rollback</td>
+<td>a wrong certificate on a verify endpoint rolls back (exit 3) and restores what is served; <code>auto_rollback = no</code>; unreachable endpoints warn or roll back per <code>verify_unreachable</code></td>
+</tr>
+<tr>
+<td><strong>s10</strong> retention</td>
+<td>after five deployments with <code>keep = 2</code>, exactly two backup sets (both sides), two certificate, chain and key versions remain, and the newest is in use; <code>keep = 0</code> disables pruning</td>
+</tr>
+<tr>
+<td><strong>s11</strong> locking</td>
+<td>a live local lock gives exit 6 and changes nothing; a lock <strong>held on the BIG-IP by another host</strong> gives exit 6, shows its owner and is not removed; read-only runs ignore both; stale locks (local and on the BIG-IP) are cleaned; two simultaneous runs: one wins, one gets exit 6</td>
+</tr>
+<tr>
+<td><strong>s12</strong> interruption</td>
+<td><code>SIGTERM</code> at six different moments: no staging directory, no local or BIG-IP lock, every profile still points at existing objects, both profiles agree (atomic), and a normal run afterwards succeeds</td>
+</tr>
+<tr>
+<td><strong>s13</strong> objects-only</td>
+<td>no profile configured: fixed-name objects replaced in place; idempotent; rollback restores the previous content</td>
+</tr>
+<tr>
+<td><strong>s14</strong> fixed names</td>
+<td><code>fixed_names = yes</code> alongside a profile</td>
+</tr>
+<tr>
+<td><strong>s15</strong> partition</td>
+<td>a non-Common partition: bare profile name resolved, objects created in the partition, pruning and rollback work</td>
+</tr>
+<tr>
+<td><strong>s16</strong> SSH trust</td>
+<td>unknown host key refused; <code>accept-new</code> pins; unreachable host fails fast; wrong key and missing key fail</td>
+</tr>
+<tr>
+<td><strong>s17</strong> many deployments</td>
+<td>one failure does not stop the rest; exit 1; <code>--fail-fast</code>; two <code>[f5:]</code> names for one device</td>
+</tr>
+<tr>
+<td><strong>s18</strong> lineage</td>
+<td><code>--lineage</code> deploys the matching certbot-style certificate and exits 0 for an unmanaged one</td>
+</tr>
+<tr>
+<td><strong>s20</strong> manual upload</td>
+<td><code>f5-cert-install.sh</code> end to end: an upload is installed and served by the virtual server; a renewal; a run with nothing new does not contact the BIG-IP; a bad upload is rejected and the BIG-IP keeps the previous certificate</td>
+</tr>
+<tr>
+<td><strong>s19</strong> local verification</td>
+<td><code>verify_from = local</code> against a local TLS server: match passes, mismatch rolls back</td>
+</tr>
+</tbody>
+</table>
+<h2 id="old-platforms-bash-42-openssl-102">Old platforms (bash 4.2, OpenSSL 1.0.2)</h2>
+<p>The script targets bash 4.2 or newer (RHEL 7 class) and the BIG-IP-side scripts run under the BIG-IP's bash 4.2.
+The BIG-IP itself is such a platform (bash 4.2.46, OpenSSL 1.0.2za), so the suites can be run <strong>on it</strong> to
+exercise that claim: copy <code>f5-cert-push.sh</code> and <code>tests/</code> to <code>/var/tmp/</code> and run</p>
+<pre><code class="language-bash">T_SKIP_CERTS=1 bash tests/offline.sh      # config parsing, validation, selection (no PKI needed)
+</code></pre>
+<p><code>T_SKIP_CERTS=1</code> skips the certificate cases, because building the test PKI needs OpenSSL 1.1.1 (<code>req -addext</code>).
+To exercise certificate validation on the old OpenSSL, generate the test PKI on a modern host
+(<code>pki_init</code> / <code>pki_leaf</code> from <code>tests/lib.sh</code>), copy it over and run <code>--validate</code> against it.</p>
+<p>Results when this was done (bash 4.2.46, OpenSSL 1.0.2za): all 193 non-certificate assertions passed; RSA,
+ECDSA, fullchain-only, expired and mismatched-key certificates behaved correctly. It also found a real bug that
+the modern-platform tests could not: OpenSSL 1.0.x's <code>verify -partial_chain</code> accepts a mismatched chain and exits
+0 on failure. The chain check is therefore skipped on OpenSSL older than 1.1.0 (warning, or refusal under
+<code>chain_check = fail</code>) instead of pretending to verify.</p>
+<h2 id="what-the-suites-do-not-cover">What the suites do <strong>not</strong> cover</h2>
+<p>Stated plainly so you can decide how much to trust them:</p>
+<ul>
+<li><strong>BIG-IP in a standby or offline state</strong>, and a device whose <strong>configuration is not loaded</strong>. The refusals
+  are implemented (<code>job_gate</code>) but were not exercised because the test device is a standalone unit. Test them
+  on your own pair before relying on them.</li>
+<li><strong>HA synchronisation.</strong> The tool does not sync; it prints a reminder.</li>
+<li><strong>BIG-IP versions other than 17.1.3.4.</strong></li>
+<li><strong>Chain verification on OpenSSL older than 1.1.0</strong> (deliberately skipped there; see above).</li>
+<li><strong>Profiles with a key passphrase</strong> (refused by design; the detection path is not tested against a device).</li>
+<li><strong><code>server-ssl</code> profiles</strong> (not supported).</li>
+<li><strong>A very large number of profiles or objects</strong>, or a slow WAN link to the BIG-IP.</li>
+<li><strong>Concurrent human changes</strong> to the same profiles during a run.</li>
+<li><strong>Power loss or <code>kill -9</code> mid-run.</strong> Cleanup cannot run; the recovery (stale lock removal, staging sweep) is
+  described in the operations guide, and the atomic transaction means the BIG-IP is never left half-switched.</li>
+<li><strong><code>shellcheck</code></strong> was not available where the code was developed. Run it: <code>shellcheck f5-cert-push.sh tests/*.sh</code>.</li>
+</ul>
+<h2 id="adding-a-test">Adding a test</h2>
+<p>Both suites use the helpers in <code>tests/lib.sh</code>: <code>run CMD...</code> captures <code>OUT</code> and <code>RC</code>; <code>expect_rc</code>, <code>expect_has</code>,
+<code>expect_lacks</code>, <code>expect_eq</code>, <code>expect_true</code>, <code>expect_false</code> assert; <code>t_case</code> names the current case. A new
+hostile-input case for the parser is one line in <code>offline.sh</code>:</p>
+<pre><code class="language-bash">inj &quot;host with a newline-ish thing&quot; host &quot;10.0.0.1%0a&quot;
+</code></pre>
+<p>A new BIG-IP scenario belongs in <code>f5.sh</code> as a <code>if want sNN; then ... fi</code> block; <strong>snapshot the BIG-IP
+(<code>snapshot</code>) before a failure-path test and assert it is unchanged afterwards</strong>; that is the property that matters.</p><footer>Generated from <code>docs/TESTING.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
+document.querySelectorAll('pre').forEach(function(p){
+  if(!navigator.clipboard){return}
+  var b=document.createElement('button');b.className='copy';b.textContent='Copy';
+  b.onclick=function(){navigator.clipboard.writeText(p.innerText.replace(/\nCopy$/,'')).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})};
+  p.appendChild(b);
+});
+</script></body></html>

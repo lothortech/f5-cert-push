@@ -1,0 +1,484 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Configuration reference</title><style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#5b6577;--line:#d9dee7;--code:#f3f5f8;--acc:#0b5cad;--side:#f7f8fb;--warn:#fff7e0;--warnb:#e3b341}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e4e8ef;--mut:#9aa5b8;--line:#2b3140;--code:#1d222c;--acc:#6cb2ff;--side:#191d25;--warn:#2a2412;--warnb:#a07c1c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:20px 16px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow:auto}
+nav .t{font-weight:700;margin:0 0 12px}
+nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+nav a:hover{background:var(--code)}
+nav a.cur{background:var(--acc);color:#fff}
+main{flex:1;min-width:0;max-width:60rem;padding:28px 36px 80px}
+h1{font-size:2rem;margin:.2em 0 .6em}
+h2{font-size:1.45rem;margin:2em 0 .6em;padding-bottom:.25em;border-bottom:1px solid var(--line)}
+h3{font-size:1.15rem;margin:1.6em 0 .4em}
+a{color:var(--acc)}
+code{background:var(--code);padding:.12em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.45;position:relative}
+pre code{background:none;padding:0;font-size:.86rem}
+table{border-collapse:collapse;display:block;overflow:auto;max-width:100%;margin:1em 0}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin:1em 0;padding:.6em 1em;background:var(--warn);border-left:4px solid var(--warnb);border-radius:4px}
+blockquote p{margin:.3em 0}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.copy{position:absolute;top:6px;right:6px;font:12px system-ui;padding:3px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--mut);cursor:pointer}
+footer{margin-top:3em;color:var(--mut);font-size:13px}
+@media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
+@media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html" class="cur">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a></nav><main><h1 id="configuration-reference">Configuration reference</h1>
+<p>The configuration file describes your BIG-IPs, your certificates and the deployments that connect
+them. Everything the tool does is driven by it. An annotated starting point is in
+<a href="../f5-cert-push.conf.example"><code>f5-cert-push.conf.example</code></a>.</p>
+<p>Jump to: <a href="#file-format">File format</a> - <a href="#defaults">defaults</a> - <a href="#f5">f5</a> - <a href="#cert">cert</a> -
+<a href="#deploy">deploy</a> - <a href="#profiles-and-entries">Profiles and entries</a> - <a href="#verification-endpoints">Verification</a> -
+<a href="#object-naming">Object naming</a> - <a href="#precedence">Precedence</a> - <a href="#validation-rules">Validation rules</a> -
+<a href="#recipes">Recipes</a></p>
+<h2 id="file-format">File format</h2>
+<pre><code class="language-ini"># a comment (whole line only)
+[section:name]
+key = value
+key = another value     # NOT a comment: everything after &quot;=&quot; is the value
+</code></pre>
+<ul>
+<li><strong>INI style.</strong> <code>[type:name]</code> section headers, <code>key = value</code> lines, blank lines and <code>#</code> or <code>;</code> comment lines.</li>
+<li><strong>The file is parsed, never executed.</strong> It is not a shell script and nothing in it is expanded:
+  <code>$HOME</code>, backticks and <code>$(...)</code> are just characters, and they are rejected by validation.</li>
+<li><strong>Comments must be whole lines.</strong> Text after a value is part of the value.</li>
+<li><strong>Quotes are optional.</strong> One matching pair of <code>"..."</code> or <code>'...'</code> around a value is removed.</li>
+<li><strong>Repeatable settings</strong> (<code>f5</code>, <code>profile</code>, <code>verify</code> in a deployment) may appear on several lines.
+  All other settings may appear once per section.</li>
+<li><strong>Printable ASCII only</strong> in settings. Comments may contain anything. A UTF-8 byte-order mark
+  (some Windows editors add one) is rejected with a clear message; save the file without it.</li>
+<li><strong>Unknown settings are errors.</strong> A typo such as <code>hots = ...</code> stops the run instead of being ignored.</li>
+<li><strong>Permissions.</strong> The file must not be writable by group or others, and must be owned by you or root.
+  <code>chmod 600</code> it.</li>
+<li>Where to look for it: <code>--config FILE</code>, else <code>./f5-cert-push.conf</code>, else <code>/etc/f5-cert-push.conf</code>.</li>
+</ul>
+<p><strong>Names</strong> (section names, object prefixes, partitions, profile names, entry names) may contain only
+letters, digits, dot, underscore and hyphen, must start with a letter or digit, and section names are at
+most 64 characters.</p>
+<p><strong>Paths</strong> must be absolute, contain only letters, digits and <code>. _ / + @ = , : ~ -</code> (no spaces), and
+contain no <code>..</code> and no <code>//</code>.</p>
+<h2 id="defaults"><code>[defaults]</code></h2>
+<p>Applies to everything. Any of these can also be set in a more specific section where noted.</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Also in</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>keep</code></td>
+<td><code>4</code></td>
+<td>f5, deploy</td>
+<td>Backup sets and certificate versions to retain per certificate on each BIG-IP. Older ones are deleted. <code>0</code> disables pruning. A version a profile still uses is never deleted: the BIG-IP refuses.</td>
+</tr>
+<tr>
+<td><code>backup_dir_remote</code></td>
+<td><code>/shared/cert-backups</code></td>
+<td>f5</td>
+<td>Directory <strong>on the BIG-IP</strong> for backups: <code>&lt;dir&gt;/&lt;object_prefix&gt;/&lt;time&gt;/</code>.</td>
+</tr>
+<tr>
+<td><code>backup_dir_local</code></td>
+<td><code>/var/backups/f5-cert-push</code></td>
+<td></td>
+<td>Directory <strong>on this host</strong> for the verified copy: <code>&lt;dir&gt;/&lt;f5 name&gt;/&lt;object_prefix&gt;/&lt;time&gt;/</code>. Created mode 0700.</td>
+</tr>
+<tr>
+<td><code>strict_host_key_checking</code></td>
+<td><code>yes</code></td>
+<td>f5</td>
+<td><code>yes</code>: the BIG-IP's SSH host key must already be known. <code>accept-new</code>: trust a BIG-IP the first time it is seen, then pin it.</td>
+</tr>
+<tr>
+<td><code>known_hosts_file</code></td>
+<td>ssh default</td>
+<td>f5</td>
+<td>Use this file instead of <code>~/.ssh/known_hosts</code>. Useful to keep the tool's trust separate.</td>
+</tr>
+<tr>
+<td><code>connect_timeout</code></td>
+<td><code>15</code></td>
+<td>f5</td>
+<td>Seconds to wait for the SSH connection.</td>
+</tr>
+<tr>
+<td><code>remote_timeout</code></td>
+<td><code>300</code></td>
+<td>f5</td>
+<td>Longest any single step on the BIG-IP may run, in seconds.</td>
+</tr>
+<tr>
+<td><code>connection_reuse</code></td>
+<td><code>yes</code></td>
+<td>f5</td>
+<td>Reuse one SSH connection for all the steps of a job (faster, and far fewer logins in the BIG-IP's logs). <code>no</code> opens a fresh connection per step.</td>
+</tr>
+<tr>
+<td><code>remote_lock_stale_minutes</code></td>
+<td><code>30</code></td>
+<td>f5</td>
+<td>The tool takes a lock <strong>on the BIG-IP</strong> (<code>/var/run/f5-cert-push.lock</code>) so two hosts cannot push to it at once. A lock older than this many minutes is assumed abandoned (a killed run) and is taken over. A normal run takes a few minutes; keep this comfortably above that.</td>
+</tr>
+<tr>
+<td><code>min_days_valid</code></td>
+<td><code>1</code></td>
+<td>cert</td>
+<td>Refuse a certificate that expires within this many days.</td>
+</tr>
+<tr>
+<td><code>auto_rollback</code></td>
+<td><code>yes</code></td>
+<td>deploy</td>
+<td>If a check fails after the profiles were switched, put everything back automatically.</td>
+</tr>
+<tr>
+<td><code>verify_unreachable</code></td>
+<td><code>warn</code></td>
+<td>deploy</td>
+<td>What to do when a verify endpoint gives no TLS answer at all: <code>warn</code> or <code>fail</code>.</td>
+</tr>
+<tr>
+<td><code>chain_check</code></td>
+<td><code>warn</code></td>
+<td>cert</td>
+<td>Whether the certificate must verify against the supplied chain: <code>off</code>, <code>warn</code> or <code>fail</code>. <strong>Needs OpenSSL 1.1.0+</strong>: older versions cannot do this reliably (their <code>verify -partial_chain</code> accepts a mismatched chain), so there the check is skipped with a warning, and <code>fail</code> is refused.</td>
+</tr>
+<tr>
+<td><code>fixed_names</code></td>
+<td><code>no</code></td>
+<td>deploy</td>
+<td>Also maintain the four fixed-name objects <code>&lt;prefix&gt;-cert.pem</code>, <code>-chain.pem</code>, <code>-fullchain.pem</code>, <code>-privkey.pem</code>. See <a href="#object-naming">Object naming</a>.</td>
+</tr>
+<tr>
+<td><code>allow_standby</code></td>
+<td><code>no</code></td>
+<td>f5</td>
+<td>Permit deploying to a BIG-IP that reports STANDBY.</td>
+</tr>
+<tr>
+<td><code>log_file</code></td>
+<td>none</td>
+<td></td>
+<td>Append a timestamped log of every run (created mode 0600).</td>
+</tr>
+<tr>
+<td><code>lock_dir</code></td>
+<td>see right</td>
+<td>f5</td>
+<td>Where the per-BIG-IP lock lives. Default <code>/var/lock/f5-cert-push</code> for root, otherwise <code>$XDG_RUNTIME_DIR</code> or <code>/tmp</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Booleans accept <code>yes</code>/<code>no</code> (also <code>true</code>/<code>false</code>, <code>on</code>/<code>off</code>, <code>1</code>/<code>0</code>).</p>
+<h2 id="f5name"><code>[f5:NAME]</code></h2>
+<p>One BIG-IP. <code>NAME</code> is how deployments refer to it and appears in backup paths and logs.</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>host</code></td>
+<td><strong>required</strong></td>
+<td>Management address or hostname. IPv4, IPv6 and DNS names are accepted.</td>
+</tr>
+<tr>
+<td><code>port</code></td>
+<td><code>22</code></td>
+<td>SSH port.</td>
+</tr>
+<tr>
+<td><code>user</code></td>
+<td><code>root</code></td>
+<td>SSH account. It must be able to run <code>tmsh</code> <strong>and</strong> read <code>/config/filestore</code>; in practice <code>root</code>.</td>
+</tr>
+<tr>
+<td><code>ssh_key</code></td>
+<td>ssh default</td>
+<td>Private key file. Used with <code>IdentitiesOnly</code>, so only this key is offered. Prefer a key dedicated to this tool.</td>
+</tr>
+<tr>
+<td><code>partition</code></td>
+<td><code>Common</code></td>
+<td>The BIG-IP partition that holds the certificates and profiles.</td>
+</tr>
+<tr>
+<td><code>known_hosts_file</code>, <code>strict_host_key_checking</code>, <code>connect_timeout</code>, <code>remote_timeout</code>, <code>backup_dir_remote</code>, <code>keep</code>, <code>allow_standby</code></td>
+<td>from <code>[defaults]</code></td>
+<td>Per-BIG-IP overrides.</td>
+</tr>
+</tbody>
+</table>
+<p>Two <code>[f5:]</code> sections that point at the same <code>host:port</code> are treated as one device for locking: their
+deployments run one after another, never at once. The lock exists both on this host and <strong>on the BIG-IP
+itself</strong>, so different machines running the tool against the same BIG-IP cannot interleave either.</p>
+<h2 id="certname"><code>[cert:NAME]</code></h2>
+<p>One certificate: where its files are and what to call it on the BIG-IP.</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>le_dir</code></td>
+<td>A certbot <code>live/&lt;domain&gt;</code> directory. Fills in <code>cert.pem</code>, <code>privkey.pem</code>, <code>chain.pem</code>, <code>fullchain.pem</code>.</td>
+</tr>
+<tr>
+<td><code>cert</code></td>
+<td>The <strong>leaf</strong> certificate only (exactly one certificate).</td>
+</tr>
+<tr>
+<td><code>key</code></td>
+<td>The private key (PEM, unencrypted).</td>
+</tr>
+<tr>
+<td><code>chain</code></td>
+<td>The intermediate certificates (optional). Leave it out if there are none.</td>
+</tr>
+<tr>
+<td><code>fullchain</code></td>
+<td>Leaf followed by intermediates. If you give <code>fullchain</code> and <code>key</code> but no <code>cert</code>, the leaf and the chain are split out for you.</td>
+</tr>
+<tr>
+<td><code>object_prefix</code></td>
+<td>The name used for objects on the BIG-IP. Defaults to the section name. At most 48 characters.</td>
+</tr>
+<tr>
+<td><code>min_days_valid</code>, <code>chain_check</code></td>
+<td>Overrides of the defaults.</td>
+</tr>
+</tbody>
+</table>
+<p>Give <strong>either</strong> <code>le_dir</code> <strong>or</strong> explicit files. With <code>le_dir</code>, an explicit file setting overrides just that
+one file. You need at minimum a key and one of <code>cert</code> / <code>fullchain</code>.</p>
+<p>What is checked (all locally, before the BIG-IP is contacted):</p>
+<ul>
+<li>every file is readable, non-empty and under 1 MiB;</li>
+<li>the key is a single unencrypted PEM private key and <strong>matches the leaf's public key</strong> (RSA and EC);</li>
+<li>the leaf is one certificate, currently valid, not expiring within <code>min_days_valid</code>;</li>
+<li>every chain certificate parses, and (per <code>chain_check</code>) the leaf verifies against the chain;</li>
+<li>a key file readable by other users produces a warning.</li>
+</ul>
+<p>The files are copied once into a private scratch directory and <strong>those copies</strong> are validated and uploaded,
+so a renewal landing mid-run cannot make the tool upload something it did not validate.</p>
+<h2 id="deployname"><code>[deploy:NAME]</code></h2>
+<p>Connects one certificate to one or more BIG-IPs and says what to update there.</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>f5</code></td>
+<td><strong>required</strong></td>
+<td>BIG-IP name(s). Repeat the line, or separate with commas. One job runs per BIG-IP.</td>
+</tr>
+<tr>
+<td><code>cert</code></td>
+<td><strong>required</strong></td>
+<td>The <code>[cert:]</code> section to deploy.</td>
+</tr>
+<tr>
+<td><code>profile</code></td>
+<td>none</td>
+<td>client-ssl profile(s) to update. Repeat for several. See <a href="#profiles-and-entries">Profiles and entries</a>. <strong>Omit entirely</strong> to replace only the fixed-name objects, touching no profile.</td>
+</tr>
+<tr>
+<td><code>verify</code></td>
+<td>none</td>
+<td>After the change, connect here and confirm the new certificate is served. Repeatable. See <a href="#verification-endpoints">Verification</a>.</td>
+</tr>
+<tr>
+<td><code>verify_from</code></td>
+<td><code>f5</code></td>
+<td><code>f5</code>: probe from the BIG-IP itself. <code>local</code>: probe from the host running the tool.</td>
+</tr>
+<tr>
+<td><code>env</code></td>
+<td>none</td>
+<td>A label for <code>--env</code>.</td>
+</tr>
+<tr>
+<td><code>enabled</code></td>
+<td><code>yes</code></td>
+<td><code>no</code> skips the deployment even with <code>--all</code>.</td>
+</tr>
+<tr>
+<td><code>keep</code>, <code>auto_rollback</code>, <code>fixed_names</code>, <code>verify_unreachable</code></td>
+<td>from <code>[defaults]</code></td>
+<td>Per-deployment overrides.</td>
+</tr>
+</tbody>
+</table>
+<p>Two enabled deployments may not manage the same profile (or the same profile entry) on the same BIG-IP, and
+may not use the same <code>object_prefix</code> for different certificates on the same BIG-IP. The tool refuses such a
+file at load time.</p>
+<h2 id="profiles-and-entries">Profiles and entries</h2>
+<p>A client-ssl profile holds one or more <strong>cert-key-chain entries</strong>. Most profiles have exactly one; a
+profile can hold both an RSA and an ECDSA entry (a profile cannot hold two of the same key type).</p>
+<table>
+<thead>
+<tr>
+<th><code>profile =</code></th>
+<th>Means</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>www-clientssl</code></td>
+<td>The profile in the BIG-IP partition named by the <code>[f5:]</code> section. If it has one entry, that entry is updated. If it has several, the entries whose certificate is named like this certificate's objects (<code>&lt;prefix&gt;-cert[-&lt;time&gt;].pem</code>) are candidates; exactly one must match, or the tool stops and asks you to name the entry.</td>
+</tr>
+<tr>
+<td><code>www-clientssl:rsa_entry</code></td>
+<td>That specific entry. Use this for dual RSA+ECDSA profiles. The other entries are <strong>not touched</strong>.</td>
+</tr>
+<tr>
+<td><code>/Part/www-clientssl</code></td>
+<td>A profile in another partition.</td>
+</tr>
+<tr>
+<td><code>/Part/www-clientssl:rsa_entry</code></td>
+<td>Both.</td>
+</tr>
+</tbody>
+</table>
+<p>Run <code>--discover --f5 NAME</code> to list every profile and entry with its current certificate and expiry.</p>
+<p>The tool updates the entry's certificate, chain and key, and keeps its entry name. If the certificate has
+no chain, the entry's chain is set to <code>none</code>.</p>
+<p>It <strong>refuses</strong>, with an explanation and before changing anything:</p>
+<ul>
+<li>a profile that does not exist;</li>
+<li>a profile that <strong>inherits</strong> its certificate from a parent (<code>inherit-certkeychain true</code>): update the parent instead;</li>
+<li>an entry that does not exist;</li>
+<li>an ambiguous multi-entry profile with no entry named;</li>
+<li>an entry protected by a key <strong>passphrase</strong>.</li>
+</ul>
+<h2 id="verification-endpoints">Verification endpoints</h2>
+<pre><code class="language-ini">verify = 10.1.10.10:443                      # HOST:PORT
+verify = 10.1.10.11:443 www.example.com      # HOST:PORT SNI-NAME
+verify = [2001:db8::1]:443 api.example.com   # IPv6 in brackets
+</code></pre>
+<p>After the profiles are switched the tool connects to each endpoint, reads the certificate it presents and
+compares its SHA-256 fingerprint with the one just deployed. It retries three times (a few seconds apart) to
+allow for the virtual server picking up the change.</p>
+<ul>
+<li><strong>Wrong certificate served:</strong> always a failure (and rolled back if <code>auto_rollback = yes</code>).</li>
+<li><strong>No TLS answer:</strong> a warning, or a failure with <code>verify_unreachable = fail</code>.</li>
+<li><strong>SNI:</strong> the name after the address if given, otherwise the certificate's first non-wildcard DNS name, otherwise its CN, otherwise none.</li>
+<li><strong><code>verify_from = f5</code></strong> runs <code>openssl s_client</code> on the BIG-IP, which reaches virtual-server addresses that
+  are not routable from your host. <strong><code>local</code></strong> runs it on the host running the tool, for addresses you can reach directly.</li>
+<li>A dual RSA+ECDSA profile presents one or the other depending on the client; the probe sees whichever the
+  default handshake negotiates.</li>
+</ul>
+<h2 id="object-naming">Object naming</h2>
+<p>For a certificate with <code>object_prefix = P</code>, each deployment creates, stamped with the run time <code>T</code> in <strong>UTC</strong>
+(<code>YYYYMMDD-HHMMSS</code>; UTC so the names sort chronologically through daylight-saving changes):</p>
+<pre><code>P-cert-T.pem    P-chain-T.pem (only if there is a chain)    P-privkey-T.pem
+</code></pre>
+<p>and repoints the profiles at them. The previous objects are left alone, which is what makes rollback
+instant and safe. Only the newest <code>keep</code> sets are retained; the BIG-IP itself refuses to delete one that a
+profile still references.</p>
+<p>If a deployment lists <strong>no profile</strong>, or sets <code>fixed_names = yes</code>, the tool also maintains
+<code>P-cert.pem</code>, <code>P-chain.pem</code>, <code>P-fullchain.pem</code> and <code>P-privkey.pem</code>, <strong>overwriting them in place</strong>. Use this
+only for consumers that reference those fixed names (another system, iRules, an APM policy). Overwriting is
+not atomic: a profile bound directly to a fixed-name object can briefly see a new key with the old
+certificate. That is why fixed names are optional and off by default, and why profile deployments use
+versioned names.</p>
+<p>In a non-Common partition, objects are created in that partition (<code>/Part/P-cert-T.pem</code>).</p>
+<h2 id="precedence">Precedence</h2>
+<p>For each setting the first value found wins:</p>
+<p><code>[deploy:]</code> &rarr; <code>[f5:]</code> or <code>[cert:]</code> (whichever defines that setting) &rarr; <code>[defaults]</code> &rarr; built-in default.</p>
+<p>Command-line options choose <em>what</em> to run; they do not override settings, with the exceptions of <code>--force</code>,
+<code>--dry-run</code> and <code>--fail-fast</code>, which change behaviour for that run.</p>
+<h2 id="validation-rules">Validation rules</h2>
+<p>Everything is validated when the file is loaded, and <strong>all</strong> problems are reported together, each with its
+file and line number, before anything runs. Exit code 2 means the file was not used.</p>
+<p>The list of what is enforced: unknown sections and settings; duplicate sections and duplicate single-valued
+settings; settings outside a section; required settings; references to undefined <code>[f5:]</code> / <code>[cert:]</code>
+sections; value formats (hosts, users, ports, paths, names, numbers, booleans, enumerations, profile and
+verify syntax); non-printable or non-ASCII characters; and the conflict rules above. Shell metacharacters,
+spaces, <code>..</code>, <code>$</code>, quotes, backticks and newlines are not permitted in any value that reaches ssh or tmsh.</p>
+<h2 id="recipes">Recipes</h2>
+<p><strong>Two BIG-IPs, same certificate, same profile names</strong></p>
+<pre><code class="language-ini">[f5:a]
+host = 10.0.0.11
+ssh_key = /root/.ssh/f5_push_ecdsa
+[f5:b]
+host = 10.0.0.12
+ssh_key = /root/.ssh/f5_push_ecdsa
+
+[deploy:www]
+f5 = a, b
+cert = wildcard
+profile = www-clientssl
+</code></pre>
+<p><strong>One certificate for many profiles, atomically</strong></p>
+<pre><code class="language-ini">[deploy:www]
+f5 = a
+cert = wildcard
+profile = www-clientssl
+profile = api-clientssl
+profile = /Common/legacy-clientssl
+</code></pre>
+<p>All three switch in a single transaction; if any one cannot, none changes.</p>
+<p><strong>A dual RSA + ECDSA profile: update only the RSA certificate</strong></p>
+<pre><code class="language-ini">[cert:rsa]
+cert = /etc/pki/site-rsa.crt
+key  = /etc/pki/site-rsa.key
+[deploy:site-rsa]
+f5 = a
+cert = rsa
+profile = site-clientssl:rsa_entry
+</code></pre>
+<p><strong>A certificate you only have as a fullchain</strong></p>
+<pre><code class="language-ini">[cert:partner]
+fullchain = /etc/pki/partner/fullchain.pem
+key       = /etc/pki/partner/privkey.pem
+</code></pre>
+<p><strong>Environments: rehearse in the lab, then production</strong></p>
+<pre><code class="language-ini">[deploy:www-lab]
+env = lab
+...
+[deploy:www-prod]
+env = prod
+...
+</code></pre>
+<pre><code class="language-bash">f5-cert-push.sh --env lab
+f5-cert-push.sh --env prod --check
+f5-cert-push.sh --env prod
+</code></pre>
+<p><strong>Verify from the host, for a virtual server you can reach directly</strong></p>
+<pre><code class="language-ini">verify = 203.0.113.10:443 www.example.com
+verify_from = local
+verify_unreachable = fail
+</code></pre>
+<p><strong>Keep more history for one important certificate</strong></p>
+<pre><code class="language-ini">[deploy:payments]
+keep = 10
+</code></pre><footer>Generated from <code>docs/CONFIGURATION.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
+document.querySelectorAll('pre').forEach(function(p){
+  if(!navigator.clipboard){return}
+  var b=document.createElement('button');b.className='copy';b.textContent='Copy';
+  b.onclick=function(){navigator.clipboard.writeText(p.innerText.replace(/\nCopy$/,'')).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})};
+  p.appendChild(b);
+});
+</script></body></html>

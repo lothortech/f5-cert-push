@@ -1,0 +1,246 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Security</title><style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#5b6577;--line:#d9dee7;--code:#f3f5f8;--acc:#0b5cad;--side:#f7f8fb;--warn:#fff7e0;--warnb:#e3b341}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e4e8ef;--mut:#9aa5b8;--line:#2b3140;--code:#1d222c;--acc:#6cb2ff;--side:#191d25;--warn:#2a2412;--warnb:#a07c1c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:20px 16px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow:auto}
+nav .t{font-weight:700;margin:0 0 12px}
+nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+nav a:hover{background:var(--code)}
+nav a.cur{background:var(--acc);color:#fff}
+main{flex:1;min-width:0;max-width:60rem;padding:28px 36px 80px}
+h1{font-size:2rem;margin:.2em 0 .6em}
+h2{font-size:1.45rem;margin:2em 0 .6em;padding-bottom:.25em;border-bottom:1px solid var(--line)}
+h3{font-size:1.15rem;margin:1.6em 0 .4em}
+a{color:var(--acc)}
+code{background:var(--code);padding:.12em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.45;position:relative}
+pre code{background:none;padding:0;font-size:.86rem}
+table{border-collapse:collapse;display:block;overflow:auto;max-width:100%;margin:1em 0}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin:1em 0;padding:.6em 1em;background:var(--warn);border-left:4px solid var(--warnb);border-radius:4px}
+blockquote p{margin:.3em 0}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.copy{position:absolute;top:6px;right:6px;font:12px system-ui;padding:3px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--mut);cursor:pointer}
+footer{margin-top:3em;color:var(--mut);font-size:13px}
+@media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
+@media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html" class="cur">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a></nav><main><h1 id="security">Security</h1>
+<p>This document states what <code>f5-cert-push</code> protects, what it assumes, and what it does <strong>not</strong> defend
+against, so that you can judge it and review it. For the code-level brief see <a href="REVIEW.html">REVIEW.html</a>.</p>
+<h2 id="1-what-the-tool-is-security-wise">1. What the tool is, security-wise</h2>
+<p>It is a privileged automation: it holds an SSH credential that is <strong>root on your BIG-IPs</strong>, reads your
+certificates' <strong>private keys</strong>, and writes them to the BIG-IPs and to local backup files. The design goal is
+that this privilege cannot be turned against you by a typo, a hostile value, a network attacker or a
+half-finished run.</p>
+<h2 id="2-assets">2. Assets</h2>
+<table>
+<thead>
+<tr>
+<th>Asset</th>
+<th>Where it lives</th>
+<th>Sensitivity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>The tool's SSH private key</td>
+<td>the host running the tool</td>
+<td><strong>Critical.</strong> Root on every BIG-IP it is authorised on</td>
+</tr>
+<tr>
+<td>Certificate private keys</td>
+<td>source files; a private scratch dir during a run; a staging dir on the BIG-IP during a run; BIG-IP objects; <strong>backups on the BIG-IP and on the host</strong></td>
+<td><strong>Critical</strong></td>
+</tr>
+<tr>
+<td>The configuration file</td>
+<td>the host</td>
+<td>Moderate: it names keys, paths and addresses, but contains no secrets</td>
+</tr>
+<tr>
+<td>The BIG-IP configuration</td>
+<td>the BIG-IP</td>
+<td>High: the tool changes it</td>
+</tr>
+</tbody>
+</table>
+<h2 id="3-trust-boundaries-and-assumptions">3. Trust boundaries and assumptions</h2>
+<ol>
+<li><strong>The host running the tool is trusted.</strong> Anyone who is root there, or who can read the SSH key, is root
+   on the BIG-IPs. Harden and monitor it accordingly.</li>
+<li><strong>The BIG-IP is trusted</strong> to report honest state, but its output is treated as untrusted <em>data</em>: it is
+   parsed strictly, validated before use in paths, and sanitised before display (see 4.4).</li>
+<li><strong>The network is not trusted.</strong> All traffic is SSH; the BIG-IP's host key is checked (see 4.3).</li>
+<li><strong>The configuration file's author is trusted to choose targets</strong>, but not to execute code: the file is
+   parsed, never sourced, and every value is validated (see 4.1).</li>
+<li><strong>Other local users are not trusted.</strong> Files are created private (umask 077, modes 0600/0700).</li>
+</ol>
+<h2 id="4-controls">4. Controls</h2>
+<h3 id="41-input-handling">4.1 Input handling</h3>
+<ul>
+<li>The configuration is an INI file <strong>read by a parser</strong>. It is never <code>source</code>d or <code>eval</code>'d.</li>
+<li>Every value is checked against a strict character set <em>when the file is loaded</em>, before anything runs:
+  hosts (no leading hyphen, so a value cannot become an <code>ssh</code> option), users, ports, absolute paths
+  (no spaces, no <code>..</code>, no <code>//</code>), object and profile names, verify endpoints, numbers, enumerations. Shell
+  metacharacters, quotes, backticks, <code>$</code>, braces, spaces and non-ASCII are rejected.</li>
+<li>Values that cross to the BIG-IP (object names, profile names, paths) are additionally passed as
+  <strong>positional arguments, each shell-quoted with <code>printf %q</code></strong>, to fixed scripts; they are never
+  interpolated into command text. (<code>ssh</code> joins its arguments into one string that the remote shell
+  re-parses; this is why the quoting matters and is tested.)</li>
+<li>tmsh command lines that contain names are built only from values that passed validation.</li>
+<li>The offline test suite includes injection attempts (command substitution, semicolons, pipes, leading
+  hyphens, traversal) and asserts a marker file is <strong>not</strong> created.</li>
+</ul>
+<h3 id="42-secrets-handling">4.2 Secrets handling</h3>
+<ul>
+<li>Private keys are copied once into a private scratch directory (mode 0700, on <strong>tmpfs</strong> <code>/dev/shm</code> when
+  available, so they do not reach disk), validated there, and uploaded from there. The scratch directory is
+  shredded and removed on exit, including on Ctrl-C and on <code>SIGTERM</code>.</li>
+<li>The staging directory on the BIG-IP is created with <code>mktemp -d</code> (unpredictable name), mode 0700, files
+  0600; it is shredded and removed on exit, and a run also sweeps abandoned ones older than two hours.</li>
+<li><strong>Upload integrity</strong>: SHA-256 of each staged file is compared to the local file before anything is installed.</li>
+<li><strong>Backups are created private</strong> (directory 0700, files 0600) on both sides, and contain private keys.
+  They are <em>necessary</em> for a safe rollback and are therefore the tool's largest standing secret store.</li>
+<li>Nothing secret is written to logs: no key material, no file contents, no passphrases. Only paths,
+  certificate subjects, dates and fingerprints.</li>
+<li>Passphrase-protected keys are refused rather than handled, so the tool never sees a passphrase.</li>
+</ul>
+<h3 id="43-authentication-and-transport">4.3 Authentication and transport</h3>
+<ul>
+<li>SSH is run with <code>BatchMode</code>, <strong>public-key authentication only</strong>, <code>IdentitiesOnly</code> (only the configured key
+  is offered), no agent or X11 forwarding, no port forwarding, <code>ServerAlive</code> keepalives and a connect timeout.</li>
+<li><strong>Connection reuse</strong> (<code>connection_reuse = yes</code>, the default): the steps of a job share one SSH connection,
+  because BIG-IP logins are slow and each is logged. The control socket is created inside the private scratch
+  directory (mode 0700, tmpfs when available), is closed after each BIG-IP and on exit, and <code>ControlPersist</code> is
+  120 seconds as a backstop. Set <code>connection_reuse = no</code> to open a fresh connection for every step.</li>
+<li><strong>Host keys are verified</strong> (<code>StrictHostKeyChecking=yes</code> by default). <code>accept-new</code> is available for labs and
+  pins on first use. A changed host key fails the run.</li>
+<li>No password is ever requested or accepted.</li>
+</ul>
+<h3 id="44-treating-big-ip-output-as-data">4.4 Treating BIG-IP output as data</h3>
+<p>Everything read from the BIG-IP is parsed with fixed <code>awk</code> programs into fixed fields. Profile, entry and
+object names that come back from it are re-checked against the same strict pattern as names in the
+configuration before they are used to build tmsh commands or the generated restore script, and file names
+returned by a backup are checked before being used to build a local path. Text is stripped to printable ASCII before it is shown or logged, so a hostile value cannot inject
+terminal escape sequences or forge log lines.</p>
+<h3 id="45-making-unsafe-states-hard-to-reach">4.5 Making unsafe states hard to reach</h3>
+<ul>
+<li>No "run everything" default: you must name a deployment, environment, lineage or <code>--all</code>.</li>
+<li>The BIG-IP is refused unless its configuration is <strong>fully loaded</strong> and the unit is <strong>active</strong> (or standby
+  with an explicit opt-in).</li>
+<li>Nothing on the BIG-IP changes until the <strong>backup is complete and verified</strong> and the new files are
+  installed under <strong>new names</strong>. The live configuration changes in <strong>one transaction</strong>.</li>
+<li>After the change the result is <strong>verified and rolled back automatically</strong> on failure.</li>
+<li><strong>Per-BIG-IP locking</strong>, both on this host and <strong>on the BIG-IP itself</strong>, prevents two runs (even from different hosts) from interleaving. The BIG-IP lock records its owner and is released only by the run that took it; one left by a killed run expires after <code>remote_lock_stale_minutes</code>.</li>
+<li>The configuration file must not be group- or world-writable.</li>
+<li>Pruning only ever removes directories and objects matching the tool's own timestamp pattern, and the BIG-IP
+  itself refuses to delete an object that a profile still uses.</li>
+</ul>
+<h3 id="46-least-privilege-what-you-can-and-cannot-reduce">4.6 Least privilege (what you can and cannot reduce)</h3>
+<p>The tool needs <code>tmsh</code> and read access to <code>/config/filestore</code> on the BIG-IP, which in practice means <strong>root</strong>.
+You can reduce exposure by: a dedicated key; restricting where the key may be used from
+(<code>from="10.0.0.5"</code> in <code>authorized_keys</code>); running the tool as a dedicated local account; and keeping
+<code>backup_dir_local</code> on an encrypted filesystem. A forced-command wrapper on the BIG-IP is not practical
+because the tool runs several different commands.</p>
+<h3 id="47-the-upload-wrapper-f5-cert-installsh">4.7 The upload wrapper (<code>f5-cert-install.sh</code>)</h3>
+<p>The wrapper runs as root over an upload directory that other people can write to, so it treats every upload
+as hostile:</p>
+<ul>
+<li>Only folders whose names pass the same strict name pattern are considered; a folder or <code>READY</code> marker that
+  is a symbolic link is ignored.</li>
+<li>Each file is copied into a private directory with <code>dd iflag=nofollow,nonblock</code>, at most 1 MiB + 1 byte, under
+  a timeout: a symbolic link is refused when it is opened (no check-then-use race), a FIFO cannot make the run
+  hang, and a huge file is never copied in full. What is validated and installed is that private copy, so the
+  uploader cannot change it afterwards.</li>
+<li>Validation is f5-cert-push's own (<code>--validate</code>), plus: the chain is required, and a certificate older than
+  the installed one is refused.</li>
+<li>Installed releases are root-only (0700 directories, 0600 files). The switch to a new release is one atomic
+  <code>rename(2)</code> of the <code>current</code> symlink.</li>
+<li>After a successful install the uploaded files (including the key) are shredded. A rejected upload's files
+  stay in the uploader's folder (they put them there); the <code>FAILED</code> file contains only the tool's message,
+  never file contents.</li>
+<li>Hard links: on systems with <code>fs.protected_hardlinks = 1</code> (the default on current distributions) an uploader
+  cannot hard-link a file they do not own. Where it is 0, a hard link to a root-only file would be copied into
+  the private scratch directory, fail validation (it is not a certificate) and be shredded; its content is not
+  written anywhere the uploader can read. Keep <code>fs.protected_hardlinks = 1</code>.</li>
+</ul>
+<h2 id="5-what-the-tool-does-not-protect-against">5. What the tool does <strong>not</strong> protect against</h2>
+<table>
+<thead>
+<tr>
+<th>Not defended</th>
+<th>Why / what to do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A compromised host running the tool</td>
+<td>It holds a root credential and key material. Treat that host as critical infrastructure.</td>
+</tr>
+<tr>
+<td>A malicious or compromised BIG-IP</td>
+<td>It is trusted with the keys it is given.</td>
+</tr>
+<tr>
+<td>Someone who can read the local backups</td>
+<td>They contain private keys. Protect the directory, encrypt the disk, limit retention (<code>keep</code>).</td>
+</tr>
+<tr>
+<td>An SSH key with no passphrase being stolen</td>
+<td>Use a dedicated, restricted key; rotate it; use <code>from=</code> restrictions; consider an agent with a passphrase.</td>
+</tr>
+<tr>
+<td>Wrong certificate chosen by you</td>
+<td>The tool verifies the key matches and the chain verifies; it cannot know the certificate is the one you <em>meant</em>. <code>--dry-run</code> shows what it will deploy.</td>
+</tr>
+<tr>
+<td>Time-of-check/time-of-use on the BIG-IP</td>
+<td>A concurrent administrator changing the same profiles during a run. The locks only serialise runs of this tool. The switch is a single transaction, and the verification step catches surprises, but it cannot prevent a human changing the same objects at the same moment.</td>
+</tr>
+<tr>
+<td>Denial of service by a hostile config author</td>
+<td>Out of scope: the config author is trusted to choose targets.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="6-residual-risks-you-should-know-about">6. Residual risks you should know about</h2>
+<ol>
+<li><strong>Backups of private keys exist indefinitely up to <code>keep</code> runs</strong>, on the BIG-IP and locally. Lower <code>keep</code>
+   if that is unacceptable, at the cost of a shorter rollback window.</li>
+<li><strong><code>kill -9</code> or power loss</strong> cannot run cleanup. A staging directory holding a key can remain on the BIG-IP
+   (swept by the next run after two hours; you can remove it by hand: <code>rm -rf /var/tmp/f5-cert-push.*</code>), and
+   a scratch directory can remain locally if tmpfs is not used (it is removed on reboot when it is).</li>
+<li><strong>The BIG-IP's own copy of a key</strong> (the installed object, and the filestore) is, of course, on the BIG-IP.</li>
+<li><strong>Clock changes</strong> affect the timestamped names and expiry arithmetic; the tool assumes a sane clock.</li>
+<li><strong>A weakened SSH configuration on the BIG-IP</strong> (accepting password logins, old algorithms) is outside the
+   tool's control; <code>PasswordAuthentication</code> and the accepted key types are set on the device.</li>
+</ol>
+<h2 id="7-hardening-checklist">7. Hardening checklist</h2>
+<ul>
+<li>[ ] Dedicated ECDSA P-384 key for this tool, mode 600, used by nothing else.</li>
+<li>[ ] Key restricted on the BIG-IP: <code>from="&lt;host ip&gt;" ecdsa-sha2-nistp384 AAAA... f5-cert-push</code>.</li>
+<li>[ ] BIG-IP host key pinned after comparing its fingerprint with the device's own.</li>
+<li>[ ] <code>strict_host_key_checking = yes</code> (the default) in production.</li>
+<li>[ ] Configuration file mode 600, owned by the account that runs the tool.</li>
+<li>[ ] <code>backup_dir_local</code> on an encrypted filesystem, mode 0700, with a retention you can defend.</li>
+<li>[ ] Tool run by a dedicated account or root from a hardened host; the host is patched and monitored.</li>
+<li>[ ] <code>log_file</code> set, and shipped to your log system. Alert on exit codes 3 and 5.</li>
+<li>[ ] A scheduled <code>--check</code> alerts on exit 4 so a failed push is noticed.</li>
+<li>[ ] Old tool keys removed from the BIG-IP when people, hosts or keys change (section 10 of the operations guide).</li>
+<li>[ ] For manual uploads: an SFTP-only, chrooted upload account; <code>incoming/</code> mode 2770 root:certupload;
+      <code>/etc/f5-certs</code> mode 0700 root; <code>fs.protected_hardlinks = 1</code>.</li>
+<li>[ ] The test suite (docs/TESTING.md) run against a lab BIG-IP after any change to the script.</li>
+</ul>
+<h2 id="8-reporting-a-problem">8. Reporting a problem</h2>
+<p>If you find a security issue, report it privately to the maintainers of your copy of the tool before
+publishing details. Include the script version (<code>--version</code>), the BIG-IP version, and the exact steps.</p><footer>Generated from <code>docs/SECURITY.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
+document.querySelectorAll('pre').forEach(function(p){
+  if(!navigator.clipboard){return}
+  var b=document.createElement('button');b.className='copy';b.textContent='Copy';
+  b.onclick=function(){navigator.clipboard.writeText(p.innerText.replace(/\nCopy$/,'')).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})};
+  p.appendChild(b);
+});
+</script></body></html>

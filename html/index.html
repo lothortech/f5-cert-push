@@ -1,0 +1,374 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>f5-cert-push</title><style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#5b6577;--line:#d9dee7;--code:#f3f5f8;--acc:#0b5cad;--side:#f7f8fb;--warn:#fff7e0;--warnb:#e3b341}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e4e8ef;--mut:#9aa5b8;--line:#2b3140;--code:#1d222c;--acc:#6cb2ff;--side:#191d25;--warn:#2a2412;--warnb:#a07c1c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:20px 16px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow:auto}
+nav .t{font-weight:700;margin:0 0 12px}
+nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+nav a:hover{background:var(--code)}
+nav a.cur{background:var(--acc);color:#fff}
+main{flex:1;min-width:0;max-width:60rem;padding:28px 36px 80px}
+h1{font-size:2rem;margin:.2em 0 .6em}
+h2{font-size:1.45rem;margin:2em 0 .6em;padding-bottom:.25em;border-bottom:1px solid var(--line)}
+h3{font-size:1.15rem;margin:1.6em 0 .4em}
+a{color:var(--acc)}
+code{background:var(--code);padding:.12em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.45;position:relative}
+pre code{background:none;padding:0;font-size:.86rem}
+table{border-collapse:collapse;display:block;overflow:auto;max-width:100%;margin:1em 0}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin:1em 0;padding:.6em 1em;background:var(--warn);border-left:4px solid var(--warnb);border-radius:4px}
+blockquote p{margin:.3em 0}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.copy{position:absolute;top:6px;right:6px;font:12px system-ui;padding:3px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--mut);cursor:pointer}
+footer{margin-top:3em;color:var(--mut);font-size:13px}
+@media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
+@media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html" class="cur">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a></nav><main><h1 id="f5-cert-push">f5-cert-push</h1>
+<p>Deploy renewed TLS certificates to one or many <strong>F5 BIG-IP</strong> devices, safely and repeatably.</p>
+<p>You describe your BIG-IPs, certificates and deployments once in a configuration file. For each
+deployment the tool then:</p>
+<ol>
+<li><strong>Validates</strong> the certificate, key and chain locally (they match, not expired, chain verifies).</li>
+<li><strong>Reads</strong> the BIG-IP and refuses to touch one whose configuration is not loaded or which is standby.</li>
+<li><strong>Backs up</strong> what is there, to the BIG-IP (<code>/shared</code>) <strong>and</strong> to the machine running the tool, with
+   SHA-256 checksums, and writes a self-verifying <strong>restore script</strong>.</li>
+<li><strong>Uploads</strong> the new files to a private staging directory and checks their checksums on the BIG-IP.</li>
+<li><strong>Installs</strong> them as new, timestamped objects (the old ones stay untouched).</li>
+<li><strong>Switches</strong> every named client-ssl profile to the new objects in <strong>one atomic tmsh transaction</strong>
+   (all profiles change together, or none do), then saves the configuration.</li>
+<li><strong>Verifies</strong> the result: the profiles reference the new objects, and (optionally) your virtual
+   servers really serve the new certificate.</li>
+<li><strong>Rolls back automatically</strong> if verification fails.</li>
+<li><strong>Prunes</strong> old backups and old certificate versions down to the number you choose.</li>
+<li><strong>Reports</strong> a summary, and returns an exit code that automation can act on.</li>
+</ol>
+<p>It is a single Bash script plus a configuration file (and an optional wrapper, <code>f5-cert-install.sh</code>, for
+certificates that people upload by hand). Nothing is installed on the BIG-IP.</p>
+<pre><code>   your host                                          BIG-IP
+  +------------+    ssh (key only)    +-----------------------------------------+
+  | f5-cert-   |---------------------&gt;|  /shared/cert-backups/&lt;prefix&gt;/&lt;time&gt;/  |
+  | push.sh    |   read state         |  /var/tmp/f5-cert-push.XXXX (staging)   |
+  |            |   backup, upload     |  new objects  &lt;prefix&gt;-cert-&lt;time&gt;.pem  |
+  | conf file  |   install, switch    |  client-ssl profiles  -&gt; new objects    |
+  |            |   verify, rollback   |                                         |
+  +------------+                      +-----------------------------------------+
+   backups/&lt;bigip&gt;/&lt;prefix&gt;/&lt;time&gt;/
+</code></pre>
+<h2 id="requirements">Requirements</h2>
+<table>
+<thead>
+<tr>
+<th>On the machine that runs the tool</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Linux</td>
+</tr>
+<tr>
+<td>Shell</td>
+<td>bash 4.2 or newer</td>
+</tr>
+<tr>
+<td>Tools</td>
+<td><code>ssh</code>, <code>openssl</code>, GNU <code>date</code> / <code>stat</code> / <code>sort</code> / <code>timeout</code>, <code>awk</code>, <code>sed</code>, <code>grep</code>, <code>sha256sum</code>, <code>find</code>, <code>mktemp</code>. <strong>OpenSSL 1.1.0 or newer is recommended</strong>: older versions cannot verify a chain reliably, so the chain check is skipped with a warning (see <code>chain_check</code>). Everything else works on 1.0.x.</td>
+</tr>
+<tr>
+<td>Access</td>
+<td>read access to the certificate and key files; an SSH private key trusted by the BIG-IP</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>On the BIG-IP</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Version</td>
+<td>Developed and tested against <strong>BIG-IP 17.1.3.4</strong>. The <code>cert-key-chain</code> syntax it relies on exists from 11.5, but other versions are untested.</td>
+</tr>
+<tr>
+<td>Account</td>
+<td>SSH key login as <strong>root</strong>. The tool needs <code>tmsh</code> and read access to <code>/config/filestore</code> (to back up the old files).</td>
+</tr>
+<tr>
+<td>Key types</td>
+<td>The BIG-IP's SSH daemon may be restricted (for example FIPS mode accepts only <strong>ECDSA and RSA</strong> keys, not ed25519). Use an ECDSA P-384 key. See <a href="OPERATIONS.html#1-first-time-setup">OPERATIONS.html</a>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="quick-start">Quick start</h2>
+<pre><code class="language-bash"># 1. Put the script and the example config somewhere, restrict the config
+cp f5-cert-push.conf.example /etc/f5-cert-push.conf
+chmod 600 /etc/f5-cert-push.conf
+$EDITOR /etc/f5-cert-push.conf                      # describe your BIG-IPs, certs, deployments
+
+# 2. Check the file and the certificate files (no network)
+./f5-cert-push.sh --validate
+
+# 3. See which client-ssl profiles exist on a BIG-IP (to fill in 'profile =')
+./f5-cert-push.sh --discover --f5 prod-a
+
+# 4. Is anything out of date? (read-only; exit 4 means yes)
+./f5-cert-push.sh --env prod --check
+
+# 5. Rehearse, then do it
+./f5-cert-push.sh --deploy prod-www --dry-run
+./f5-cert-push.sh --deploy prod-www
+</code></pre>
+<p>A minimal configuration that updates one profile on one BIG-IP with a Let's Encrypt certificate:</p>
+<pre><code class="language-ini">[f5:prod-a]
+host    = 10.0.0.11
+ssh_key = /root/.ssh/f5_push_ecdsa
+
+[cert:wildcard]
+le_dir        = /etc/letsencrypt/live/example.com
+object_prefix = example-wildcard
+
+[deploy:www]
+f5      = prod-a
+cert    = wildcard
+profile = www-clientssl
+verify  = 10.1.10.10:443 www.example.com
+</code></pre>
+<p>The full, commented example is <a href="../f5-cert-push.conf.example"><code>f5-cert-push.conf.example</code></a>; every setting is
+documented in <a href="CONFIGURATION.html">docs/CONFIGURATION.html</a>.</p>
+<h2 id="choosing-what-to-run">Choosing what to run</h2>
+<p>You must say what to act on; there is no "run everything" by accident.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Acts on</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--deploy NAME</code></td>
+<td>one <code>[deploy:NAME]</code> (repeatable)</td>
+</tr>
+<tr>
+<td><code>--env LABEL</code></td>
+<td>every deployment with <code>env = LABEL</code> (repeatable)</td>
+</tr>
+<tr>
+<td><code>--f5 NAME</code></td>
+<td>narrows the above to one BIG-IP (repeatable)</td>
+</tr>
+<tr>
+<td><code>--lineage DIR</code></td>
+<td>deployments whose certificate is <code>le_dir = DIR</code>; meant for certbot hooks</td>
+</tr>
+<tr>
+<td><code>--all</code></td>
+<td>every enabled deployment</td>
+</tr>
+</tbody>
+</table>
+<h2 id="actions">Actions</h2>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><em>(none)</em></td>
+<td>deploy</td>
+</tr>
+<tr>
+<td><code>--check</code></td>
+<td>read-only; report whether each BIG-IP is current. <strong>Exit 4</strong> if any is out of date.</td>
+</tr>
+<tr>
+<td><code>--dry-run</code></td>
+<td>print exactly what a deploy would do; change nothing</td>
+</tr>
+<tr>
+<td><code>--validate</code></td>
+<td>check the config file and the local certificate files</td>
+</tr>
+<tr>
+<td><code>--list</code></td>
+<td>show the deployments the config defines</td>
+</tr>
+<tr>
+<td><code>--discover --f5 NAME</code></td>
+<td>list every client-ssl profile and entry on a BIG-IP, with expiry dates</td>
+</tr>
+<tr>
+<td><code>--list-backups</code></td>
+<td>list the backup sets for the selected deployments</td>
+</tr>
+<tr>
+<td><code>--rollback --set TS</code></td>
+<td>restore the state captured just before run <code>TS</code></td>
+</tr>
+</tbody>
+</table>
+<p>Other options: <code>--force</code> (redeploy even if current), <code>--fail-fast</code> (stop at the first failure),
+<code>--quiet</code>, <code>--config FILE</code>, <code>--version</code>, <code>--help</code>.</p>
+<h2 id="exit-codes">Exit codes</h2>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>Success, or nothing to do</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Error. Normally the BIG-IP was <strong>not</strong> changed. The one exception is <code>auto_rollback = no</code> after a failed check: the summary then says <code>FAILED_CHANGED</code> and prints the rollback command</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Usage or configuration error. Nothing was done</td>
+</tr>
+<tr>
+<td>3</td>
+<td>A deployment failed <strong>after</strong> changing the BIG-IP and was <strong>rolled back</strong></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>--check</code> found a BIG-IP that is out of date</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>CRITICAL:</strong> a deployment failed and the rollback also failed. The BIG-IP needs attention</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Another run (on this host or another) already holds the lock for that BIG-IP</td>
+</tr>
+</tbody>
+</table>
+<p>With several deployments in one run the exit code is the most severe result: 5, then 3, then 1, 6, 4.</p>
+<h2 id="manually-uploaded-certificates">Manually uploaded certificates</h2>
+<p>If certificates are bought or issued elsewhere and <strong>uploaded by a person</strong> to the server, use
+<code>f5-cert-install.sh</code> from cron. Operators drop <code>cert.pem</code>, <code>chain.pem</code> and <code>privkey.pem</code> into
+<code>incoming/&lt;certname&gt;/</code> and create <code>READY</code> last; the wrapper validates the upload (key matches, chain
+verifies, not expiring, not older than what is installed, no symlinks), installs it atomically and pushes it,
+retrying the push until it succeeds. See <a href="MANUAL-UPLOAD.html">docs/MANUAL-UPLOAD.html</a> and
+<a href="../examples/manual-upload"><code>examples/manual-upload/</code></a>.</p>
+<h2 id="automating-renewals">Automating renewals</h2>
+<p>Run it from certbot after each renewal; it does nothing if the BIG-IP already has the certificate:</p>
+<pre><code class="language-bash"># /etc/letsencrypt/renewal-hooks/deploy/f5-cert-push.sh
+#!/usr/bin/env bash
+exec /opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf \
+     --lineage &quot;$RENEWED_LINEAGE&quot; --quiet
+</code></pre>
+<p>Or monitor drift from cron or your monitoring system: <code>f5-cert-push.sh --all --check --quiet</code>
+exits 4 when anything is out of date. See <a href="OPERATIONS.html">docs/OPERATIONS.html</a>.</p>
+<h2 id="what-it-creates">What it creates</h2>
+<table>
+<thead>
+<tr>
+<th>Where</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BIG-IP objects</td>
+<td><code>&lt;prefix&gt;-cert-&lt;time&gt;.pem</code>, <code>&lt;prefix&gt;-chain-&lt;time&gt;.pem</code>, <code>&lt;prefix&gt;-privkey-&lt;time&gt;.pem</code> per deploy; the newest <code>keep</code> sets are retained</td>
+</tr>
+<tr>
+<td>BIG-IP files</td>
+<td><code>/shared/cert-backups/&lt;prefix&gt;/&lt;time&gt;/</code> (old PEMs, <code>restore-&lt;time&gt;.sh</code>, <code>SHA256SUMS</code>, <code>MANIFEST</code>)</td>
+</tr>
+<tr>
+<td>Local files</td>
+<td><code>&lt;backup_dir_local&gt;/&lt;bigip&gt;/&lt;prefix&gt;/&lt;time&gt;/</code> (a verified copy of the same)</td>
+</tr>
+<tr>
+<td>Temporary</td>
+<td>a private scratch directory here (tmpfs when available), and <code>/var/tmp/f5-cert-push.XXXX</code> on the BIG-IP; both removed on exit, including on Ctrl-C</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Backups contain private keys.</strong> Protect <code>backup_dir_local</code> accordingly; the tool creates it mode 0700.</p>
+<h2 id="documentation">Documentation</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="USER-GUIDE.html">docs/USER-GUIDE.html</a></td>
+<td><strong>For the person running it by hand</strong>: SSH key, saving the certificate files, a small configuration, the renewal routine, rollback</td>
+</tr>
+<tr>
+<td><a href="SETUP.html">docs/SETUP.html</a></td>
+<td><strong>Start here for a new install</strong>: Linux server, staging folders, SSH key, BIG-IP prerequisites, first run, checklist</td>
+</tr>
+<tr>
+<td><a href="MANUAL-UPLOAD.html">docs/MANUAL-UPLOAD.html</a></td>
+<td>Certificates uploaded by people: <code>f5-cert-install.sh</code>, setup, operator procedure, cron</td>
+</tr>
+<tr>
+<td><a href="CONFIGURATION.html">docs/CONFIGURATION.html</a></td>
+<td>Every setting, with defaults and examples; how profiles and entries are chosen</td>
+</tr>
+<tr>
+<td><a href="OPERATIONS.html">docs/OPERATIONS.html</a></td>
+<td>First-time setup, day-to-day use, rollback, HA pairs, monitoring, troubleshooting</td>
+</tr>
+<tr>
+<td><a href="SECURITY.html">docs/SECURITY.html</a></td>
+<td>Threat model, what the tool protects and does not, hardening checklist</td>
+</tr>
+<tr>
+<td><a href="TESTING.html">docs/TESTING.html</a></td>
+<td>The offline and BIG-IP test suites, and what they do not cover</td>
+</tr>
+<tr>
+<td><a href="REVIEW.html">REVIEW.html</a></td>
+<td>Brief for an independent security and correctness review</td>
+</tr>
+<tr>
+<td><a href="CHANGELOG.html">CHANGELOG.html</a></td>
+<td>Version history</td>
+</tr>
+</tbody>
+</table>
+<h2 id="known-limitations">Known limitations</h2>
+<p>Short list; the full one is in <a href="OPERATIONS.html#known-limitations">docs/OPERATIONS.html</a>.</p>
+<ul>
+<li><strong>client-ssl profiles only.</strong> server-ssl profiles and other consumers of certificates are not updated.</li>
+<li><strong>Passphrase-protected private keys are not supported</strong> (the tool refuses them with an explanation).</li>
+<li><strong>It does not synchronise an HA pair.</strong> Deploy to the active unit, then sync. It refuses a standby unit.</li>
+<li>Profiles that <strong>inherit</strong> their certificate from a parent (<code>inherit-certkeychain true</code>) are refused; update the parent.</li>
+<li>Developed and tested on BIG-IP <strong>17.1.3.4</strong>, standalone. Standby/HA behaviour, and the "configuration not
+  loaded" safety gate, are implemented but could not be exercised on the test device.</li>
+</ul>
+<h2 id="reading-the-documentation-in-a-browser">Reading the documentation in a browser</h2>
+<p>Open <code>html/index.html</code> (double-click it). Every guide is also there as a single self-contained page with a
+side menu, copy buttons on the command blocks, dark-mode and print support, and no network access needed.
+After editing a Markdown file, regenerate with <code>pip install markdown &amp;&amp; python tools/build-html.py</code>.</p><footer>Generated from <code>README.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
+document.querySelectorAll('pre').forEach(function(p){
+  if(!navigator.clipboard){return}
+  var b=document.createElement('button');b.className='copy';b.textContent='Copy';
+  b.onclick=function(){navigator.clipboard.writeText(p.innerText.replace(/\nCopy$/,'')).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})};
+  p.appendChild(b);
+});
+</script></body></html>

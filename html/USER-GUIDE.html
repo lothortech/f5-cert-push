@@ -1,0 +1,530 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>User guide: updating certificates by hand</title><style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#5b6577;--line:#d9dee7;--code:#f3f5f8;--acc:#0b5cad;--side:#f7f8fb;--warn:#fff7e0;--warnb:#e3b341}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e4e8ef;--mut:#9aa5b8;--line:#2b3140;--code:#1d222c;--acc:#6cb2ff;--side:#191d25;--warn:#2a2412;--warnb:#a07c1c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:20px 16px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow:auto}
+nav .t{font-weight:700;margin:0 0 12px}
+nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+nav a:hover{background:var(--code)}
+nav a.cur{background:var(--acc);color:#fff}
+main{flex:1;min-width:0;max-width:60rem;padding:28px 36px 80px}
+h1{font-size:2rem;margin:.2em 0 .6em}
+h2{font-size:1.45rem;margin:2em 0 .6em;padding-bottom:.25em;border-bottom:1px solid var(--line)}
+h3{font-size:1.15rem;margin:1.6em 0 .4em}
+a{color:var(--acc)}
+code{background:var(--code);padding:.12em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.45;position:relative}
+pre code{background:none;padding:0;font-size:.86rem}
+table{border-collapse:collapse;display:block;overflow:auto;max-width:100%;margin:1em 0}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin:1em 0;padding:.6em 1em;background:var(--warn);border-left:4px solid var(--warnb);border-radius:4px}
+blockquote p{margin:.3em 0}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.copy{position:absolute;top:6px;right:6px;font:12px system-ui;padding:3px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--mut);cursor:pointer}
+footer{margin-top:3em;color:var(--mut);font-size:13px}
+@media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
+@media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html" class="cur">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a></nav><main><h1 id="user-guide-updating-certificates-by-hand">User guide: updating certificates by hand</h1>
+<p>For the person who runs the tool <strong>manually</strong> from their own Linux machine (or Windows with WSL) when a
+certificate is renewed. Nothing here runs by itself: you start it, you read what it is going to do, you
+confirm the result. For an unattended, cron-based setup see <a href="SETUP.html">SETUP.html</a> and
+<a href="MANUAL-UPLOAD.html">MANUAL-UPLOAD.html</a>.</p>
+<ol>
+<li><a href="#1-what-you-need">What you need</a></li>
+<li><a href="#2-one-time-setup">One-time setup</a></li>
+<li><a href="#3-create-the-ssh-key">Create the SSH key</a></li>
+<li><a href="#4-authorise-the-key-on-each-big-ip">Authorise the key on each BIG-IP</a></li>
+<li><a href="#5-save-the-certificate-files">Save the certificate files</a></li>
+<li><a href="#6-write-the-configuration">Write the configuration</a></li>
+<li><a href="#7-renewing-a-certificate-the-routine">Renewing a certificate: the routine</a></li>
+<li><a href="#8-if-something-is-wrong-rolling-back">If something is wrong: rolling back</a></li>
+<li><a href="#9-high-availability-pairs">High-availability pairs</a></li>
+<li><a href="#10-quick-reference">Quick reference</a></li>
+</ol>
+<hr />
+<h2 id="1-what-you-need">1. What you need</h2>
+<table>
+<thead>
+<tr>
+<th>Need</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A Linux machine, or Windows 10/11 with <strong>WSL</strong> (Ubuntu)</td>
+<td>The script is a bash script and was tested on Linux. macOS ships an old bash (3.2) that is too old; install a current one with Homebrew and treat it as untested. Plain Windows without WSL is not supported.</td>
+</tr>
+<tr>
+<td><code>bash</code> 4.2+, <code>openssl</code>, <code>ssh</code>, <code>ssh-keygen</code></td>
+<td>Already on almost every Linux. Check: <code>bash --version &amp;&amp; openssl version &amp;&amp; ssh -V</code></td>
+</tr>
+<tr>
+<td>Network access to each BIG-IP's <strong>management</strong> address on TCP 22</td>
+<td>Ask your network team if unsure.</td>
+</tr>
+<tr>
+<td>The BIG-IP's <code>root</code> account (once)</td>
+<td>Needed one time, to add your SSH key. After that the tool logs in with the key.</td>
+</tr>
+<tr>
+<td>The certificate files from your CA</td>
+<td>The server certificate, the intermediate (chain) certificate(s) and the private key.</td>
+</tr>
+<tr>
+<td>An existing client-ssl profile on the BIG-IP</td>
+<td>The tool changes the certificate <strong>inside</strong> an existing profile; it does not create one.</td>
+</tr>
+</tbody>
+</table>
+<p>On Windows, open <strong>Ubuntu (WSL)</strong> and do everything below in that window. Keep the files inside the Linux
+home folder (<code>~</code>), not under <code>/mnt/c</code>, so file permissions work.</p>
+<h2 id="2-one-time-setup">2. One-time setup</h2>
+<pre><code class="language-bash">mkdir -p ~/f5-cert-push/certs ~/f5-cert-push/backups
+cd ~/f5-cert-push
+tar xzf /path/to/f5-cert-push-2.0.0.tar.gz --strip-components=1     # puts f5-cert-push.sh here
+chmod 700 ~/f5-cert-push
+chmod 750 f5-cert-push.sh
+./f5-cert-push.sh --version
+</code></pre>
+<p>You end up with:</p>
+<pre><code>~/f5-cert-push/
+    f5-cert-push.sh          the tool
+    f5-cert-push.conf        your settings (you create it in section 6)
+    certs/
+        www/                 one folder per certificate (section 5)
+            cert.pem
+            chain.pem
+            privkey.pem
+    backups/                 the tool puts a copy of what it replaced here
+</code></pre>
+<p>The private key is the sensitive part. Keep <code>~/f5-cert-push</code> readable only by you (<code>chmod 700</code>, as above),
+and delete the key files from <code>certs/</code> once the BIG-IP is updated and you have a backup elsewhere that your
+security policy allows. The tool keeps its own backup copies under <code>backups/</code>.</p>
+<h2 id="3-create-the-ssh-key">3. Create the SSH key</h2>
+<p>The tool logs in to the BIG-IP with an SSH key. Create one for this tool only.</p>
+<pre><code class="language-bash">ssh-keygen -t ecdsa -b 384 -C &quot;f5-cert-push $(whoami)&quot; -f ~/.ssh/f5_push_ecdsa
+</code></pre>
+<ul>
+<li>When asked for a <strong>passphrase</strong>, you may leave it empty (press Enter twice) or set one. An empty
+  passphrase is simplest; a key with no passphrase <strong>is root access to the BIG-IP</strong>, so keep the file private
+  (<code>ssh-keygen</code> already sets mode 600) and never email or copy it around. If you set a passphrase, see
+  "Using a passphrase" below.</li>
+<li><strong>Use ECDSA (or RSA), not ed25519.</strong> BIG-IP's SSH commonly refuses ed25519 keys without telling you why.</li>
+</ul>
+<p>Show the <strong>public</strong> half. This one line is what you give the BIG-IP:</p>
+<pre><code class="language-bash">cat ~/.ssh/f5_push_ecdsa.pub
+</code></pre>
+<p>It looks like <code>ecdsa-sha2-nistp384 AAAAE2VjZHNhLXNoYTItbmlzdHAzODQ... f5-cert-push you</code>. Never share the file
+without <code>.pub</code>.</p>
+<p><strong>Using a passphrase.</strong> Start an agent for your session and add the key; the tool then uses the agent:</p>
+<pre><code class="language-bash">eval &quot;$(ssh-agent -s)&quot;
+ssh-add ~/.ssh/f5_push_ecdsa
+</code></pre>
+<p>and leave the <code>ssh_key =</code> line <strong>out</strong> of the configuration.</p>
+<h2 id="4-authorise-the-key-on-each-big-ip">4. Authorise the key on each BIG-IP</h2>
+<p>Do this once per BIG-IP. You need a way to run commands as root on it: the console, the web UI's
+<strong>Advanced Shell</strong> or an existing admin SSH session.</p>
+<p>On the BIG-IP, run these three lines, pasting your <code>.pub</code> line inside the quotes:</p>
+<pre><code class="language-bash">echo 'ecdsa-sha2-nistp384 AAAA...your whole public key line... f5-cert-push you' &gt;&gt; /var/ssh/root/authorized_keys
+chmod 600 /var/ssh/root/authorized_keys
+restorecon -v /var/ssh/root/authorized_keys
+</code></pre>
+<p>The <code>restorecon</code> line matters: without it the BIG-IP can silently ignore the key.</p>
+<p>Then, back on <strong>your</strong> machine, <strong>trust the BIG-IP's identity</strong> (once) and test the login. Replace
+<code>10.0.0.11</code> with the BIG-IP's management address:</p>
+<pre><code class="language-bash">ssh-keyscan -t ecdsa 10.0.0.11 &gt;&gt; ~/.ssh/known_hosts
+ssh-keygen -lf &lt;(ssh-keyscan -t ecdsa 10.0.0.11 2&gt;/dev/null)
+</code></pre>
+<p>The second command prints a fingerprint. On the BIG-IP run <code>ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub</code>;
+the two fingerprints <strong>must be identical</strong>. If they differ, stop and ask who is answering at that address.
+Then test the login:</p>
+<pre><code class="language-bash">ssh -i ~/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes root@10.0.0.11 'tmsh show sys version | head -5'
+</code></pre>
+<p>You should see the BIG-IP version and <strong>no password prompt</strong>. If you get "Permission denied (publickey)",
+check the three lines above ran as root, that the key is the <code>ecdsa</code> one, and read
+<a href="OPERATIONS.html">OPERATIONS.html</a> section 8. If the BIG-IP's SSH access is limited by address
+(<strong>System &gt; Platform &gt; SSH IP Allow</strong>), your machine's address must be listed.</p>
+<h2 id="5-save-the-certificate-files">5. Save the certificate files</h2>
+<h3 id="51-where-to-put-them">5.1 Where to put them</h3>
+<p>One folder per certificate, under <code>~/f5-cert-push/certs/</code>. The name is your choice (<code>www</code>, <code>api</code>,
+<code>wildcard</code>...). Save the three PEM files there with <strong>these names</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cert.pem</code></td>
+<td>the server certificate only</td>
+</tr>
+<tr>
+<td><code>chain.pem</code></td>
+<td>the intermediate certificate(s) from your CA (leave it out if the CA gave none)</td>
+</tr>
+<tr>
+<td><code>privkey.pem</code></td>
+<td>the private key, <strong>without</strong> a passphrase</td>
+</tr>
+</tbody>
+</table>
+<h3 id="52-example-from-a-download">5.2 Example: from a download</h3>
+<p>Your CA usually sends a zip or several files. Typical names are <code>www_example_com.crt</code> (your certificate),
+<code>ca-bundle.crt</code> or <code>intermediate.crt</code> (the chain) and <code>www.example.com.key</code> (the key you generated with the
+request). Copy them into place:</p>
+<pre><code class="language-bash">mkdir -p ~/f5-cert-push/certs/www
+cd ~/f5-cert-push/certs/www
+cp ~/Downloads/www_example_com.crt   cert.pem
+cp ~/Downloads/ca-bundle.crt         chain.pem
+cp ~/Downloads/www.example.com.key   privkey.pem
+chmod 600 privkey.pem
+</code></pre>
+<p>(From Windows, your Downloads folder is at <code>/mnt/c/Users/&lt;you&gt;/Downloads</code> inside WSL.)</p>
+<p>If the CA gave you <strong>one</strong> file containing the certificate followed by the intermediates (often called
+<code>fullchain.pem</code> or a "bundle"), save it as <code>fullchain.pem</code> instead of <code>cert.pem</code> + <code>chain.pem</code>; the tool splits
+it for you.</p>
+<h3 id="53-what-kind-of-file-do-i-have-do-i-need-to-convert-it">5.3 What kind of file do I have? Do I need to convert it?</h3>
+<p>Certificates and keys come in several <strong>formats</strong>, and the file name does not tell you which one you have.
+<code>.crt</code>, <code>.cer</code>, <code>.pem</code>, <code>.key</code> and <code>.cert</code> are only names; the same name can hold different formats, and the
+same format can have different names. The tool needs the <strong>PEM</strong> format, which is plain text. If your file is
+already PEM you only have to <strong>rename or copy it</strong> to the name in section 5.1 (for example <code>cp www.crt
+cert.pem</code>). If it is not, it has to be <strong>converted</strong>; renaming a non-PEM file does not work.</p>
+<p><strong>Step 1: look at the file.</strong> Open it in a text editor (Notepad is fine, but do not save it), or run
+<code>head -2 FILE</code>.</p>
+<table>
+<thead>
+<tr>
+<th>What you see</th>
+<th>Format</th>
+<th>What to do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>First line <code>-----BEGIN CERTIFICATE-----</code></td>
+<td>PEM certificate</td>
+<td>Rename or copy to <code>cert.pem</code> (or <code>chain.pem</code> for an intermediate).</td>
+</tr>
+<tr>
+<td>First line <code>-----BEGIN PRIVATE KEY-----</code>, <code>-----BEGIN RSA PRIVATE KEY-----</code> or <code>-----BEGIN EC PRIVATE KEY-----</code></td>
+<td>PEM private key</td>
+<td>Rename or copy to <code>privkey.pem</code>.</td>
+</tr>
+<tr>
+<td><code>-----BEGIN ENCRYPTED PRIVATE KEY-----</code>, or a line <code>Proc-Type: 4,ENCRYPTED</code></td>
+<td>PEM key <strong>with a passphrase</strong></td>
+<td>Remove the passphrase first (below). The tool refuses these.</td>
+</tr>
+<tr>
+<td>Several <code>-----BEGIN CERTIFICATE-----</code> blocks</td>
+<td>PEM bundle</td>
+<td>Your certificate first, then the intermediates. Save it as <code>fullchain.pem</code>.</td>
+</tr>
+<tr>
+<td>Unreadable symbols (binary)</td>
+<td>DER</td>
+<td>Convert it (below).</td>
+</tr>
+<tr>
+<td>The file is a <code>.pfx</code> or <code>.p12</code>, or the CA called it a "PKCS#12" or "PFX" bundle</td>
+<td>PKCS#12</td>
+<td>Convert it (below). It holds the certificate, the chain and the key together and is protected by a password.</td>
+</tr>
+<tr>
+<td>First line <code>-----BEGIN PKCS7-----</code> or the file is a <code>.p7b</code></td>
+<td>PKCS#7</td>
+<td>Convert it (below). Contains certificates only, never the key.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Common file types, and what is usually inside</strong></p>
+<table>
+<thead>
+<tr>
+<th>Extension</th>
+<th>Usually</th>
+<th>Check anyway?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.pem</code></td>
+<td>PEM</td>
+<td>Rarely wrong, but a <code>.pem</code> can hold a cert, a key, or both. Look.</td>
+</tr>
+<tr>
+<td><code>.crt</code>, <code>.cert</code></td>
+<td>PEM certificate, sometimes DER</td>
+<td>Yes.</td>
+</tr>
+<tr>
+<td><code>.cer</code></td>
+<td>DER or PEM, about equally often</td>
+<td><strong>Yes.</strong></td>
+</tr>
+<tr>
+<td><code>.key</code></td>
+<td>PEM private key</td>
+<td>Yes: it may have a passphrase.</td>
+</tr>
+<tr>
+<td><code>.der</code></td>
+<td>DER</td>
+<td>It is binary: convert.</td>
+</tr>
+<tr>
+<td><code>.pfx</code>, <code>.p12</code></td>
+<td>PKCS#12</td>
+<td>Always convert.</td>
+</tr>
+<tr>
+<td><code>.p7b</code>, <code>.p7c</code></td>
+<td>PKCS#7 (certificates only)</td>
+<td>Always convert.</td>
+</tr>
+<tr>
+<td><code>.csr</code></td>
+<td>A certificate <strong>request</strong>, not a certificate</td>
+<td>Not usable here. Do not upload it as <code>cert.pem</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Step 2: convert if needed.</strong> (<code>openssl</code> is installed on Linux and WSL.) These commands read the original
+and write a new file; the original is left alone.</p>
+<pre><code class="language-bash"># DER certificate (binary .cer/.crt/.der) -&gt; PEM
+openssl x509 -inform der -in site.cer -out cert.pem
+
+# DER private key (binary) -&gt; PEM
+openssl pkey -inform der -in site.key -out privkey.pem
+
+# Key with a passphrase -&gt; key without one (asks for the passphrase once)
+openssl pkey -in encrypted.key -out privkey.pem
+
+# PFX / PKCS#12 (.pfx, .p12) -&gt; separate PEM files (asks for the bundle's password)
+openssl pkcs12 -in site.pfx -nokeys -clcerts -out cert.pem
+openssl pkcs12 -in site.pfx -nokeys -cacerts -out chain.pem
+openssl pkcs12 -in site.pfx -nocerts -nodes   -out privkey.pem      # -nodes = no passphrase
+
+# PKCS#7 (.p7b) -&gt; PEM certificates (then split: your cert -&gt; cert.pem, the rest -&gt; chain.pem)
+openssl pkcs7 -in site.p7b -print_certs -out all-certs.pem
+</code></pre>
+<p>If you run <code>pkcs12</code> with OpenSSL 3 and see "unsupported" or "legacy" errors on an old <code>.pfx</code>, add <code>-legacy</code> to
+the command.</p>
+<p><strong>Things that trip people up</strong></p>
+<ul>
+<li><strong>Keep your certificate first in a bundle.</strong> <code>fullchain.pem</code> must start with your server certificate,
+  followed by the intermediates. Putting an intermediate first makes the key not match.</li>
+<li><strong>Do not paste into Notepad and save.</strong> Notepad can add an invisible marker at the start of the file that
+  OpenSSL cannot read. If you must copy text, use a plain text editor set to UTF-8 <strong>without</strong> BOM, or rewrite
+  the file cleanly: <code>openssl x509 -in file -out cert.pem</code>.</li>
+<li><strong>Include the dashes.</strong> The <code>-----BEGIN ...-----</code> and <code>-----END ...-----</code> lines are part of the file.</li>
+<li><strong>Extra text around the PEM blocks</strong> (for example "Bag Attributes" or "subject=" lines, which <code>openssl
+  pkcs12</code> adds) is best removed, because the tool may refuse it. <code>openssl x509 -in file -out cert.pem</code> rewrites
+  a certificate cleanly (use <code>openssl pkey -in file -out privkey.pem</code> for a key).</li>
+<li><strong>Never upload a <code>.csr</code>.</strong> It is the request you sent to the CA, not the certificate they gave back.</li>
+<li><strong>Cert and key must belong together.</strong> If you have several of each, 5.4 shows how to check which pair
+  matches.</li>
+</ul>
+<h3 id="54-check-the-files-yourself-optional-and-the-tool-checks-again">5.4 Check the files yourself (optional, and the tool checks again)</h3>
+<pre><code class="language-bash">cd ~/f5-cert-push/certs/www
+openssl x509 -in cert.pem -noout -subject -issuer -enddate          # right name, right CA, new expiry?
+diff &lt;(openssl x509 -in cert.pem -noout -pubkey) &lt;(openssl pkey -in privkey.pem -pubout) &amp;&amp; echo &quot;key matches&quot;
+openssl verify -untrusted chain.pem cert.pem                        # needs the root in your system store
+</code></pre>
+<p>The tool will refuse to continue if the key does not match, the certificate is expired or too close to expiry,
+or the chain does not verify.</p>
+<h2 id="6-write-the-configuration">6. Write the configuration</h2>
+<p>Copy the example and edit it:</p>
+<pre><code class="language-bash">cd ~/f5-cert-push
+cp /path/to/f5-cert-push.conf.example f5-cert-push.conf     # the example is in the tarball you unpacked
+chmod 600 f5-cert-push.conf
+nano f5-cert-push.conf
+</code></pre>
+<p>A small, complete configuration for <strong>one BIG-IP, one certificate, one profile</strong>. Replace <code>YOURNAME</code> with
+your Linux user name (<code>whoami</code>) and use your own addresses and names:</p>
+<pre><code class="language-ini">[defaults]
+chain_check              = fail        # refuse a chain that does not verify
+min_days_valid           = 7
+auto_rollback            = yes         # put the old certificate back if the check afterwards fails
+strict_host_key_checking = yes         # only talk to BIG-IPs you trusted in section 4
+backup_dir_local         = /home/YOURNAME/f5-cert-push/backups
+log_file                 = /home/YOURNAME/f5-cert-push/f5-cert-push.log
+
+[f5:prod-a]
+host    = 10.0.0.11                    # the BIG-IP management address
+ssh_key = /home/YOURNAME/.ssh/f5_push_ecdsa
+
+[cert:www]
+cert          = /home/YOURNAME/f5-cert-push/certs/www/cert.pem
+chain         = /home/YOURNAME/f5-cert-push/certs/www/chain.pem
+key           = /home/YOURNAME/f5-cert-push/certs/www/privkey.pem
+object_prefix = www-example            # the name used for the objects on the BIG-IP
+
+[deploy:www]
+f5      = prod-a
+cert    = www
+profile = www-clientssl                # the existing client-ssl profile on the BIG-IP
+verify  = 10.1.10.10:443 www.example.com    # after the change, check this virtual server serves the new cert
+</code></pre>
+<p>What each part means:</p>
+<ul>
+<li><code>[f5:NAME]</code> is one BIG-IP. Add one per device.</li>
+<li><code>[cert:NAME]</code> is one certificate: where its files are, and <code>object_prefix</code>, the name its objects get on the
+  BIG-IP (new objects are named <code>www-example-cert-&lt;date-time&gt;.pem</code>, so old ones are never overwritten).</li>
+<li><code>[deploy:NAME]</code> says <strong>which profiles on which BIG-IPs get which certificate</strong>. <code>f5 = prod-a, prod-b</code>
+  deploys to several BIG-IPs. <code>profile =</code> may be repeated for several profiles. <code>verify =</code> takes
+  <code>address:port server-name</code> and is repeatable.</li>
+<li>Write <strong>full paths</strong> (<code>/home/you/...</code>), not <code>~</code>, and avoid spaces in names. If something is wrong the tool
+  prints exactly what it does not like and changes nothing.</li>
+</ul>
+<p>To find the profile names on the BIG-IP:</p>
+<pre><code class="language-bash">./f5-cert-push.sh --config f5-cert-push.conf --discover --f5 prod-a
+</code></pre>
+<p>Many certificates, many BIG-IPs and several environments (<code>env = prod</code> / <code>env = test</code>) are all just more
+sections; every setting is in <a href="CONFIGURATION.html">CONFIGURATION.html</a> and a full example is in
+<code>f5-cert-push.conf.example</code>.</p>
+<h2 id="7-renewing-a-certificate-the-routine">7. Renewing a certificate: the routine</h2>
+<p>Do it in a change window, the same way each time. <strong>Nothing changes on the BIG-IP until step 5.</strong> Steps 1 to 4
+are read-only. (From the folder <code>~/f5-cert-push</code>; add <code>--config f5-cert-push.conf</code> if the file is not in
+the current folder, which it is here.)</p>
+<ol>
+<li>
+<p><strong>Save the new files</strong> over the old ones in <code>certs/&lt;name&gt;/</code> (section 5).</p>
+</li>
+<li>
+<p><strong>Check the files and the configuration. No network.</strong></p>
+</li>
+</ol>
+<p><code>bash
+   ./f5-cert-push.sh --validate</code></p>
+<p>Look for: the right certificate (subject and expiry), <code>OK</code>, and no errors. Fix anything it reports first.</p>
+<ol start="3">
+<li><strong>Look at what is on the BIG-IP now. Read-only.</strong></li>
+</ol>
+<p><code>bash
+   ./f5-cert-push.sh --deploy www --check</code></p>
+<p>It shows the certificate currently in the profile and whether it differs from the new one.</p>
+<ol start="4">
+<li><strong>Rehearse. Prints every step, changes nothing.</strong></li>
+</ol>
+<p><code>bash
+   ./f5-cert-push.sh --deploy www --dry-run</code></p>
+<p>Read the list: the BIG-IP, the profile, the objects it would create, the verification it would do.</p>
+<ol start="5">
+<li><strong>Do it.</strong></li>
+</ol>
+<p><code>bash
+   ./f5-cert-push.sh --deploy www</code></p>
+<p>It backs up what is there (on the BIG-IP in <code>/shared/cert-backups/</code> and on your machine under <code>backups/</code>),
+   uploads and installs the new certificate, switches the profile(s) in one step, saves the configuration,
+   and checks that the virtual server now serves the new certificate. It prints a summary at the end.
+   If the check fails and <code>auto_rollback = yes</code>, it puts the old certificate back by itself and tells you
+   (exit code 3).</p>
+<ol start="6">
+<li><strong>Confirm from outside</strong> (the summary also states this):</li>
+</ol>
+<p><code>bash
+   echo | openssl s_client -connect 10.1.10.10:443 -servername www.example.com 2&gt;/dev/null \
+     | openssl x509 -noout -subject -enddate -fingerprint -sha256</code></p>
+<p>And open the site in a browser.</p>
+<ol start="7">
+<li><strong>Tidy up.</strong> Keep the <code>backups/</code> folder. Remove the key from <code>certs/&lt;name&gt;/</code> if your policy says so.</li>
+</ol>
+<p>Because you run this by hand, there is <strong>no cron job and no automatic push</strong>: the tool does nothing until you
+run step 5. Running step 5 again with the same certificate does nothing ("UP TO DATE").</p>
+<p>Several deployments at once: <code>./f5-cert-push.sh --all</code>, or <code>--env prod</code>. Use <code>--deploy NAME</code> while you are
+learning; it touches exactly one thing.</p>
+<h2 id="8-if-something-is-wrong-rolling-back">8. If something is wrong: rolling back</h2>
+<p>Automatic: if the post-change check fails, the tool already rolled back (read its message).</p>
+<p>Manual, any time later:</p>
+<pre><code class="language-bash">./f5-cert-push.sh --deploy www --list-backups                 # shows the backup sets, newest first
+./f5-cert-push.sh --deploy www --rollback --set 20261005-143015     # choose a set from that list
+</code></pre>
+<p>This puts the previous certificate back in the profile and verifies the backup files' checksums first.
+Each backup also contains a <code>restore.sh</code> you can use directly on the BIG-IP.</p>
+<h2 id="9-high-availability-pairs">9. High-availability pairs</h2>
+<p>Run the tool <strong>once, against the active BIG-IP</strong>, not once per unit. Certificates, keys and profiles are part of
+the synchronised configuration, so config-sync carries them to the peer. Refer to
+<a href="OPERATIONS.html">OPERATIONS.html</a> section 5 for the details. In short:</p>
+<ol>
+<li>Put <strong>only the active unit</strong> in the configuration (<code>[f5:...]</code>). The tool refuses a standby unit.</li>
+<li>Run the routine in section 7.</li>
+<li>Synchronise the pair as you normally do, from the BIG-IP:</li>
+</ol>
+<p><code>bash
+   tmsh run cm config-sync to-group YOUR-DEVICE-GROUP</code></p>
+<p>or in the web UI (<strong>Device Management &gt; Overview &gt; Sync</strong>). The tool reminds you when this is needed.
+4. Check the peer: <code>tmsh show cm sync-status</code> should say <strong>In Sync</strong>, and the same fingerprint should be served
+   after a failover test, if you do one.</p>
+<p>If the pair is <strong>not</strong> synchronising (sync disabled, or each unit is configured separately), run the routine
+against each unit in turn, active first.</p>
+<h2 id="10-quick-reference">10. Quick reference</h2>
+<pre><code class="language-bash">cd ~/f5-cert-push
+./f5-cert-push.sh --validate                          # check files + config (no network)
+./f5-cert-push.sh --list                              # what the configuration defines
+./f5-cert-push.sh --discover --f5 prod-a              # profiles and their current certificates
+./f5-cert-push.sh --deploy www --check                # compare with the BIG-IP (read-only)
+./f5-cert-push.sh --deploy www --dry-run              # rehearsal (changes nothing)
+./f5-cert-push.sh --deploy www                        # do it
+./f5-cert-push.sh --deploy www --list-backups
+./f5-cert-push.sh --deploy www --rollback --set TIME
+./f5-cert-push.sh --help
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Message</th>
+<th>Meaning / fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Permission denied (publickey)</code></td>
+<td>The key is not authorised on the BIG-IP (section 4), or it is not an ECDSA/RSA key.</td>
+</tr>
+<tr>
+<td><code>Host key verification failed</code></td>
+<td>You have not trusted the BIG-IP (section 4), or its host key changed. Compare fingerprints before updating <code>known_hosts</code>.</td>
+</tr>
+<tr>
+<td><code>private key does not match</code></td>
+<td>The key is from a different request than the certificate.</td>
+</tr>
+<tr>
+<td><code>does not verify against the supplied chain</code></td>
+<td>Wrong or old intermediate. Download the current chain from your CA.</td>
+</tr>
+<tr>
+<td><code>expires within min_days_valid</code></td>
+<td>The new certificate is about to expire; get a longer one.</td>
+</tr>
+<tr>
+<td><code>... is 'standby', not active</code></td>
+<td>Point the configuration at the active unit (section 9).</td>
+</tr>
+<tr>
+<td><code>another run is in progress</code> (exit 6)</td>
+<td>Someone else (or an earlier run) holds the lock. Wait; if it is stuck, see <a href="OPERATIONS.html">OPERATIONS.html</a> section 8.</td>
+</tr>
+<tr>
+<td>exit 3</td>
+<td>The change was rolled back automatically. The BIG-IP is back on the old certificate.</td>
+</tr>
+</tbody>
+</table>
+<p>Exit codes: <code>0</code> success, <code>1</code> a failure (the message says why), <code>2</code> usage error, <code>3</code> the change was rolled back,
+<code>4</code> <code>--check</code> found a certificate that is out of date, <code>5</code> a rollback failed (the BIG-IP may be in a mixed
+state; follow the printed restore command and call your BIG-IP administrator), <code>6</code> another run in progress.</p><footer>Generated from <code>docs/USER-GUIDE.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
+document.querySelectorAll('pre').forEach(function(p){
+  if(!navigator.clipboard){return}
+  var b=document.createElement('button');b.className='copy';b.textContent='Copy';
+  b.onclick=function(){navigator.clipboard.writeText(p.innerText.replace(/\nCopy$/,'')).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})};
+  p.appendChild(b);
+});
+</script></body></html>

@@ -1,0 +1,363 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Review brief: f5-cert-push</title><style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#5b6577;--line:#d9dee7;--code:#f3f5f8;--acc:#0b5cad;--side:#f7f8fb;--warn:#fff7e0;--warnb:#e3b341}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e4e8ef;--mut:#9aa5b8;--line:#2b3140;--code:#1d222c;--acc:#6cb2ff;--side:#191d25;--warn:#2a2412;--warnb:#a07c1c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:20px 16px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow:auto}
+nav .t{font-weight:700;margin:0 0 12px}
+nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+nav a:hover{background:var(--code)}
+nav a.cur{background:var(--acc);color:#fff}
+main{flex:1;min-width:0;max-width:60rem;padding:28px 36px 80px}
+h1{font-size:2rem;margin:.2em 0 .6em}
+h2{font-size:1.45rem;margin:2em 0 .6em;padding-bottom:.25em;border-bottom:1px solid var(--line)}
+h3{font-size:1.15rem;margin:1.6em 0 .4em}
+a{color:var(--acc)}
+code{background:var(--code);padding:.12em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.45;position:relative}
+pre code{background:none;padding:0;font-size:.86rem}
+table{border-collapse:collapse;display:block;overflow:auto;max-width:100%;margin:1em 0}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin:1em 0;padding:.6em 1em;background:var(--warn);border-left:4px solid var(--warnb);border-radius:4px}
+blockquote p{margin:.3em 0}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.copy{position:absolute;top:6px;right:6px;font:12px system-ui;padding:3px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--mut);cursor:pointer}
+footer{margin-top:3em;color:var(--mut);font-size:13px}
+@media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
+@media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html" class="cur">Review brief</a><a href="CHANGELOG.html">Changelog</a></nav><main><h1 id="review-brief-f5-cert-push">Review brief: f5-cert-push</h1>
+<p>This brief is for an <strong>independent, adversarial review</strong> of <code>f5-cert-push.sh</code> (a Bash tool that deploys
+TLS certificates to F5 BIG-IP devices). It says what the tool is for, what it must guarantee, where the
+risk concentrates, and how to run the evidence. <strong>Please try to break it.</strong> A finding with a reproducer is
+worth more than a style remark.</p>
+<p>Version under review: see <code>./f5-cert-push.sh --version</code>.</p>
+<h2 id="1-orientation-10-minutes">1. Orientation (10 minutes)</h2>
+<table>
+<thead>
+<tr>
+<th>Read</th>
+<th>For</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>README.md</code></td>
+<td>what it does, exit codes</td>
+</tr>
+<tr>
+<td><code>docs/SECURITY.md</code></td>
+<td>threat model and stated controls: <strong>the claims to falsify</strong></td>
+</tr>
+<tr>
+<td><code>docs/CONFIGURATION.md</code></td>
+<td>config semantics</td>
+</tr>
+<tr>
+<td><code>f5-cert-push.sh</code></td>
+<td>the code (one file, about 2,300 lines)</td>
+</tr>
+<tr>
+<td><code>tests/offline.sh</code>, <code>tests/f5.sh</code>, <code>tests/lib.sh</code></td>
+<td>the evidence</td>
+</tr>
+</tbody>
+</table>
+<p>Shape of the script, top to bottom: header and globals; logging and cleanup traps; built-in defaults;
+<strong>config parser</strong> (<code>parse_config</code>); <strong>config validation</strong> (<code>check_value</code>, <code>validate_config</code>);
+<strong>local certificate preparation</strong> (<code>prepare_cert</code>); <strong>BIG-IP access</strong> (<code>f5_load</code>, <code>f5_sh</code>, <code>f5_put</code>, <code>f5_get</code>)
+and the <strong>remote scripts</strong> (<code>define R_*</code>, bash 4.2 code that runs on the BIG-IP); <strong>per-job stages</strong>
+(<code>job_probe</code>, <code>job_gate</code>, <code>job_select_targets</code>, <code>job_backup</code>, <code>job_stage</code>, <code>job_install_*</code>,
+<code>job_switch_profiles</code>, <code>job_verify_*</code>, <code>job_rollback</code>, <code>job_prune</code>); the <strong>job runner</strong> (<code>run_job</code>);
+<strong>selection and actions</strong>; <strong>CLI</strong> (<code>parse_args</code>, <code>main</code>).</p>
+<h2 id="2-what-the-tool-must-guarantee-the-invariants">2. What the tool must guarantee (the invariants)</h2>
+<p>Try to violate each. A violation is a bug even if no exploit follows.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Invariant</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>I1</strong></td>
+<td><strong>No value from the config file, the command line, a certificate, or the BIG-IP is ever interpreted as code</strong> on the local host or on the BIG-IP, and none can become an option to <code>ssh</code>, <code>openssl</code>, <code>tmsh</code>, <code>rm</code>, <code>find</code>, etc.</td>
+</tr>
+<tr>
+<td><strong>I2</strong></td>
+<td><strong>Until the backup is complete and verified, nothing on the BIG-IP that affects traffic or configuration changes.</strong> (The only writes before that point are the backup directory, the staging directory and the BIG-IP-side lock.)</td>
+</tr>
+<tr>
+<td><strong>I3</strong></td>
+<td><strong>All profile changes for one job happen in one tmsh transaction</strong>: all or none. There is no moment where one profile has the new certificate and another (of the same job) does not, and no moment where a profile has a new key with an old certificate.</td>
+</tr>
+<tr>
+<td><strong>I4</strong></td>
+<td><strong>After any failure that occurs once profiles may have changed</strong>, either the profiles are confirmed back on their previous certificate/chain/key (exit 3), or the tool reports <code>CRITICAL</code> (exit 5). It must never report success or a plain error while leaving the new certificate live unintentionally (except <code>auto_rollback = no</code>, which reports <code>FAILED_CHANGED</code> and says so).</td>
+</tr>
+<tr>
+<td><strong>I5</strong></td>
+<td><strong>Private key material is written only to:</strong> the private scratch dir (0700, tmpfs if available), the BIG-IP staging dir (0700, <code>mktemp -d</code>), the BIG-IP key objects, and the backups (0700/0600). It is <strong>never logged, printed or placed in a command line.</strong></td>
+</tr>
+<tr>
+<td><strong>I6</strong></td>
+<td><strong>Cleanup on every exit path</strong>, including <code>SIGINT</code>/<code>SIGTERM</code>/<code>SIGHUP</code>: scratch dir shredded and removed, staging dir removed, both locks released.</td>
+</tr>
+<tr>
+<td><strong>I7</strong></td>
+<td><strong>Pruning only ever removes</strong> backup directories matching <code>^[0-9]{8}-[0-9]{6}$</code> under the tool's own backup root, and certificate objects named <code>&lt;prefix&gt;-(cert|chain|privkey)-&lt;timestamp&gt;.pem</code>; never an object a profile still uses.</td>
+</tr>
+<tr>
+<td><strong>I8</strong></td>
+<td><strong>Mutual exclusion</strong>: two runs against the same BIG-IP (same host or different hosts) cannot interleave their changes.</td>
+</tr>
+<tr>
+<td><strong>I9</strong></td>
+<td><strong>Exit codes are truthful</strong> and follow the documented severity order.</td>
+</tr>
+<tr>
+<td><strong>I10</strong></td>
+<td><strong>Idempotence</strong>: if every target already has this exact certificate, nothing changes and no backup is made.</td>
+</tr>
+<tr>
+<td><strong>I11</strong></td>
+<td><strong>No accidental fleet run</strong>: nothing deploys without an explicit selector.</td>
+</tr>
+<tr>
+<td><strong>I12</strong></td>
+<td><strong>Refusal to act on a BIG-IP that is not in a known-good state</strong> (config not fully loaded; not active).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="3-attack-surface-by-function">3. Attack surface, by function</h2>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Where</th>
+<th>What to try</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Config file parsing</td>
+<td><code>parse_config</code>, <code>key_allowed</code>, <code>check_config_permissions</code></td>
+<td>Lines that confuse the regexes; CR/LF/tab/NUL-adjacent bytes; quotes; very long lines; repeated keys; a section header as a value; BOM; locale effects</td>
+</tr>
+<tr>
+<td>Value validation</td>
+<td><code>check_value</code>, <code>is_*</code>, <code>validate_config</code></td>
+<td>A value that passes a regex but is dangerous downstream (see section 4); bash <code>[[ =~ ]]</code> pitfalls (anchoring, <code>.</code> and <code>*</code> in patterns, locale ranges); integer handling (<code>10#</code>, octal, empty, huge)</td>
+</tr>
+<tr>
+<td>Remote argument passing</td>
+<td><code>f5_sh</code> (<code>printf %q</code>), every <code>R_*</code> call site</td>
+<td>Any argument that could be re-parsed by the remote shell; empty arguments; arguments that start with <code>-</code>; arguments containing <code>:</code> or <code>|</code> (used as field separators in specs and replies)</td>
+</tr>
+<tr>
+<td><strong>Remote scripts</strong></td>
+<td><code>R_LIB</code>, <code>R_BACKUP</code>, <code>R_INSTALL</code>, <code>R_TXN</code>, <code>R_PRUNE_*</code>, <code>R_LOCK</code>, <code>R_STAGE</code></td>
+<td>Word-splitting, globbing, unquoted expansions, <code>set -u</code> gaps, <strong>the generated <code>restore-&lt;TS&gt;.sh</code></strong> (built from names; is every name provably safe inside its single-quoted <code>echo</code> lines and heredocs?), field-separator collisions, quoting of <code>rm -rf</code> targets</td>
+</tr>
+<tr>
+<td>tmsh output parsing</td>
+<td><code>R_PROBE</code>, <code>R_OBJINFO</code>, <code>R_DISCOVER</code>, <code>job_probe</code>, <code>job_objinfo</code></td>
+<td>Hostile or unusual profile/entry/object names returned by a (compromised or quirky) BIG-IP; names containing <code>|</code>; partition-qualified names; output format differences between BIG-IP versions</td>
+</tr>
+<tr>
+<td>Local file writes from remote data</td>
+<td><code>job_backup</code> (<code>f5_get</code> destinations), <code>job_prune</code> (local <code>rm -rf</code>)</td>
+<td>Path traversal via a returned file name; symlinks in the backup dir; the validation of returned names</td>
+</tr>
+<tr>
+<td>Key material handling</td>
+<td><code>prepare_cert</code>, <code>copy_src</code>, <code>job_stage</code>, <code>wipe_dir</code>, <code>make_work_dir</code>, <code>cleanup</code></td>
+<td>Any path where a key lands outside the declared locations; leaks through <code>ps</code>, logs, error messages or <code>set -x</code>; tmpfs fallback behaviour; race between validation and upload</td>
+</tr>
+<tr>
+<td>Locking</td>
+<td><code>lock_acquire</code>, <code>remote_lock_acquire</code>, <code>R_LOCK</code>, <code>R_UNLOCK</code></td>
+<td>Races (check-then-act), stale-lock logic, PID reuse, lock release by a non-owner, behaviour when the BIG-IP is unreachable during release</td>
+</tr>
+<tr>
+<td>State machine</td>
+<td><code>run_job</code>, <code>job_handle_failure</code>, <code>job_rollback</code></td>
+<td>A failure ordering that leaves the BIG-IP changed but reported as success or plain error; rollback that "succeeds" without actually restoring; double-fault paths</td>
+</tr>
+<tr>
+<td>SSH connection reuse</td>
+<td><code>f5_load</code>, <code>f5_close</code></td>
+<td>The control socket (private scratch dir): can another local user reach it? Is it always closed? What if the master dies mid-job, or <code>timeout</code> kills a client during master set-up?</td>
+</tr>
+<tr>
+<td>Interrupts</td>
+<td><code>cleanup</code>, traps</td>
+<td>Signals at each stage; <code>kill -9</code> (what is left, and is it recoverable); <code>set -u</code> with empty arrays on bash 4.2</td>
+</tr>
+<tr>
+<td><strong>Upload wrapper</strong></td>
+<td><code>f5-cert-install.sh</code>: <code>process_upload</code>, <code>clear_upload</code>, <code>prune_releases</code>, <code>main</code></td>
+<td>Runs as root over a directory <strong>writable by uploaders</strong>. Symlinks, hard links, FIFOs, devices or races planted in <code>incoming/</code>; the <code>dd iflag=nofollow,nonblock</code>-then-inspect copy; names of folders; the atomic <code>current</code> switch (<code>ln</code> + <code>mv -T</code>); what a hostile upload can make root read, write or print (the <code>FAILED</code> file is written into the uploader-writable folder)</td>
+</tr>
+<tr>
+<td>Selection</td>
+<td><code>select_jobs</code>, <code>parse_args</code>, <code>main</code></td>
+<td>Ways to run more than intended; <code>--lineage</code> edge cases (trailing slash, symlinks, empty); disabled deployments</td>
+</tr>
+</tbody>
+</table>
+<h2 id="4-specific-hypotheses-worth-testing">4. Specific hypotheses worth testing</h2>
+<p>These are the places the author is least sure about. They are leads, not claims.</p>
+<ol>
+<li><strong>Field separators.</strong> Specs and replies use <code>:</code> and <code>|</code>. Object/profile/entry names are validated to
+   <code>[A-Za-z0-9._-]</code> (plus a leading <code>/Partition/</code>), both when they come from the config and when they come
+   back from the BIG-IP (<code>safe_obj</code>, applied in <code>job_probe</code> before anything enters <code>ENT_LIST</code>). Confirm that
+   nothing <em>else</em> can reach those fields.</li>
+<li><strong><code>restore-&lt;TS&gt;.sh</code> generation.</strong> It embeds names from the BIG-IP (old binding) into <code>echo '...'</code> lines and
+   <code>ensure</code>/<code>force</code> calls. The names came from the BIG-IP's own <code>tmsh</code> output. If a hostile name contained a
+   single quote, would the generated script be injectable? (A BIG-IP would have to be hostile or the admin
+   already powerful, but the restore script runs as root later, possibly from a cron or by a different operator.)</li>
+<li><strong><code>find_pem</code> on the BIG-IP</strong> reconstructs a filestore path from an object name and matches it with a regex
+   built from that name. Can a name cause it to read an unintended file?</li>
+<li><strong><code>R_PRUNE_BACKUPS</code> / local prune</strong>: <code>rm -rf -- "${ROOT:?}/$d"</code>. <code>ROOT</code> comes from <code>backup_dir_remote</code> +
+   prefix. Is there a config that makes <code>ROOT</code> dangerous? (<code>/</code> alone is rejected; what about <code>/shared/</code>, <code>/etc</code>?)</li>
+<li><strong>Bash 4.2 compatibility</strong> (RHEL 7): empty-array expansion under <code>set -u</code>, <code>${var,,}</code>, <code>[[ -v ]]</code>,
+   associative-array edge cases. The script targets 4.2+.</li>
+<li><strong><code>sanitize</code> and log forging</strong>: is every value that originates remotely or from a certificate passed
+   through it before being printed or logged?</li>
+<li><strong>SNI derivation</strong> from a certificate's SAN/CN (attacker-influenced data if a third party issued the
+   certificate): does it reach a command line unquoted, or the BIG-IP?</li>
+<li><strong>Time-of-check/time-of-use</strong> between <code>prepare_cert</code> and the upload (mitigated by copying once into the
+   scratch dir; is the mitigation complete? what about the <code>le_dir</code> symlink targets?).</li>
+<li><strong>Verification weaknesses</strong>: can <code>job_verify_endpoints</code> report success without actually proving the
+   virtual server serves the new certificate (for example a fingerprint read from the wrong handshake, a
+   stale cached response, or an empty result compared to an empty expectation)?</li>
+<li><strong><code>job_is_current</code></strong> compares the leaf fingerprint only. A renewal that keeps the leaf but changes the chain
+    is ignored (documented; <code>--force</code> redeploys). Is there any case where the same leaf fingerprint could
+    still mean a different key or profile binding that matters?</li>
+<li><strong>Transaction failure detection</strong> relies on matching tmsh error text/codes in <code>tmsh_failed</code> and then
+    <strong>re-reading</strong> state. Are there tmsh failure modes it does not match?</li>
+<li><strong>Exit-code aggregation</strong> (<code>overall_exit</code>) and <code>--fail-fast</code>: any mix of results that returns 0 incorrectly?</li>
+<li><strong>Interaction of <code>set -f</code> (noglob)</strong> with the rest of the local script: anything that silently relies on
+    globbing?</li>
+<li><strong>The upload wrapper's trust boundary.</strong> An uploader can write anything into their folder at any time.
+    Can they get root to read a file they cannot (via a hard link on a system without
+    <code>fs.protected_hardlinks</code>), install something that was not validated, delete or overwrite outside their
+    folder, or leak content through <code>FAILED</code>? Can a crafted folder name or <code>READY</code> cause harm?</li>
+</ol>
+<h2 id="5-running-the-evidence">5. Running the evidence</h2>
+<pre><code class="language-bash">tests/offline.sh                      # no BIG-IP needed; Linux; about a minute
+shellcheck f5-cert-push.sh tests/*.sh # not run by the author (unavailable); please run it
+# with a LAB BIG-IP you may modify (creates and removes zzz-* objects only):
+F5_TEST_CONFIRM=yes F5_TEST_HOST=... F5_TEST_KEY=... tests/f5.sh
+</code></pre>
+<p>See <code>docs/TESTING.md</code>. <strong>Do not run <code>tests/f5.sh</code> against a production BIG-IP.</strong></p>
+<p>To reproduce a hostile-config finding without a BIG-IP: write the config, run
+<code>./f5-cert-push.sh --config FILE --list</code> (parses and validates only). For a finding that needs a BIG-IP
+response, describe the exact tmsh output; the remote scripts can be fed canned input.</p>
+<h2 id="6-out-of-scope-stated-limitations-and-non-goals">6. Out of scope (stated limitations and non-goals)</h2>
+<ul>
+<li>A compromised host running the tool or a compromised BIG-IP is <strong>not</strong> defended against (see SECURITY.md
+  section 5). Findings that begin "if the attacker is root on the host" are out of scope; findings that
+  begin "a hostile BIG-IP reply can make the tool do X on the host" are <strong>in</strong> scope.</li>
+<li>Supporting encrypted private keys, <code>server-ssl</code> profiles, HA synchronisation (documented non-goals).</li>
+<li>BIG-IP versions other than 17.1.3.4 (untested); please note version-specific assumptions you spot.</li>
+<li>Windows / macOS hosts.</li>
+</ul>
+<h2 id="6a-known-gaps-already-noted-by-the-author-still-worth-your-view">6a. Known gaps (already noted by the author; still worth your view)</h2>
+<ul>
+<li>The standby refusal and "configuration not loaded" refusal (<code>job_gate</code>) were <strong>never exercised against a
+  real device in those states</strong> (the lab unit is standalone and healthy). Review them by reading.</li>
+<li><code>shellcheck</code> was not run (not installed where developed).</li>
+<li>Tests do not cover <code>kill -9</code> or power loss.</li>
+</ul>
+<h2 id="7-issues-the-author-already-found-and-fixed-during-development">7. Issues the author already found and fixed during development</h2>
+<p>Listed so they are not re-reported, and because each shows a class of mistake worth probing for elsewhere.</p>
+<table>
+<thead>
+<tr>
+<th>Class</th>
+<th>Issue (fixed)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Argument re-parsing</td>
+<td><code>ssh host bash -s -- a b</code> does not preserve argument boundaries; a <code>|</code> separator became a pipe. Fixed by <code>printf %q</code> on every argument.</td>
+</tr>
+<tr>
+<td>Output-format assumption</td>
+<td><code>tmsh list sys crypto cert one-line</code> prints nothing (silently); retention did nothing while reporting success. Fixed; uses <code>sys file ssl-cert</code>.</td>
+</tr>
+<tr>
+<td>Format mismatch</td>
+<td>Fingerprints compared with and without colons, so every run looked out of date. Found by a live read-only run.</td>
+</tr>
+<tr>
+<td>Locale dependence</td>
+<td><code>[[ =~ [^[:print:]] ]]</code> let UTF-8 (a BOM) through in a locale where high bytes count as printable. Fixed with an explicit byte range.</td>
+</tr>
+<tr>
+<td>Environment assumption</td>
+<td><code>/dev/shm</code> writable-test passed but <code>mktemp</code> failed there. Fixed with fallback.</td>
+</tr>
+<tr>
+<td>Symlink mode</td>
+<td><code>stat</code> reported a symlink's mode (777), a false "world-readable key" warning. Fixed with <code>stat -L</code>.</td>
+</tr>
+<tr>
+<td>Precedence</td>
+<td>A config <code>le_dir</code> silently back-filled files when the command line named others. Fixed.</td>
+</tr>
+<tr>
+<td>Parsing</td>
+<td>A naive <code>awk /chain /</code> matched the <code>cert-key-chain {</code> header. Anchored on indentation.</td>
+</tr>
+<tr>
+<td>Dangling octal</td>
+<td><code>keep = 08</code> would break <code>(( ))</code>. Normalised with <code>10#</code>.</td>
+</tr>
+<tr>
+<td>Glob expansion</td>
+<td>Unquoted expansion of SAN text. Fixed with <code>set -f</code>.</td>
+</tr>
+<tr>
+<td>Platform behaviour</td>
+<td>OpenSSL 1.0.x <code>verify -partial_chain</code> accepts a mismatched chain and exits 0 on failure. Chain verification is skipped on OpenSSL &lt; 1.1.0 rather than claimed. Found by running the tests on the BIG-IP's own bash 4.2 / OpenSSL 1.0.2.</td>
+</tr>
+<tr>
+<td>Listing scope</td>
+<td><code>tmsh list ... recursive</code> stays inside <code>/Common</code> unless preceded by <code>cd /</code>; partition pruning and <code>--discover</code> missed other partitions. Fixed.</td>
+</tr>
+<tr>
+<td>Signal during lock acquisition</td>
+<td>A <code>SIGTERM</code> between the BIG-IP creating its lock and the reply being read leaked the lock. The token is now recorded before the call.</td>
+</tr>
+<tr>
+<td>Time zones</td>
+<td>Object and backup names were local time; now UTC so they sort chronologically through DST changes.</td>
+</tr>
+<tr>
+<td>Cross-host races</td>
+<td>The lock was local only. Added a BIG-IP-side lock with an owner token.</td>
+</tr>
+<tr>
+<td>Unvalidated remote data</td>
+<td>Names read back from the BIG-IP (used in rollback specs and the restore script) were not re-validated. Added <code>safe_obj</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="8-how-to-report">8. How to report</h2>
+<p>For each finding please give: <strong>title; severity (critical / high / medium / low); the invariant or claim it
+breaks (I1..I12 or a SECURITY.md sentence); a reproducer</strong> (config + command, or canned remote output); the
+code location (function name); and a suggested fix. Also welcome: parts of the code you found <strong>hard to
+reason about</strong>; those are risks in themselves.</p><footer>Generated from <code>REVIEW.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
+document.querySelectorAll('pre').forEach(function(p){
+  if(!navigator.clipboard){return}
+  var b=document.createElement('button');b.className='copy';b.textContent='Copy';
+  b.onclick=function(){navigator.clipboard.writeText(p.innerText.replace(/\nCopy$/,'')).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})};
+  p.appendChild(b);
+});
+</script></body></html>

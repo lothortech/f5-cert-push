@@ -1,0 +1,483 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Operations guide</title><style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#5b6577;--line:#d9dee7;--code:#f3f5f8;--acc:#0b5cad;--side:#f7f8fb;--warn:#fff7e0;--warnb:#e3b341}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e4e8ef;--mut:#9aa5b8;--line:#2b3140;--code:#1d222c;--acc:#6cb2ff;--side:#191d25;--warn:#2a2412;--warnb:#a07c1c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:20px 16px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow:auto}
+nav .t{font-weight:700;margin:0 0 12px}
+nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+nav a:hover{background:var(--code)}
+nav a.cur{background:var(--acc);color:#fff}
+main{flex:1;min-width:0;max-width:60rem;padding:28px 36px 80px}
+h1{font-size:2rem;margin:.2em 0 .6em}
+h2{font-size:1.45rem;margin:2em 0 .6em;padding-bottom:.25em;border-bottom:1px solid var(--line)}
+h3{font-size:1.15rem;margin:1.6em 0 .4em}
+a{color:var(--acc)}
+code{background:var(--code);padding:.12em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.45;position:relative}
+pre code{background:none;padding:0;font-size:.86rem}
+table{border-collapse:collapse;display:block;overflow:auto;max-width:100%;margin:1em 0}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin:1em 0;padding:.6em 1em;background:var(--warn);border-left:4px solid var(--warnb);border-radius:4px}
+blockquote p{margin:.3em 0}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.copy{position:absolute;top:6px;right:6px;font:12px system-ui;padding:3px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--mut);cursor:pointer}
+footer{margin-top:3em;color:var(--mut);font-size:13px}
+@media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
+@media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html" class="cur">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a></nav><main><h1 id="operations-guide">Operations guide</h1>
+<ol>
+<li><a href="#1-first-time-setup">First-time setup</a></li>
+<li><a href="#2-day-to-day-use">Day-to-day use</a></li>
+<li><a href="#3-automating-renewals-and-monitoring">Automating renewals and monitoring</a></li>
+<li><a href="#4-rollback">Rollback</a></li>
+<li><a href="#5-ha-pairs-and-multiple-big-ips">HA pairs and multiple BIG-IPs</a></li>
+<li><a href="#6-backups-retention-and-housekeeping">Backups, retention and housekeeping</a></li>
+<li><a href="#7-logs-and-output">Logs and output</a></li>
+<li><a href="#8-troubleshooting">Troubleshooting</a></li>
+<li><a href="#known-limitations">Known limitations</a></li>
+<li><a href="#10-removing-the-tool">Removing the tool</a></li>
+</ol>
+<hr />
+<h2 id="1-first-time-setup">1. First-time setup</h2>
+<h3 id="11-create-a-key-dedicated-to-this-tool">1.1 Create a key dedicated to this tool</h3>
+<p>Give the tool its own SSH key so it can be revoked without affecting anyone else. Use <strong>ECDSA P-384</strong>:
+the BIG-IP's SSH daemon is commonly restricted (FIPS-style settings accept only ECDSA and RSA), and an
+ed25519 key is then silently ignored.</p>
+<pre><code class="language-bash">ssh-keygen -t ecdsa -b 384 -N '' -C 'f5-cert-push' -f /root/.ssh/f5_push_ecdsa
+chmod 600 /root/.ssh/f5_push_ecdsa
+cat /root/.ssh/f5_push_ecdsa.pub           # one line starting ecdsa-sha2-nistp384
+</code></pre>
+<blockquote>
+<p><strong>A key with no passphrase is root on the BIG-IP.</strong> Whoever can read this file can change the BIG-IP.
+Keep it readable by the account that runs the tool only (mode 600), on a host you trust. If you need a
+passphrase, load the key into an <code>ssh-agent</code> and omit <code>ssh_key</code> from the config; the tool then uses the agent.</p>
+</blockquote>
+<h3 id="12-authorise-the-key-on-each-big-ip">1.2 Authorise the key on each BIG-IP</h3>
+<p>On the BIG-IP (console or an existing admin session), as root:</p>
+<pre><code class="language-bash">echo 'ecdsa-sha2-nistp384 AAAA...paste the .pub line... f5-cert-push' &gt;&gt; /var/ssh/root/authorized_keys
+chmod 600 /var/ssh/root/authorized_keys
+restorecon -v /var/ssh/root/authorized_keys
+</code></pre>
+<p>Notes learned the hard way:</p>
+<ul>
+<li>On BIG-IP, <code>/root/.ssh/authorized_keys</code> is a <strong>symlink</strong> to <code>/var/ssh/root/authorized_keys</code>. Append to the target.</li>
+<li>The file needs the SELinux label <code>ssh_home_t</code>. A wrong label makes sshd ignore every key, <strong>with no error
+  in the log</strong>. <code>restorecon</code> fixes it; that is what the last command is for.</li>
+<li>If a key is present and correct but login still fails, check <code>/config/ssh/sshd_config</code> for
+  <code>PubkeyAcceptedKeyTypes</code>. The BIG-IP may only accept ECDSA and RSA keys.</li>
+<li>A BIG-IP <strong>license reload</strong> can re-apply SSH hardening, so a key type that worked before may stop working after.</li>
+</ul>
+<h3 id="13-pin-the-big-ips-host-key">1.3 Pin the BIG-IP's host key</h3>
+<p>The tool defaults to <code>strict_host_key_checking = yes</code>, so the BIG-IP's SSH host key must be known first.
+Fetch it and <strong>compare the fingerprint with what the BIG-IP itself shows</strong> before trusting it:</p>
+<pre><code class="language-bash">ssh-keyscan -t ecdsa BIGIP_ADDRESS &gt;&gt; /root/.ssh/known_hosts
+ssh-keygen -lf &lt;(ssh-keyscan -t ecdsa BIGIP_ADDRESS 2&gt;/dev/null)     # fingerprint to compare
+# on the BIG-IP:   ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
+</code></pre>
+<p>(Or set <code>strict_host_key_checking = accept-new</code> for a lab to trust first contact and pin it automatically.)</p>
+<p>Test the login exactly as the tool will make it:</p>
+<pre><code class="language-bash">ssh -i /root/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes root@BIGIP_ADDRESS 'tmsh show sys version | head -5'
+</code></pre>
+<h3 id="14-write-the-configuration">1.4 Write the configuration</h3>
+<pre><code class="language-bash">cp f5-cert-push.conf.example /etc/f5-cert-push.conf
+chmod 600 /etc/f5-cert-push.conf
+$EDITOR /etc/f5-cert-push.conf
+</code></pre>
+<p>Start with one BIG-IP, one certificate, one deployment. Find the profile names with:</p>
+<pre><code class="language-bash">./f5-cert-push.sh --config /etc/f5-cert-push.conf --discover --f5 prod-a
+</code></pre>
+<h3 id="15-validate-rehearse-deploy">1.5 Validate, rehearse, deploy</h3>
+<pre><code class="language-bash">./f5-cert-push.sh --validate                   # config + certificate files, no network
+./f5-cert-push.sh --deploy prod-www --check    # read-only: what is on the BIG-IP now?
+./f5-cert-push.sh --deploy prod-www --dry-run  # shows every step it would take
+./f5-cert-push.sh --deploy prod-www            # do it
+</code></pre>
+<p>On the first real deploy, watch the output and confirm afterwards from outside
+(<code>openssl s_client -connect VIP:443 -servername NAME</code>).</p>
+<hr />
+<h2 id="2-day-to-day-use">2. Day-to-day use</h2>
+<pre><code class="language-bash">f5-cert-push.sh --env prod --check        # is anything stale?  (exit 4 = yes)
+f5-cert-push.sh --env prod                # deploy everything stale in prod
+f5-cert-push.sh --deploy prod-www --force # redeploy even though it is current
+f5-cert-push.sh --all --quiet             # everything, terse
+</code></pre>
+<p>Deploying is <strong>idempotent</strong>: if every targeted profile entry already uses this exact certificate (compared
+by SHA-256 fingerprint), the deployment is skipped with <code>UPTODATE</code>, no backup is taken and nothing changes.</p>
+<h3 id="what-a-deployment-does-in-order">What a deployment does, in order</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Step</th>
+<th>If it fails</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Validate the local files</td>
+<td>stop; nothing touched</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Take the per-BIG-IP locks (on this host, and on the BIG-IP)</td>
+<td>exit 6</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Connect; check the BIG-IP is fully loaded, active, and the partition and profiles exist</td>
+<td>stop; nothing touched</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Decide which entry of each profile to change; compare fingerprints</td>
+<td>stop, or <code>UPTODATE</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Back up</strong> the current objects to the BIG-IP and here; verify checksums</td>
+<td>stop; nothing touched</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Upload to a private staging directory; verify checksums on the BIG-IP</td>
+<td>stop; staging removed</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Install</strong> the new objects under versioned names</td>
+<td>new objects removed; nothing touched</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>Switch</strong> all profiles in one transaction and save</td>
+<td>transaction failed: nothing changed, new objects removed</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Verify bindings, then the endpoints</td>
+<td><strong>roll back</strong> (exit 3), or exit 1 if <code>auto_rollback = no</code></td>
+</tr>
+<tr>
+<td>10</td>
+<td>Prune old backups and versions</td>
+<td>warning only</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Summary</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>Steps 1 to 7 cannot alter what the BIG-IP serves. The single moment of change is step 8.</p>
+<h3 id="reading-the-summary">Reading the summary</h3>
+<pre><code>==================== SUMMARY ====================
+  DEPLOYMENT@BIG-IP                  RESULT         DETAIL
+  prod-www@prod-a                    UPDATED        deployed; expires Nov 25 02:18:07 2026 GMT
+  prod-www@prod-b                    UPTODATE       already serving this certificate
+  prod-api@prod-a                    ROLLED_BACK    a verification endpoint is not serving ...
+=================================================
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Result</th>
+<th>Meaning</th>
+<th>Exit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>UPDATED</code></td>
+<td>Deployed and verified</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>UPTODATE</code></td>
+<td>Already current; nothing done</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>DRYRUN</code></td>
+<td><code>--dry-run</code>; nothing done</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>RESTORED</code></td>
+<td><code>--rollback</code> completed</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>OUTDATED</code></td>
+<td><code>--check</code>: needs a deploy</td>
+<td>4</td>
+</tr>
+<tr>
+<td><code>FAILED</code></td>
+<td>Failed; see the message. The BIG-IP is unchanged</td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>FAILED_CHANGED</code></td>
+<td>Verification failed, <code>auto_rollback = no</code>, so the BIG-IP <strong>stays on the new certificate</strong>; the message gives the rollback command</td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>ROLLED_BACK</code></td>
+<td>Failed after the switch; put back automatically</td>
+<td>3</td>
+</tr>
+<tr>
+<td><code>CRITICAL</code></td>
+<td>Failed and the automatic rollback <strong>also</strong> failed; act now</td>
+<td>5</td>
+</tr>
+<tr>
+<td><code>LOCKED</code></td>
+<td>Another run holds the lock</td>
+<td>6</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-automating-renewals-and-monitoring">3. Automating renewals and monitoring</h2>
+<h3 id="31-from-certbot">3.1 From certbot</h3>
+<pre><code class="language-bash">#!/usr/bin/env bash
+# /etc/letsencrypt/renewal-hooks/deploy/f5-cert-push.sh   (chmod 750, owned by root)
+exec /opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf \
+     --lineage &quot;$RENEWED_LINEAGE&quot; --quiet
+</code></pre>
+<p><code>--lineage</code> selects the deployments whose <code>[cert:]</code> has <code>le_dir</code> equal to the renewed lineage. A lineage
+with no matching deployment exits 0 with a notice, so the hook never fails a renewal for an unrelated
+certificate. If a BIG-IP deployment fails, certbot's hook reports the non-zero exit; the renewal itself is
+unaffected.</p>
+<h3 id="32-catch-drift-a-scheduled-check">3.2 Catch drift: a scheduled check</h3>
+<p>A renewal can succeed while the push fails (network, a lock, a BIG-IP that was down). Run a read-only check
+regularly and alert on exit 4:</p>
+<pre><code class="language-bash"># /etc/cron.d/f5-cert-check
+17 6 * * *  root  /opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --all --check --quiet \
+                  || logger -t f5-cert-push &quot;a BIG-IP is out of date or unreachable (exit $?)&quot;
+</code></pre>
+<p><code>--check</code> takes no lock and changes nothing. Exit 4 = out of date; 1 = could not check.</p>
+<h3 id="33-exit-code-contract-for-other-systems">3.3 Exit-code contract for other systems</h3>
+<table>
+<thead>
+<tr>
+<th>Exit</th>
+<th>Suggested action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>none</td>
+</tr>
+<tr>
+<td>1</td>
+<td>investigate; the message says why</td>
+</tr>
+<tr>
+<td>3</td>
+<td>a deploy was rolled back: the new certificate is <strong>not</strong> live. Investigate the verification failure</td>
+</tr>
+<tr>
+<td>4</td>
+<td>schedule a deploy</td>
+</tr>
+<tr>
+<td>5</td>
+<td>page someone: the BIG-IP may be in a mixed state; follow the printed restore command</td>
+</tr>
+<tr>
+<td>6</td>
+<td>retry later; another run is in progress</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4-rollback">4. Rollback</h2>
+<h3 id="41-automatic">4.1 Automatic</h3>
+<p>After switching profiles the tool re-reads them and checks each target entry uses exactly the new
+objects, then probes your <code>verify</code> endpoints. If anything fails and <code>auto_rollback = yes</code> (the default) it
+runs the restore script and re-reads the profiles to confirm they are back on their previous objects.
+Result <code>ROLLED_BACK</code>, exit 3. The objects created for the failed attempt are removed.</p>
+<h3 id="42-manual">4.2 Manual</h3>
+<pre><code class="language-bash">f5-cert-push.sh --deploy prod-www --list-backups
+f5-cert-push.sh --deploy prod-www --rollback --set 20260930-162806
+</code></pre>
+<p><code>--set TS</code> restores <strong>the state captured just before run <code>TS</code></strong>, which is the state the BIG-IP was in
+before that deployment. Every run prints its own rollback command at the end.</p>
+<p>You can also run the script directly on the BIG-IP without the tool:</p>
+<pre><code class="language-bash">bash /shared/cert-backups/&lt;object_prefix&gt;/&lt;TS&gt;/restore-&lt;TS&gt;.sh
+</code></pre>
+<h3 id="43-what-the-restore-script-does">4.3 What the restore script does</h3>
+<p><code>restore-&lt;TS&gt;.sh</code> is generated for each run and lists exactly what to undo:</p>
+<ol>
+<li><strong>Verifies the backup files against <code>SHA256SUMS</code>.</strong> If any file has changed it refuses and changes nothing.</li>
+<li>Re-installs any old certificate or key <strong>object that no longer exists</strong> (for example one removed by
+   pruning) from the backed-up PEM. Objects that still exist are left alone.</li>
+<li>Re-installs the <strong>fixed-name</strong> objects from backup (these were overwritten in place).</li>
+<li>Repoints every profile entry to its previous certificate, chain and key, in <strong>one transaction</strong>.</li>
+<li>Saves the configuration.</li>
+</ol>
+<p>Backups contain <strong>private keys</strong>; the restore script and PEMs are mode 0600 in a 0700 directory.</p>
+<hr />
+<h2 id="5-ha-pairs-and-multiple-big-ips">5. HA pairs and multiple BIG-IPs</h2>
+<p><strong>The tool does not synchronise a device group.</strong> For an HA pair:</p>
+<ol>
+<li>Deploy to the <strong>active</strong> unit. The tool refuses a standby unit (<code>allow_standby = no</code>).</li>
+<li>Synchronise as you normally do (for example <code>tmsh run cm config-sync to-group NAME</code>).</li>
+<li>After a successful run on a BIG-IP that is not standalone, the tool prints a reminder to synchronise.</li>
+</ol>
+<p>Objects are created in the device group's synced folders (<code>/Common</code>), so the sync carries them to the peer.
+Alternatively list <strong>both</strong> units as separate <code>[f5:]</code> sections with <code>allow_standby = yes</code>, but then the next
+config-sync can overwrite what you pushed to the standby. The first approach is safer.</p>
+<p>For many BIG-IPs (separate environments, data centres, tenants) define one <code>[f5:]</code> per device and one
+<code>[deploy:]</code> per certificate-to-devices mapping; see <a href="CONFIGURATION.html#recipes">CONFIGURATION.html</a>. Deployments
+run <strong>sequentially</strong>; two runs against the same BIG-IP cannot overlap (the lock), and a failure in one
+deployment does not stop the others unless you pass <code>--fail-fast</code>.</p>
+<hr />
+<h2 id="6-backups-retention-and-housekeeping">6. Backups, retention and housekeeping</h2>
+<ul>
+<li><strong>Two copies of every backup</strong>: on the BIG-IP (<code>/shared/cert-backups/&lt;prefix&gt;/&lt;time&gt;/</code>) and here
+  (<code>&lt;backup_dir_local&gt;/&lt;bigip&gt;/&lt;prefix&gt;/&lt;time&gt;/</code>). The local copy is compared to the BIG-IP's checksums before
+  the tool proceeds.</li>
+<li><strong>Retention</strong> (<code>keep</code>, default 4) applies to backup sets on both sides and to certificate versions on the
+  BIG-IP. Only directories or objects that match the tool's timestamp pattern are ever removed.</li>
+<li><strong>Space</strong>: a set is a few kilobytes per certificate.</li>
+<li><strong>Protect the local backup directory.</strong> It contains private keys. Consider it as sensitive as the
+  certificate store itself; include it in your secret-handling and backup policy.</li>
+<li><strong>A certificate version a profile still uses is never deleted</strong>; the BIG-IP refuses.</li>
+<li><strong>Leftover staging directories</strong> on the BIG-IP (<code>/var/tmp/f5-cert-push.*</code>, from a run killed with <code>kill -9</code>
+  or a lost connection) are swept automatically by the next run once they are two hours old.</li>
+<li><strong>Stale locks</strong> from a killed run are cleaned up: a local lock whose process no longer exists is removed at
+  once; the lock on the BIG-IP (<code>/var/run/f5-cert-push.lock</code>, which records its owner) is taken over once it is
+  older than <code>remote_lock_stale_minutes</code> (default 30). You can also remove it by hand:
+  <code>rm -rf /var/run/f5-cert-push.lock</code> on the BIG-IP.</li>
+</ul>
+<hr />
+<h2 id="7-logs-and-output">7. Logs and output</h2>
+<p>Set <code>log_file</code> to keep a timestamped record of every run (mode 0600). Every line is prefixed with
+<code>[deployment@bigip]</code>. Nothing secret is logged: no key material, no passphrases, no file contents;
+certificate subjects and fingerprints are logged. Text that came from a remote system is stripped of control
+characters before it is printed or logged.</p>
+<p><code>--quiet</code> prints only warnings, errors and the summary (the log file still gets everything).</p>
+<hr />
+<h2 id="8-troubleshooting">8. Troubleshooting</h2>
+<table>
+<thead>
+<tr>
+<th>You see</th>
+<th>Cause and fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Permission denied (publickey...)</code></td>
+<td>The BIG-IP did not accept the key. Check in this order: the key is in <code>/var/ssh/root/authorized_keys</code>; that file has label <code>ssh_home_t</code> (<code>restorecon -v</code>); the key type is allowed (<code>grep PubkeyAcceptedKeyTypes /config/ssh/sshd_config</code>, use ECDSA); you are offering the right key (<code>ssh_key</code>).</td>
+</tr>
+<tr>
+<td><code>Host key verification failed</code></td>
+<td>The BIG-IP's host key is not in known_hosts (or changed). Pin it (section 1.3). If it <strong>changed unexpectedly</strong>, stop and find out why.</td>
+</tr>
+<tr>
+<td><code>refusing to use ... writable by group or others</code></td>
+<td><code>chmod 600</code> the config file.</td>
+</tr>
+<tr>
+<td><code>the BIG-IP configuration is not fully loaded (phase ..., last load ...)</code></td>
+<td>The BIG-IP is mid-restart or its config failed to load (for example after a license change). Fix that first. The tool will not change a BIG-IP in that state.</td>
+</tr>
+<tr>
+<td><code>this BIG-IP is 'standby', not active</code></td>
+<td>Deploy to the active unit, or set <code>allow_standby = yes</code>.</td>
+</tr>
+<tr>
+<td><code>profile '...' does not exist on the BIG-IP</code></td>
+<td>Wrong name or partition; <code>--discover --f5 NAME</code> lists what exists.</td>
+</tr>
+<tr>
+<td><code>inherits its certificate from its parent profile</code></td>
+<td>Update the parent profile, or set <code>inherit-certkeychain false</code> on this one.</td>
+</tr>
+<tr>
+<td><code>has N cert-key-chain entries ... name the entry explicitly</code></td>
+<td>Use <code>profile = NAME:ENTRY</code>.</td>
+</tr>
+<tr>
+<td><code>the certificate does not match the key</code> / <code>private key does not match</code></td>
+<td>The files are from different issuances; check <code>cert</code>/<code>key</code> paths.</td>
+</tr>
+<tr>
+<td><code>passphrase-protected</code></td>
+<td>Decrypt a copy of the key: <code>openssl pkey -in KEY -out KEY.plain</code>, and point <code>key</code> at that copy.</td>
+</tr>
+<tr>
+<td><code>the tmsh transaction failed ... (tmsh transactions are all-or-nothing)</code></td>
+<td>The BIG-IP rejected the change and nothing changed. The message includes the BIG-IP's reason, commonly: the profile already holds a certificate of the same key type in another entry.</td>
+</tr>
+<tr>
+<td><code>another run holds the lock</code> (exit 6)</td>
+<td>Another run is in progress, here or on another host (the message says which, and who). If none is, a local lock with a dead PID is removed automatically, and a BIG-IP lock expires after <code>remote_lock_stale_minutes</code>; or remove <code>/var/run/f5-cert-push.lock</code> on the BIG-IP by hand.</td>
+</tr>
+<tr>
+<td><code>no TLS handshake</code> from a verify endpoint</td>
+<td>The probe could not connect. With <code>verify_from = f5</code>, the address must be reachable <strong>from the BIG-IP</strong>; with <code>local</code>, from this host.</td>
+</tr>
+<tr>
+<td><code>serves sha256 ... expected ...</code></td>
+<td>The endpoint is using another profile or virtual server, or the BIG-IP is caching. Check which profile the virtual server really uses.</td>
+</tr>
+<tr>
+<td>Summary <code>CRITICAL</code></td>
+<td>Rollback failed. Run the printed <code>restore-&lt;TS&gt;.sh</code> on the BIG-IP by hand; if that fails too, <code>tmsh list ltm profile client-ssl &lt;name&gt; cert-key-chain</code> shows the current state and every old PEM is in the backup directory.</td>
+</tr>
+<tr>
+<td><code>cannot read the BIG-IP (ssh/tmsh failed, rc=124)</code></td>
+<td>A step exceeded <code>remote_timeout</code>; raise it, and check the BIG-IP's load.</td>
+</tr>
+</tbody>
+</table>
+<p>Run with <code>--dry-run</code> first; it reads everything a deploy would and prints the plan.</p>
+<hr />
+<h2 id="known-limitations">Known limitations</h2>
+<ul>
+<li><strong>client-ssl profiles only.</strong> <code>server-ssl</code> profiles, APM, iRules that reference certificates by name, and
+  other consumers are not updated. The optional fixed-name objects exist for those.</li>
+<li><strong>Private keys must be unencrypted.</strong> Encrypted keys are refused.</li>
+<li><strong>HA synchronisation is manual</strong> (section 5).</li>
+<li><strong>"Up to date" is decided by the leaf certificate's fingerprint.</strong> If only the chain (intermediates) changes
+  while the leaf stays the same, the tool sees nothing to do; use <code>--force</code> to redeploy.</li>
+<li><strong>Dual RSA+ECDSA profiles</strong>: update one entry per deployment; the tool does not infer which certificate is
+  which key type. Verification probes whichever certificate the default handshake selects.</li>
+<li><strong>SNI-multi-entry profiles</strong> with several same-type entries cannot exist on the BIG-IP; the tool's entry
+  selection is for RSA+ECDSA pairs.</li>
+<li><strong>Fixed-name objects are overwritten in place</strong> (not atomic), by design and only when requested.</li>
+<li><strong>Tested on BIG-IP 17.1.3.4, standalone.</strong> The standby refusal and "configuration not loaded" refusal are
+  implemented but could not be exercised; see <a href="TESTING.html">TESTING.html</a>.</li>
+<li><strong>Chain verification needs OpenSSL 1.1.0 or newer</strong> on the host running the tool. With 1.0.x it is skipped (with
+  a warning, or refused under <code>chain_check = fail</code>).</li>
+<li><strong>Root SSH to the BIG-IP is required</strong> (it must read <code>/config/filestore</code> for backups).</li>
+<li><strong>Linux only</strong> (GNU tools). The BIG-IP-side scripts run under the BIG-IP's bash 4.2.</li>
+</ul>
+<hr />
+<h2 id="10-removing-the-tool">10. Removing the tool</h2>
+<ol>
+<li>Delete the tool's key from each BIG-IP: remove its line from <code>/var/ssh/root/authorized_keys</code>.</li>
+<li>Delete the private key on the host, the configuration file and (if you no longer need them) the local
+   backup directory and log.</li>
+<li>On the BIG-IP, old backups can be removed with <code>rm -rf /shared/cert-backups/&lt;prefix&gt;</code>. Certificate
+   objects named <code>&lt;prefix&gt;-*-&lt;time&gt;.pem</code> can be deleted once no profile uses them (the BIG-IP refuses to delete
+   one that is in use).</li>
+</ol><footer>Generated from <code>docs/OPERATIONS.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
+document.querySelectorAll('pre').forEach(function(p){
+  if(!navigator.clipboard){return}
+  var b=document.createElement('button');b.className='copy';b.textContent='Copy';
+  b.onclick=function(){navigator.clipboard.writeText(p.innerText.replace(/\nCopy$/,'')).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})};
+  p.appendChild(b);
+});
+</script></body></html>

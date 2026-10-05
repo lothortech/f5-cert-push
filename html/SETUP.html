@@ -1,0 +1,464 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Setup guide: Linux server and BIG-IP</title><style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#5b6577;--line:#d9dee7;--code:#f3f5f8;--acc:#0b5cad;--side:#f7f8fb;--warn:#fff7e0;--warnb:#e3b341}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e4e8ef;--mut:#9aa5b8;--line:#2b3140;--code:#1d222c;--acc:#6cb2ff;--side:#191d25;--warn:#2a2412;--warnb:#a07c1c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:20px 16px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow:auto}
+nav .t{font-weight:700;margin:0 0 12px}
+nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+nav a:hover{background:var(--code)}
+nav a.cur{background:var(--acc);color:#fff}
+main{flex:1;min-width:0;max-width:60rem;padding:28px 36px 80px}
+h1{font-size:2rem;margin:.2em 0 .6em}
+h2{font-size:1.45rem;margin:2em 0 .6em;padding-bottom:.25em;border-bottom:1px solid var(--line)}
+h3{font-size:1.15rem;margin:1.6em 0 .4em}
+a{color:var(--acc)}
+code{background:var(--code);padding:.12em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.45;position:relative}
+pre code{background:none;padding:0;font-size:.86rem}
+table{border-collapse:collapse;display:block;overflow:auto;max-width:100%;margin:1em 0}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin:1em 0;padding:.6em 1em;background:var(--warn);border-left:4px solid var(--warnb);border-radius:4px}
+blockquote p{margin:.3em 0}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.copy{position:absolute;top:6px;right:6px;font:12px system-ui;padding:3px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--mut);cursor:pointer}
+footer{margin-top:3em;color:var(--mut);font-size:13px}
+@media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
+@media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html" class="cur">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a></nav><main><h1 id="setup-guide-linux-server-and-big-ip">Setup guide: Linux server and BIG-IP</h1>
+<p>This is the one-time build-out for the manual-upload workflow: a Linux server that people upload certificates
+to, which pushes them to one or more BIG-IPs from cron. Follow it top to bottom, once per server and once per
+BIG-IP. Day-to-day use is in <a href="MANUAL-UPLOAD.html">MANUAL-UPLOAD.html</a>; the settings are in
+<a href="CONFIGURATION.html">CONFIGURATION.html</a>; SSH troubleshooting is in <a href="OPERATIONS.html">OPERATIONS.html</a> section 1.</p>
+<ol>
+<li><a href="#1-what-you-are-building">What you are building</a></li>
+<li><a href="#2-requirements">Requirements</a></li>
+<li><a href="#3-where-files-live">Where files live</a></li>
+<li><a href="#4-linux-server-setup">Linux server setup</a></li>
+<li><a href="#5-ssh-key-and-trust">SSH key and trust</a></li>
+<li><a href="#6-big-ip-setup">BIG-IP setup</a></li>
+<li><a href="#7-configuration-file">Configuration file</a></li>
+<li><a href="#8-first-run-prove-it-then-schedule-it">First run: prove it, then schedule it</a></li>
+<li><a href="#9-checklist">Checklist</a></li>
+</ol>
+<hr />
+<h2 id="1-what-you-are-building">1. What you are building</h2>
+<pre><code> people (SFTP)                Linux server                                   BIG-IP(s)
+ -------------     /srv/f5-certs/incoming/&lt;cert&gt;/   (staging, uploaders write here)
+   cert.pem  ----&gt;            |  cron every 15 min: f5-cert-install.sh
+   chain.pem                  v
+   privkey.pem       /etc/f5-certs/&lt;cert&gt;/current   (installed copy, root only)
+   READY (last)               |  f5-cert-push.sh  --- SSH (TCP 22, key) ---&gt;  tmsh: install new
+                              |                                               versioned objects,
+                              +--&gt; /var/backups/f5-cert-push  (local backup)  switch the profiles,
+                                                                              backup in /shared
+</code></pre>
+<p>Two machines, one network path: the Linux server opens SSH to each BIG-IP's management address. Nothing on the
+BIG-IP connects back, and the BIG-IP needs no agent or add-on.</p>
+<h2 id="2-requirements">2. Requirements</h2>
+<p><strong>Linux server</strong></p>
+<table>
+<thead>
+<tr>
+<th>Need</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>bash 4.2 or newer</td>
+<td>Any current distribution.</td>
+</tr>
+<tr>
+<td>OpenSSL, OpenSSH client</td>
+<td>OpenSSL <strong>1.1.0 or newer</strong> to verify the chain (<code>chain_check = fail</code> needs it).</td>
+</tr>
+<tr>
+<td><code>flock</code>, <code>dd</code>, <code>shred</code>, <code>sha256sum</code>, <code>timeout</code>, standard coreutils</td>
+<td>Normally present.</td>
+</tr>
+<tr>
+<td>cron (or a systemd timer)</td>
+<td>To run the installer.</td>
+</tr>
+<tr>
+<td>root access for the admin</td>
+<td>Installing the tools, the config and the cron job.</td>
+</tr>
+<tr>
+<td>Network</td>
+<td>TCP 22 from this server to every BIG-IP's <strong>management</strong> address.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>BIG-IP</strong></p>
+<table>
+<thead>
+<tr>
+<th>Need</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tested on 17.1.3.4</td>
+<td>Other versions are untested.</td>
+</tr>
+<tr>
+<td>Root SSH login with a <strong>key</strong></td>
+<td><code>root</code> is what the tool is tested with. See section 6.1.</td>
+</tr>
+<tr>
+<td>Existing <strong>client-ssl profile(s)</strong></td>
+<td>The tool updates profiles; it does not create them. Section 6.2.</td>
+</tr>
+<tr>
+<td>Free space in <code>/shared</code></td>
+<td>Backups of old certificates are kept there.</td>
+</tr>
+<tr>
+<td>Active, config-loaded device</td>
+<td>The tool refuses a standby or not-loaded unit. For a pair, target the <strong>active</strong> unit and sync (section 6.4).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="3-where-files-live">3. Where files live</h2>
+<table>
+<thead>
+<tr>
+<th>Purpose</th>
+<th>Path</th>
+<th>Owner / mode</th>
+<th>Who writes it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tool scripts</td>
+<td><code>/opt/f5-cert-push/f5-cert-push.sh</code>, <code>f5-cert-install.sh</code></td>
+<td>root, 750</td>
+<td>admin</td>
+</tr>
+<tr>
+<td>Configuration</td>
+<td><code>/etc/f5-cert-push.conf</code></td>
+<td>root, <strong>600</strong></td>
+<td>admin</td>
+</tr>
+<tr>
+<td><strong>Staging: uploads land here</strong></td>
+<td><code>/srv/f5-certs/incoming/&lt;cert&gt;/</code></td>
+<td>root:certupload, 2770</td>
+<td>operators (SFTP)</td>
+</tr>
+<tr>
+<td><strong>Installed certificates</strong></td>
+<td><code>/etc/f5-certs/&lt;cert&gt;/releases/&lt;UTC time&gt;/</code> and <code>.../current</code></td>
+<td>root, 700 / files 600</td>
+<td>installer</td>
+</tr>
+<tr>
+<td>Tool's own SSH key</td>
+<td><code>/root/.ssh/f5_push_ecdsa</code> (+ <code>.pub</code>)</td>
+<td>root, 600</td>
+<td>admin</td>
+</tr>
+<tr>
+<td>Pinned BIG-IP host keys</td>
+<td><code>/root/.ssh/known_hosts</code></td>
+<td>root, 600</td>
+<td>admin</td>
+</tr>
+<tr>
+<td>Local backups</td>
+<td><code>/var/backups/f5-cert-push/</code></td>
+<td>root, 700</td>
+<td>tool</td>
+</tr>
+<tr>
+<td>Log</td>
+<td><code>/var/log/f5-cert-push.log</code></td>
+<td>root</td>
+<td>tool</td>
+</tr>
+<tr>
+<td>Cron job</td>
+<td><code>/etc/cron.d/f5-cert-install</code></td>
+<td>root, 644</td>
+<td>admin</td>
+</tr>
+<tr>
+<td>Locks and scratch</td>
+<td><code>/var/lock</code> / private tmpfs</td>
+<td>root</td>
+<td>tool (removed on exit)</td>
+</tr>
+<tr>
+<td>On each BIG-IP: new objects</td>
+<td>the BIG-IP's certificate/key store, named like <code>&lt;prefix&gt;-cert-&lt;UTC time&gt;.pem</code>, <code>-chain-</code>, <code>-privkey-</code></td>
+<td></td>
+<td>tool</td>
+</tr>
+<tr>
+<td>On each BIG-IP: backups</td>
+<td><code>/shared/cert-backups/&lt;prefix&gt;/</code> (default; last <code>keep</code> sets)</td>
+<td>root, 700</td>
+<td>tool</td>
+</tr>
+</tbody>
+</table>
+<h3 id="staging-one-folder-per-certificate-three-files-in-it">Staging: one folder per certificate, three files in it</h3>
+<p>Staging is <strong>one folder per certificate</strong>, and the folder name is the certificate name used in the config
+(<code>[cert:www]</code> reads <code>/srv/f5-certs/incoming/www/</code>). Inside each folder the operator puts the pieces under
+fixed names:</p>
+<pre><code>/srv/f5-certs/incoming/www/
+    cert.pem        the server (leaf) certificate only
+    chain.pem       the intermediate certificate(s)
+    privkey.pem     the private key, not password-protected
+    READY           empty file, created LAST
+</code></pre>
+<p>You do not need separate places for the cert, key and chain. They go together in one folder so that a renewal
+is always replaced as a set. (A <code>fullchain.pem</code> may be uploaded instead of <code>cert.pem</code> + <code>chain.pem</code>.) If the
+customer has many certificates, make many folders, one per <code>[cert:NAME]</code>.</p>
+<p>Do not point <code>le_dir</code> at the staging folder. <code>le_dir</code> points at the <strong>installed</strong> copy
+(<code>/etc/f5-certs/&lt;cert&gt;/current</code>), which only the installer changes and which only root can read.</p>
+<p>Keep staging and the installed store on the <strong>same filesystem</strong> if you can: it is not required, but the
+installer then never has to copy a key across devices.</p>
+<h2 id="4-linux-server-setup">4. Linux server setup</h2>
+<p>Run as root.</p>
+<h3 id="41-install-the-tools">4.1 Install the tools</h3>
+<pre><code class="language-bash">tar xzf f5-cert-push-2.0.0.tar.gz &amp;&amp; cd f5-cert-push
+install -d -m 755 /opt/f5-cert-push
+install -m 750 f5-cert-push.sh f5-cert-install.sh /opt/f5-cert-push/
+sha256sum -c SHA256SUMS 2&gt;/dev/null | grep -E 'f5-cert-(push|install)\.sh'   # optional: verify the copy
+</code></pre>
+<h3 id="42-create-the-directories">4.2 Create the directories</h3>
+<pre><code class="language-bash"># Installed store (root only) and local backups
+install -d -m 700 /etc/f5-certs
+install -d -m 700 /var/backups/f5-cert-push
+
+# Staging: a group for the people who upload, one folder per certificate.
+groupadd certupload
+install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming
+for c in www api; do                                   # one per [cert:NAME] in the config
+    install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming/$c
+done
+</code></pre>
+<p>Mode <code>2770</code> with group <code>certupload</code> lets members of the group create files in the folders and keeps new files
+in that group. Everyone else has no access.</p>
+<p>Keep <code>fs.protected_hardlinks = 1</code> (the default on current distributions): the installer runs as root over a
+folder other people can write to, and that setting stops hard-link tricks. Check with
+<code>sysctl fs.protected_hardlinks</code>.</p>
+<h3 id="43-create-the-upload-accounts">4.3 Create the upload account(s)</h3>
+<p>Operators need to put files in their folders and nothing else. Prefer an SFTP-only account over a shell:</p>
+<pre><code class="language-bash">useradd -m -s /usr/sbin/nologin -G certupload certop        # one per person is better than a shared account
+passwd -l certop                                            # key login only
+install -d -m 700 -o certop -g certop /home/certop/.ssh
+# put the operator's public key in /home/certop/.ssh/authorized_keys (owner certop, mode 600)
+</code></pre>
+<p>In <code>/etc/ssh/sshd_config</code> (then <code>systemctl reload sshd</code>), confine the group to SFTP and to the staging tree:</p>
+<pre><code>Match Group certupload
+    ChrootDirectory /srv/f5-certs
+    ForceCommand internal-sftp
+    AllowTcpForwarding no
+    X11Forwarding no
+    PasswordAuthentication no
+</code></pre>
+<p>A chroot requires <code>/srv/f5-certs</code> itself to be owned by root and not writable by anyone else (<code>chown root:root
+/srv/f5-certs; chmod 755 /srv/f5-certs</code>), which is what the layout above gives. The operator then sees
+<code>/incoming/www/</code>. Note that operators log in with a <strong>different</strong> SSH key from the tool's key in section 5.</p>
+<p>If you do not use SFTP-only accounts, any other upload method works as long as it ends with the three files in
+the right folder and <code>READY</code> created last, by a user in <code>certupload</code>.</p>
+<h3 id="44-time-logging-and-mail">4.4 Time, logging and mail</h3>
+<ul>
+<li><strong>Time</strong> must be correct (NTP). Certificate validity checks and the UTC-timestamped object names depend on it.</li>
+<li><strong>Log rotation</strong>: add <code>/etc/logrotate.d/f5-cert-push</code> for <code>/var/log/f5-cert-push.log</code> (weekly, rotate 8,
+  compress, <code>create 600 root root</code>).</li>
+<li><strong>Mail</strong>: cron mails any output. Because the installer prints only changes, warnings and errors under
+  <code>--quiet</code>, set <code>MAILTO=</code> in the cron file (section 8.4) to a mailbox someone reads, and confirm the server
+  can send mail.</li>
+</ul>
+<h2 id="5-ssh-key-and-trust">5. SSH key and trust</h2>
+<p>The tool logs in to each BIG-IP as root with a key that is used for nothing else.</p>
+<h3 id="51-create-the-key-on-the-linux-server-as-root">5.1 Create the key (on the Linux server, as root)</h3>
+<pre><code class="language-bash">ssh-keygen -t ecdsa -b 384 -N '' -C 'f5-cert-push' -f /root/.ssh/f5_push_ecdsa
+chmod 600 /root/.ssh/f5_push_ecdsa
+cat /root/.ssh/f5_push_ecdsa.pub        # one line: ecdsa-sha2-nistp384 AAAA... f5-cert-push
+</code></pre>
+<p><strong>Use ECDSA (or RSA), not ed25519.</strong> A BIG-IP's SSH daemon commonly accepts only ECDSA and RSA keys and
+silently ignores an ed25519 key. One key can be authorised on every BIG-IP, or create one per BIG-IP if the
+customer wants to revoke them separately; the config names the key per <code>[f5:]</code> section.</p>
+<p>A key without a passphrase is root on the BIG-IP: protect the file (mode 600, root only, a trusted host), and
+back it up the way you back up other secrets. If policy requires a passphrase, load the key into an
+<code>ssh-agent</code> for the cron user and leave <code>ssh_key</code> out of the config; unattended cron runs are then harder.</p>
+<h3 id="52-authorise-the-key-on-each-big-ip">5.2 Authorise the key on each BIG-IP</h3>
+<p>On the BIG-IP, as root (console, or an existing admin session, for example <code>bash</code> from tmsh):</p>
+<pre><code class="language-bash">echo 'ecdsa-sha2-nistp384 AAAA...paste the whole .pub line... f5-cert-push' &gt;&gt; /var/ssh/root/authorized_keys
+chmod 600 /var/ssh/root/authorized_keys
+restorecon -v /var/ssh/root/authorized_keys
+</code></pre>
+<p>Three BIG-IP details that cause "Permission denied" with no useful log line:</p>
+<ol>
+<li><code>/root/.ssh/authorized_keys</code> is a <strong>symlink</strong> to <code>/var/ssh/root/authorized_keys</code>. Append to the target.</li>
+<li>The file must carry the SELinux label <code>ssh_home_t</code>. A wrong label makes sshd ignore every key silently.
+   <code>restorecon</code> fixes it.</li>
+<li><code>PubkeyAcceptedKeyTypes</code> in <code>/config/ssh/sshd_config</code> may exclude your key type. A license reload can
+   re-apply hardening, so a key that worked can stop working afterwards.</li>
+</ol>
+<p>Also confirm root SSH login is permitted at all: <strong>System &gt; Platform &gt; SSH</strong> and, in the sshd configuration,
+<code>PermitRootLogin</code> (the default <code>prohibit-password</code> is fine for key login). If the BIG-IP restricts SSH by
+source address (<strong>System &gt; Platform &gt; SSH IP Allow</strong>), add the Linux server's address.</p>
+<h3 id="53-pin-each-big-ips-host-key">5.3 Pin each BIG-IP's host key</h3>
+<p>The recommended configuration is <code>strict_host_key_checking = yes</code>: cron cannot answer "trust this host?", and
+you do not want it to trust a stranger. Fetch and verify the host key once, from the Linux server:</p>
+<pre><code class="language-bash">ssh-keyscan -t ecdsa 10.0.0.11 &gt;&gt; /root/.ssh/known_hosts
+ssh-keygen -lf &lt;(ssh-keyscan -t ecdsa 10.0.0.11 2&gt;/dev/null)      # fingerprint seen from the network
+# on the BIG-IP, compare with:   ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
+</code></pre>
+<p>The two fingerprints must match before you keep the entry. Repeat for every BIG-IP address in the config. If a
+BIG-IP is rebuilt or replaced its host key changes and the tool will (correctly) refuse until you update
+<code>known_hosts</code>.</p>
+<h3 id="54-test-the-login-exactly-as-the-tool-makes-it">5.4 Test the login exactly as the tool makes it</h3>
+<pre><code class="language-bash">ssh -i /root/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes root@10.0.0.11 'tmsh show sys version | head -5'
+</code></pre>
+<p>You should get the version with no prompt. If it fails, run <code>ssh -vvv</code> and see
+<a href="OPERATIONS.html">OPERATIONS.html</a> section 8, or on the BIG-IP <code>tail /var/log/secure</code>.</p>
+<h2 id="6-big-ip-setup">6. BIG-IP setup</h2>
+<p>Do these on each BIG-IP (or on the active unit of a pair).</p>
+<h3 id="61-access">6.1 Access</h3>
+<p>Sections 5.2 and 5.3 above. Management reachability: from the Linux server,
+<code>nc -zv 10.0.0.11 22</code> must succeed. Firewalls between the server and the BIG-IP's management interface must
+allow TCP 22 from the server.</p>
+<h3 id="62-the-client-ssl-profiles-must-already-exist">6.2 The client-ssl profile(s) must already exist</h3>
+<p>The tool changes the certificate, chain and key <strong>inside existing client-ssl profiles</strong>. Create each one first
+(<strong>Local Traffic &gt; Profiles &gt; SSL &gt; Client</strong>, or <code>tmsh create ltm profile client-ssl ...</code>) and attach it to its
+virtual server. The profile must:</p>
+<ul>
+<li>have its <strong>own</strong> certificate/key/chain entry, not inherit one from a parent profile
+  (<code>inherit-certkeychain</code> must be <code>false</code>);</li>
+<li>use a key <strong>without a passphrase</strong> (the tool refuses a passphrase-protected entry);</li>
+<li>be in a partition you can name (<code>partition</code> in the <code>[f5:]</code> section, default <code>Common</code>).</li>
+</ul>
+<p>For the first deployment, give the profile a working placeholder certificate (a self-signed one is fine).
+The tool replaces it with the first uploaded certificate and keeps the entry name.</p>
+<p>If a profile holds both an RSA and an ECDSA entry, name the entry in the config
+(<code>profile = site-clientssl:rsa_entry</code>); see <a href="CONFIGURATION.html">CONFIGURATION.html</a>, "Profiles and entries".</p>
+<p>List what exists and what the tool sees:</p>
+<pre><code class="language-bash">/opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --discover --f5 dc1-a
+</code></pre>
+<p>(Run it after the configuration exists, section 7.)</p>
+<h3 id="63-objects-the-tool-creates-nothing-to-prepare">6.3 Objects the tool creates (nothing to prepare)</h3>
+<p>You do <strong>not</strong> pre-create certificates or keys. On each deployment the tool imports new, versioned objects:</p>
+<pre><code>&lt;prefix&gt;-cert-&lt;UTC time&gt;.pem   &lt;prefix&gt;-chain-&lt;UTC time&gt;.pem   &lt;prefix&gt;-privkey-&lt;UTC time&gt;.pem
+</code></pre>
+<p>switches the profiles to them in one all-or-nothing transaction, saves the configuration, and prunes versions
+older than <code>keep</code> (never one that is in use; BIG-IP refuses to delete in-use objects). The previous set stays
+on the device until pruned, so a rollback is instant.</p>
+<p>Backups of the objects being replaced go to <code>/shared/cert-backups/&lt;prefix&gt;/</code> on the BIG-IP and to
+<code>backup_dir_local</code> on the Linux server, each with a checksum and a generated restore script.
+<code>/shared</code> is the large volume; make sure it has space (a few KB per set).</p>
+<h3 id="64-pairs-partitions-sync">6.4 Pairs, partitions, sync</h3>
+<ul>
+<li><strong>Pair (active/standby):</strong> run the tool against the <strong>active</strong> unit, then sync (<strong>Device Management &gt;
+  Overview</strong>, or <code>tmsh run cm config-sync to-group &lt;group&gt;</code>). The tool prints a reminder but does not sync, so a
+  review step stays in your hands. Listing both units as <code>[f5:]</code> sections is possible (<code>allow_standby = yes</code>) but
+  not recommended: the next config-sync can overwrite what was pushed to the standby.</li>
+<li><strong>Partitions:</strong> set <code>partition = Name</code> in <code>[f5:]</code>, or write profiles as <code>/Part/profile</code>. The objects are
+  created in the same partition as the profile.</li>
+<li><strong>Config not loaded / unit offline / standby:</strong> the tool stops with a clear error. Fix the device first.</li>
+</ul>
+<h3 id="65-check-before-you-rely-on-it">6.5 Check before you rely on it</h3>
+<pre><code class="language-bash"># from the Linux server
+ssh -i /root/.ssh/f5_push_ecdsa root@10.0.0.11 \
+  'tmsh list ltm profile client-ssl www-clientssl cert-key-chain; df -h /shared | tail -1'
+</code></pre>
+<p>Expect an entry with a cert, key and chain, and free space on <code>/shared</code>.</p>
+<h2 id="7-configuration-file">7. Configuration file</h2>
+<p>Start from the manual-upload example:</p>
+<pre><code class="language-bash">install -m 600 /dev/null /etc/f5-cert-push.conf          # root-only before it has content
+cat examples/manual-upload/f5-cert-push.conf &gt; /etc/f5-cert-push.conf
+$EDITOR /etc/f5-cert-push.conf
+</code></pre>
+<p>For each BIG-IP add an <code>[f5:NAME]</code> section (address, key), for each certificate a <code>[cert:NAME]</code> section whose
+<code>le_dir = /etc/f5-certs/NAME/current</code>, and for each set of profiles a <code>[deploy:NAME]</code> section. The tool refuses
+a configuration file that others can write.</p>
+<p>Every <code>[cert:NAME]</code> must have a matching upload folder <code>/srv/f5-certs/incoming/NAME/</code>. A deploy can list many
+BIG-IPs and many profiles. <code>env = prod</code> / <code>env = test</code> labels let you push one environment (<code>--env</code>).</p>
+<h2 id="8-first-run-prove-it-then-schedule-it">8. First run: prove it, then schedule it</h2>
+<h3 id="81-validate-the-configuration-no-network">8.1 Validate the configuration (no network)</h3>
+<pre><code class="language-bash">/opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --list
+</code></pre>
+<p>This prints every BIG-IP, certificate and deployment it understood. Fix anything it rejects.</p>
+<blockquote>
+<p><code>--validate</code> checks the certificate files as well, so it needs a certificate already installed under
+<code>/etc/f5-certs/&lt;cert&gt;/current</code>. On a brand-new server there is none yet; use <code>--list</code> first and <code>--validate</code>
+after the first upload.</p>
+</blockquote>
+<h3 id="82-prove-it-can-reach-and-read-each-big-ip-read-only">8.2 Prove it can reach and read each BIG-IP (read-only)</h3>
+<pre><code class="language-bash">/opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --discover --f5 dc1-a
+/opt/f5-cert-push/f5-cert-install.sh --status
+</code></pre>
+<p>Nothing is changed. If this works, SSH, the key, the pinned host key and <code>tmsh</code> access are all good.</p>
+<h3 id="83-do-one-real-upload-by-hand-in-a-test-environment">8.3 Do one real upload by hand, in a test environment</h3>
+<ol>
+<li>As an operator, upload a certificate to a folder whose deployment is <code>env = test</code>, then create <code>READY</code>.</li>
+<li>Rehearse: <code>sudo /opt/f5-cert-push/f5-cert-install.sh --dry-run</code> (validates, changes nothing).</li>
+<li>Do it: <code>sudo /opt/f5-cert-push/f5-cert-install.sh --env test</code>.</li>
+<li>Confirm from outside:</li>
+</ol>
+<p><code>bash
+   echo | openssl s_client -connect VIP:443 -servername www.example.com 2&gt;/dev/null \
+     | openssl x509 -noout -subject -enddate -fingerprint -sha256</code></p>
+<ol start="5">
+<li>Confirm the folder is empty, the backup exists on the BIG-IP (<code>ls /shared/cert-backups/&lt;prefix&gt;/</code>) and locally
+   (<code>ls /var/backups/f5-cert-push/</code>), and that <code>--status</code> shows the new release.</li>
+<li>Practise a rollback (section 5 of <a href="MANUAL-UPLOAD.html">MANUAL-UPLOAD.html</a>) before you need one.</li>
+</ol>
+<h3 id="84-schedule-it">8.4 Schedule it</h3>
+<pre><code class="language-bash">install -m 644 examples/manual-upload/f5-cert-install.cron /etc/cron.d/f5-cert-install
+$EDITOR /etc/cron.d/f5-cert-install          # set MAILTO, paths and the interval
+</code></pre>
+<p>A cron file in <code>/etc/cron.d</code> needs the user field (<code>root</code>) and must not be writable by others. The shipped file
+runs the installer every 15 minutes with <code>--quiet</code>, plus an optional daily <code>--check</code> of every BIG-IP to catch
+drift (a profile changed by hand). Confirm that cron ran it: <code>grep f5-cert /var/log/cron</code> (or
+<code>journalctl -u cron</code>), and the log <code>/var/log/f5-cert-push.log</code>.</p>
+<h2 id="9-checklist">9. Checklist</h2>
+<p><strong>Linux server</strong></p>
+<ul>
+<li>[ ] Scripts in <code>/opt/f5-cert-push/</code>, mode 750, owned by root</li>
+<li>[ ] <code>/etc/f5-cert-push.conf</code> mode 600, <code>--list</code> accepts it</li>
+<li>[ ] <code>/srv/f5-certs/incoming/&lt;cert&gt;/</code> exists for every <code>[cert:]</code>, group <code>certupload</code>, mode 2770</li>
+<li>[ ] <code>/etc/f5-certs</code> and <code>/var/backups/f5-cert-push</code> exist, mode 700</li>
+<li>[ ] Upload accounts are SFTP-only, key login, members of <code>certupload</code>; they have no access outside staging</li>
+<li>[ ] <code>fs.protected_hardlinks = 1</code>; clock synchronised</li>
+<li>[ ] Log rotation and <code>MAILTO</code> configured</li>
+<li>[ ] Cron file installed</li>
+</ul>
+<p><strong>SSH</strong></p>
+<ul>
+<li>[ ] ECDSA (or RSA) key at <code>/root/.ssh/f5_push_ecdsa</code>, mode 600, used for nothing else</li>
+<li>[ ] Public key in <code>/var/ssh/root/authorized_keys</code> on every BIG-IP, mode 600, <code>restorecon</code> run</li>
+<li>[ ] Every BIG-IP host key pinned in <code>known_hosts</code> after comparing fingerprints</li>
+<li>[ ] The test login in 5.4 works with no prompt, from this server, for every BIG-IP</li>
+</ul>
+<p><strong>Every BIG-IP</strong></p>
+<ul>
+<li>[ ] Client-ssl profile exists, attached to a virtual server, owns its cert/key/chain, key has no passphrase</li>
+<li>[ ] Device is active and its configuration is loaded</li>
+<li>[ ] <code>/shared</code> has free space</li>
+<li>[ ] SSH allowed from the Linux server (network and the BIG-IP's SSH allow list)</li>
+</ul>
+<p><strong>Proof</strong></p>
+<ul>
+<li>[ ] <code>--discover</code> lists the profiles; <code>--status</code> runs</li>
+<li>[ ] One test upload was installed, served correctly and rolled back successfully</li>
+</ul><footer>Generated from <code>docs/SETUP.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
+document.querySelectorAll('pre').forEach(function(p){
+  if(!navigator.clipboard){return}
+  var b=document.createElement('button');b.className='copy';b.textContent='Copy';
+  b.onclick=function(){navigator.clipboard.writeText(p.innerText.replace(/\nCopy$/,'')).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})};
+  p.appendChild(b);
+});
+</script></body></html>

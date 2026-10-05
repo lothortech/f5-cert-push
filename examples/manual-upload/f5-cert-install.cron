@@ -1,0 +1,18 @@
+# /etc/cron.d/f5-cert-install
+#
+# Every 15 minutes: install any upload marked READY, then push it to the BIG-IPs.
+# A run with no new upload does nothing and does not contact the BIG-IPs; a push
+# that failed is retried on the next run until it succeeds.
+#
+# --quiet: cron mails you only when something was installed, rejected or failed.
+# Exit codes worth alerting on: 1 (an upload was rejected or a push failed),
+# 3 (a push was rolled back), 5 (a rollback failed: act now).
+
+MAILTO=pki-team@example.com
+HOME=/root
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+*/15 * * * *  root  /opt/f5-cert-push/f5-cert-install.sh --config /etc/f5-cert-push.conf --incoming /srv/f5-certs/incoming --store /etc/f5-certs --quiet
+
+# Optional: a daily read-only drift check of every BIG-IP (exit 4 = something is out of date).
+17 6 * * *    root  /opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --all --check --quiet

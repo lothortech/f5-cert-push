@@ -1,0 +1,358 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Manually uploaded certificates</title><style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#5b6577;--line:#d9dee7;--code:#f3f5f8;--acc:#0b5cad;--side:#f7f8fb;--warn:#fff7e0;--warnb:#e3b341}
+@media (prefers-color-scheme:dark){:root{--bg:#14171d;--fg:#e4e8ef;--mut:#9aa5b8;--line:#2b3140;--code:#1d222c;--acc:#6cb2ff;--side:#191d25;--warn:#2a2412;--warnb:#a07c1c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:20px 16px;position:sticky;top:0;align-self:flex-start;height:100vh;overflow:auto}
+nav .t{font-weight:700;margin:0 0 12px}
+nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
+nav a:hover{background:var(--code)}
+nav a.cur{background:var(--acc);color:#fff}
+main{flex:1;min-width:0;max-width:60rem;padding:28px 36px 80px}
+h1{font-size:2rem;margin:.2em 0 .6em}
+h2{font-size:1.45rem;margin:2em 0 .6em;padding-bottom:.25em;border-bottom:1px solid var(--line)}
+h3{font-size:1.15rem;margin:1.6em 0 .4em}
+a{color:var(--acc)}
+code{background:var(--code);padding:.12em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.45;position:relative}
+pre code{background:none;padding:0;font-size:.86rem}
+table{border-collapse:collapse;display:block;overflow:auto;max-width:100%;margin:1em 0}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin:1em 0;padding:.6em 1em;background:var(--warn);border-left:4px solid var(--warnb);border-radius:4px}
+blockquote p{margin:.3em 0}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.copy{position:absolute;top:6px;right:6px;font:12px system-ui;padding:3px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--mut);cursor:pointer}
+footer{margin-top:3em;color:var(--mut);font-size:13px}
+@media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
+@media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html" class="cur">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a></nav><main><h1 id="manually-uploaded-certificates">Manually uploaded certificates</h1>
+<blockquote>
+<p>New install? Follow <a href="SETUP.html">SETUP.html</a> first (server, SSH key, BIG-IP prerequisites).</p>
+</blockquote>
+<p>Use this when certificates are <strong>not</strong> issued on the server by certbot, but bought or issued elsewhere and
+<strong>uploaded by a person</strong> to a Linux server, which then pushes them to the BIG-IPs from cron (or on demand).</p>
+<p><code>f5-cert-install.sh</code> sits in front of <code>f5-cert-push.sh</code>:</p>
+<pre><code> operator                     Linux server (cron, every 15 min)                              BIG-IPs
+ --------                     ----------------------------------------------------------     -------
+ uploads cert.pem    ---&gt;  /srv/f5-certs/incoming/www/   (ignored until READY exists)
+         chain.pem
+         privkey.pem
+ then:   touch READY  ---&gt;  f5-cert-install.sh
+                              copy privately, refuse symlinks
+                              validate (key matches, chain verifies, not expiring,
+                                        not older than what is installed)
+                              /etc/f5-certs/www/releases/&lt;time&gt;/   (new release)
+                              /etc/f5-certs/www/current  -&gt; releases/&lt;time&gt;  (atomic switch)
+                              shred the upload
+                              f5-cert-push.sh --all   ------------------------------------&gt;  profiles updated
+                              (retried on later runs until it succeeds)
+</code></pre>
+<p>Why the extra step instead of pointing <code>f5-cert-push.sh</code> straight at the upload folder:</p>
+<table>
+<thead>
+<tr>
+<th>Risk with manual uploads</th>
+<th>How it is handled</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cron runs while files are half-uploaded</td>
+<td>Nothing happens until the operator creates <code>READY</code>, which they do last</td>
+</tr>
+<tr>
+<td>Only some files replaced (new cert, old key)</td>
+<td>The key must match the certificate, or the upload is rejected</td>
+</tr>
+<tr>
+<td>Chain forgotten, or the old chain left in place</td>
+<td><code>chain.pem</code> (or a fullchain containing it) is required and must verify against the certificate</td>
+</tr>
+<tr>
+<td>The wrong file uploaded (an old certificate)</td>
+<td>Rejected if it expires <strong>before</strong> the one already installed (override with <code>--allow-older</code>)</td>
+</tr>
+<tr>
+<td>A certificate about to expire</td>
+<td>Rejected if it expires within <code>--min-days</code> (default 7)</td>
+</tr>
+<tr>
+<td>A symlink planted in the upload folder</td>
+<td>Files are copied without following links and anything that is not a plain file is refused</td>
+</tr>
+<tr>
+<td>Keys left lying around</td>
+<td>The upload is shredded after a successful install; installed files are root-only (0600 in 0700 directories)</td>
+</tr>
+<tr>
+<td>A failed push forgotten</td>
+<td>A pending marker makes every later run retry the push until it succeeds</td>
+</tr>
+<tr>
+<td>A rejected upload retried every 15 minutes</td>
+<td><code>READY</code> is removed and the reason written to <code>FAILED</code>; it waits for a person</td>
+</tr>
+</tbody>
+</table>
+<h2 id="1-one-time-setup-administrator">1. One-time setup (administrator)</h2>
+<p>Run as root on the Linux server.</p>
+<pre><code class="language-bash"># 1. The tools
+install -d -m 755 /opt/f5-cert-push
+install -m 750 f5-cert-push.sh f5-cert-install.sh /opt/f5-cert-push/
+
+# 2. The configuration (see examples/manual-upload/f5-cert-push.conf)
+install -m 600 examples/manual-upload/f5-cert-push.conf /etc/f5-cert-push.conf
+$EDITOR /etc/f5-cert-push.conf
+
+# 3. Where people upload: a group of uploaders, one folder per certificate.
+groupadd certupload                                 # add the operators to this group
+install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming
+install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming/www
+install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming/api
+# (one folder per [cert:NAME] in the config; the folder name IS the cert name)
+
+# 4. Where certificates are installed: root only.
+install -d -m 700 /etc/f5-certs
+
+# 5. SSH to the BIG-IPs: a dedicated ECDSA key, authorised on each BIG-IP, host keys pinned.
+#    See docs/OPERATIONS.md section 1.
+
+# 6. Check, then schedule
+/opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --list
+/opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --all --check
+install -m 644 examples/manual-upload/f5-cert-install.cron /etc/cron.d/f5-cert-install
+</code></pre>
+<p>Each <code>[cert:NAME]</code> in the config points at the installed copy:</p>
+<pre><code class="language-ini">[cert:www]
+le_dir        = /etc/f5-certs/www/current
+object_prefix = www-example
+</code></pre>
+<p>and is used by one or more <code>[deploy:]</code> sections that list the BIG-IPs and client-ssl profiles (see
+<a href="CONFIGURATION.html">CONFIGURATION.html</a>). Recommended <code>[defaults]</code> for uploaded certificates:</p>
+<pre><code class="language-ini">[defaults]
+chain_check              = fail     # the chain must verify (needs OpenSSL 1.1.0+)
+min_days_valid           = 7
+auto_rollback            = yes
+strict_host_key_checking = yes      # cron cannot approve a new host key
+log_file                 = /var/log/f5-cert-push.log
+</code></pre>
+<p><strong>Upload access.</strong> Give operators the narrowest access that works: an SFTP-only account in the <code>certupload</code>
+group (for example <code>ForceCommand internal-sftp</code> and a <code>ChrootDirectory</code>) is better than a shell. They need
+write access to their folders under <code>/srv/f5-certs/incoming/</code> and nothing else. They never need root, and
+never need access to <code>/etc/f5-certs</code>.</p>
+<h2 id="2-uploading-a-certificate-operator">2. Uploading a certificate (operator)</h2>
+<ol>
+<li>Copy the files into the certificate's folder, named exactly:</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cert.pem</code></td>
+<td>the server certificate (leaf) only</td>
+</tr>
+<tr>
+<td><code>chain.pem</code></td>
+<td>the intermediate certificate(s), PEM</td>
+</tr>
+<tr>
+<td><code>privkey.pem</code></td>
+<td>the private key, PEM, <strong>not</strong> password-protected</td>
+</tr>
+</tbody>
+</table>
+<p>Alternatives: <code>fullchain.pem</code> (leaf followed by intermediates) instead of <code>cert.pem</code> + <code>chain.pem</code>;
+   or all of them. Other files are ignored.</p>
+<p><code>bash
+   sftp upload@certserver
+   sftp&gt; cd incoming/www
+   sftp&gt; put www.example.com.crt cert.pem
+   sftp&gt; put intermediate.crt chain.pem
+   sftp&gt; put www.example.com.key privkey.pem</code></p>
+<ol start="2">
+<li><strong>Last</strong>, create an empty file named <code>READY</code>:</li>
+</ol>
+<p><code>bash
+   sftp&gt; put /dev/null READY          # or: touch READY</code></p>
+<ol start="3">
+<li>Within 15 minutes it is installed and pushed. The folder is then empty. If it was rejected, the folder
+   still holds your files plus a <code>FAILED</code> file that says why; fix the problem and create <code>READY</code> again.</li>
+</ol>
+<p>To see what is installed and what is waiting:</p>
+<pre><code class="language-bash">sudo /opt/f5-cert-push/f5-cert-install.sh --status
+</code></pre>
+<pre><code>Installed certificates in /etc/f5-certs:
+  www     expires Dec 29 23:20:06 2026 GMT  sha256 6EA59495D7A191EC...  release 20260930-224211
+  api     expires Mar  3 12:00:00 2027 GMT  sha256 1F03FA098E2A4ADD...  release 20260901-080000
+
+Upload folders in /srv/f5-certs/incoming:
+  www: READY (will be installed on the next run)
+  api: FAILED - the private key does not match the certificate
+</code></pre>
+<h3 id="common-rejections">Common rejections</h3>
+<table>
+<thead>
+<tr>
+<th><code>FAILED</code> says</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>the private key does not match the certificate</td>
+<td>The key is from a different request. Upload the key that goes with this certificate.</td>
+</tr>
+<tr>
+<td>no intermediate certificates</td>
+<td>Upload <code>chain.pem</code> (from your CA's download), or a <code>fullchain.pem</code>.</td>
+</tr>
+<tr>
+<td>does not verify against the supplied chain</td>
+<td>The chain is the wrong one (often an old intermediate). Download the current chain from the CA.</td>
+</tr>
+<tr>
+<td>passphrase-protected</td>
+<td>Remove the passphrase: <code>openssl pkey -in key.pem -out privkey.pem</code> (do this on a trusted machine).</td>
+</tr>
+<tr>
+<td>expires ... BEFORE the installed one</td>
+<td>You uploaded an older certificate. If that is intended, an administrator runs with <code>--allow-older</code>.</td>
+</tr>
+<tr>
+<td>min_days_valid</td>
+<td>The certificate expires too soon to deploy.</td>
+</tr>
+<tr>
+<td>is not a regular file (symbolic links are refused)</td>
+<td>Upload the file itself, not a link.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="3-running-it-by-hand">3. Running it by hand</h2>
+<pre><code class="language-bash"># validate what is waiting, change nothing
+sudo /opt/f5-cert-push/f5-cert-install.sh --dry-run
+# install what is waiting and push now
+sudo /opt/f5-cert-push/f5-cert-install.sh
+# push only the 'prod' deployments
+sudo /opt/f5-cert-push/f5-cert-install.sh --env prod
+# check every BIG-IP without changing anything
+sudo /opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --all --check
+</code></pre>
+<p>Both scripts lock: a manual run and a cron run cannot overlap (the second exits 6).</p>
+<h2 id="4-options">4. Options</h2>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--config FILE</code></td>
+<td><code>/etc/f5-cert-push.conf</code></td>
+<td>f5-cert-push configuration</td>
+</tr>
+<tr>
+<td><code>--incoming DIR</code></td>
+<td><code>/srv/f5-certs/incoming</code></td>
+<td>upload folders</td>
+</tr>
+<tr>
+<td><code>--store DIR</code></td>
+<td><code>/etc/f5-certs</code></td>
+<td>installed certificates</td>
+</tr>
+<tr>
+<td><code>--push-bin FILE</code></td>
+<td>next to the script</td>
+<td><code>f5-cert-push.sh</code></td>
+</tr>
+<tr>
+<td><code>--env LABEL</code></td>
+<td>(push <code>--all</code>)</td>
+<td>push only deployments with this <code>env</code>; repeatable</td>
+</tr>
+<tr>
+<td><code>--push-when changed\|always</code></td>
+<td><code>changed</code></td>
+<td><code>changed</code>: push only after an install, or to retry a push that has not succeeded. <code>always</code>: push every run (also catches drift, but logs in to every BIG-IP every run)</td>
+</tr>
+<tr>
+<td><code>--no-push</code></td>
+<td></td>
+<td>install only</td>
+</tr>
+<tr>
+<td><code>--keep-releases N</code></td>
+<td>3</td>
+<td>installed releases kept per certificate</td>
+</tr>
+<tr>
+<td><code>--min-days N</code></td>
+<td>7</td>
+<td>refuse a certificate expiring within N days</td>
+</tr>
+<tr>
+<td><code>--allow-older</code></td>
+<td></td>
+<td>accept a certificate that expires before the installed one</td>
+</tr>
+<tr>
+<td><code>--allow-no-chain</code></td>
+<td></td>
+<td>accept a certificate with no intermediates</td>
+</tr>
+<tr>
+<td><code>--dry-run</code></td>
+<td></td>
+<td>validate and report only</td>
+</tr>
+<tr>
+<td><code>--status</code></td>
+<td></td>
+<td>show installed certificates and upload folders</td>
+</tr>
+<tr>
+<td><code>--quiet</code></td>
+<td></td>
+<td>print only changes, warnings and errors (for cron)</td>
+</tr>
+</tbody>
+</table>
+<p>Exit codes: 0 ok; 1 an upload was rejected or a push failed; 2 usage error; 6 another run is in progress;
+3, 4 and 5 are passed through from <code>f5-cert-push.sh</code> (3 = a push was rolled back, 5 = a rollback failed).</p>
+<h2 id="5-going-back-to-a-previous-certificate">5. Going back to a previous certificate</h2>
+<p><strong>On the BIG-IPs</strong> (what clients see), use the backups f5-cert-push keeps for every push:</p>
+<pre><code class="language-bash">f5-cert-push.sh --config /etc/f5-cert-push.conf --deploy www --list-backups
+f5-cert-push.sh --config /etc/f5-cert-push.conf --deploy www --rollback --set 20260930-224211
+</code></pre>
+<p><strong>On the server</strong> (so cron does not push the new one again), point <code>current</code> back at an older release, or
+upload the previous files again with <code>--allow-older</code>:</p>
+<pre><code class="language-bash">ls /etc/f5-certs/www/releases/
+ln -sfn releases/20260901-080000 /etc/f5-certs/www/current
+</code></pre>
+<p>Do both, or the next push will deploy whatever <code>current</code> points at.</p>
+<h2 id="6-what-it-does-not-do">6. What it does not do</h2>
+<ul>
+<li>It does not issue or renew certificates; it installs what people upload.</li>
+<li>It does not convert formats (PKCS#12/PFX, DER). Convert to PEM before uploading:
+  <code>openssl pkcs12 -in site.pfx -nokeys -clcerts -out cert.pem</code> etc.</li>
+<li>One folder holds one certificate. A certificate used by many profiles or BIG-IPs is still one upload;
+  the <code>[deploy:]</code> sections fan it out.</li>
+</ul><footer>Generated from <code>docs/MANUAL-UPLOAD.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
+document.querySelectorAll('pre').forEach(function(p){
+  if(!navigator.clipboard){return}
+  var b=document.createElement('button');b.className='copy';b.textContent='Copy';
+  b.onclick=function(){navigator.clipboard.writeText(p.innerText.replace(/\nCopy$/,'')).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)})};
+  p.appendChild(b);
+});
+</script></body></html>

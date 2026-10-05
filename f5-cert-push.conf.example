@@ -1,0 +1,214 @@
+# f5-cert-push.conf - configuration for f5-cert-push.sh
+#
+# Copy this file, edit it, then:
+#       chmod 600 f5-cert-push.conf
+#       ./f5-cert-push.sh --config f5-cert-push.conf --validate
+#       ./f5-cert-push.sh --config f5-cert-push.conf --deploy NAME --dry-run
+#
+# FORMAT
+#   - INI style: [section] headers, then "key = value" lines.
+#   - The file is READ, never executed. Nothing here can run a command.
+#   - Comments are whole lines starting with # or ;  (not allowed after a value).
+#   - Paths must be absolute and may use only: letters digits . _ / + @ = , : ~ -
+#     (no spaces). Names may use only letters, digits, dot, underscore, hyphen.
+#   - Unknown settings are errors, so a typo never silently does nothing.
+#
+# THE MODEL
+#   [f5:NAME]      one BIG-IP: how to reach it.
+#   [cert:NAME]    one certificate: where its files are and what to call it on the BIG-IP.
+#   [deploy:NAME]  ties one certificate to one or more BIG-IPs, the client-ssl
+#                  profiles to update, and the endpoints to check afterwards.
+#
+#   Many BIG-IPs, many certificates and many deployments can live in one file.
+#   Pick what to run with --deploy NAME, --env LABEL, or --all.
+#
+# Every setting below is shown with its DEFAULT. Settings in [defaults] apply
+# everywhere; a setting in an [f5:] / [cert:] / [deploy:] section overrides it.
+
+
+############################################################################
+# [defaults]
+############################################################################
+[defaults]
+
+# How many backup sets, and how many timestamped certificate versions, to keep
+# per certificate on each BIG-IP. Older ones are deleted; a version that a
+# profile still uses is never deleted (the BIG-IP refuses). 0 = never prune.
+keep = 4
+
+# Where backups are written. Each run is copied to BOTH places:
+#   - on the BIG-IP:  <backup_dir_remote>/<object_prefix>/<timestamp>/
+#   - on this host:   <backup_dir_local>/<f5 name>/<object_prefix>/<timestamp>/
+# Backups contain PRIVATE KEYS. The directories are created mode 0700.
+backup_dir_remote = /shared/cert-backups
+backup_dir_local  = /var/backups/f5-cert-push
+
+# SSH host key checking for every BIG-IP.
+#   yes         the host key must already be in known_hosts (recommended)
+#   accept-new  trust a BIG-IP the first time it is seen, then pin it
+# To pin a key before the first run:  ssh-keyscan -t ecdsa BIGIP_ADDRESS >> ~/.ssh/known_hosts
+strict_host_key_checking = yes
+#known_hosts_file = /root/.ssh/known_hosts
+
+# Reuse one SSH connection for all the steps of a deployment (BIG-IP logins are
+# slow and each one is logged). Set to no to open a fresh connection per step.
+connection_reuse = yes
+
+# Seconds to wait to connect, and the longest any single remote step may take.
+connect_timeout = 15
+remote_timeout  = 300
+
+# The tool also takes a lock on the BIG-IP itself so that two machines cannot push
+# to it at the same time. A lock older than this many minutes is treated as abandoned.
+remote_lock_stale_minutes = 30
+
+# Refuse to deploy a certificate that expires within this many days.
+min_days_valid = 1
+
+# After switching profiles, if a check fails (a profile not bound as expected,
+# or a verify endpoint serving something else) put everything back automatically.
+auto_rollback = yes
+
+# What to do when a verify endpoint gives no TLS answer at all:
+#   warn  carry on and say so (a probe that cannot connect proves little)
+#   fail  treat it as a failure (and roll back if auto_rollback = yes)
+# A verify endpoint that answers with the WRONG certificate is always a failure.
+verify_unreachable = warn
+
+# Check that the certificate really chains to the supplied chain file:
+#   off | warn | fail
+chain_check = warn
+
+# Also keep four fixed-name objects up to date:
+#   <prefix>-cert.pem  <prefix>-chain.pem  <prefix>-fullchain.pem  <prefix>-privkey.pem
+# Only needed if something other than a profile you list below references
+# those names. It stores an extra copy of the private key on the BIG-IP.
+fixed_names = no
+
+# Push to a BIG-IP that reports STANDBY. Normally you deploy to the active unit
+# and then sync. Leave 'no' unless you know you need it.
+allow_standby = no
+
+# Append a timestamped log of every run here (mode 0600). Optional.
+#log_file = /var/log/f5-cert-push.log
+
+# Directory for the per-BIG-IP lock (one run at a time per BIG-IP).
+# Default: /var/lock/f5-cert-push for root, otherwise under $XDG_RUNTIME_DIR.
+#lock_dir = /var/lock/f5-cert-push
+
+
+############################################################################
+# BIG-IP devices
+############################################################################
+
+# --- a production BIG-IP ---------------------------------------------------
+[f5:prod-a]
+host = 10.0.0.11
+# user = root          # needs tmsh and read access to /config/filestore, so root
+# port = 22
+# partition = Common   # the partition holding the certificates and profiles
+ssh_key = /root/.ssh/f5_push_ecdsa
+
+# --- its pair (deploy to each; or to the active one and sync) --------------
+[f5:prod-b]
+host = 10.0.0.12
+ssh_key = /root/.ssh/f5_push_ecdsa
+
+# --- a lab device, with a few settings overridden ---------------------------
+[f5:lab]
+host = lab-bigip.example.com
+ssh_key = /root/.ssh/f5_push_ecdsa
+strict_host_key_checking = accept-new
+keep = 2
+
+
+############################################################################
+# Certificates
+############################################################################
+
+# --- a Let's Encrypt (certbot) certificate ----------------------------------
+# le_dir fills in cert.pem, privkey.pem, chain.pem and fullchain.pem for you.
+[cert:wildcard]
+le_dir = /etc/letsencrypt/live/example.com
+# Names on the BIG-IP become <prefix>-cert-<timestamp>.pem etc. Default: the
+# section name ("wildcard").
+object_prefix = example-wildcard
+
+# --- a certificate from your own CA, with explicit files --------------------
+# Only 'key' and ONE of 'cert' / 'fullchain' are required. 'chain' is optional:
+# leave it out if there are no intermediates.
+[cert:internal-api]
+cert  = /etc/pki/api/api.crt
+key   = /etc/pki/api/api.key
+chain = /etc/pki/api/intermediates.pem
+object_prefix = api
+min_days_valid = 14
+
+# --- only a fullchain and a key ----------------------------------------------
+# The leaf and the intermediates are split out for you.
+[cert:partner]
+fullchain = /etc/pki/partner/fullchain.pem
+key       = /etc/pki/partner/privkey.pem
+
+
+############################################################################
+# Deployments
+############################################################################
+
+# A deployment = one certificate -> one or more BIG-IPs, and what to update there.
+#
+#   f5       which BIG-IP(s); repeat the line or separate with commas
+#   cert     which [cert:] section
+#   profile  a client-ssl profile to update; repeat for several.
+#              NAME                    the profile's only cert/key entry
+#              NAME:ENTRY              a specific entry (needed for profiles that
+#                                      hold both an RSA and an ECDSA entry)
+#              /Partition/NAME[:ENTRY] a profile in another partition
+#            Run  --discover --f5 NAME  to list what exists.
+#            Omit 'profile' entirely to just overwrite the fixed-name objects
+#            (no profile is touched).
+#   verify   after the change, connect here and confirm the new certificate is
+#            served. HOST:PORT, optionally followed by an SNI name. Repeat for
+#            several. Omit to skip the check.
+#   verify_from  f5 (probe from the BIG-IP itself, default) or local (from the
+#            machine running this script; use for addresses you can reach directly)
+#   env      a label, so you can run everything for one environment: --env prod
+#   enabled  yes/no; a disabled deployment is skipped even with --all
+
+[deploy:prod-www]
+env = prod
+f5 = prod-a
+f5 = prod-b
+cert = wildcard
+profile = www-clientssl
+profile = api-clientssl
+profile = /Common/legacy-clientssl
+verify = 10.1.10.10:443 www.example.com
+verify = 10.1.10.11:443
+verify_from = f5
+
+[deploy:prod-api]
+env = prod
+f5 = prod-a, prod-b
+cert = internal-api
+# A profile holding both an RSA and an ECDSA certificate: name the RSA entry.
+profile = internal-clientssl:rsa_entry
+verify = 10.1.20.20:443 api.example.com
+keep = 6
+
+[deploy:lab-www]
+env = lab
+f5 = lab
+cert = wildcard
+profile = www-clientssl
+verify = 10.1.10.10:443
+verify_from = local
+verify_unreachable = fail
+
+[deploy:partner-edge]
+env = prod
+enabled = no
+f5 = prod-a
+cert = partner
+# No profile: only the fixed-name objects partner-cert.pem etc. are replaced,
+# in place, for something else on the BIG-IP that references those names.
