@@ -198,3 +198,7 @@ Short list; the full one is in [docs/OPERATIONS.md](docs/OPERATIONS.md#known-lim
 Open `html/index.html` (double-click it). Every guide is also there as a single self-contained page with a
 side menu, copy buttons on the command blocks, dark-mode and print support, and no network access needed.
 After editing a Markdown file, regenerate with `pip install markdown && python tools/build-html.py`.
+
+## License
+
+MIT. See [LICENSE](LICENSE). The tool changes production load balancers: test it on a lab device first.
