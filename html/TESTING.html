@@ -225,8 +225,14 @@ the modern-platform tests could not: OpenSSL 1.0.x's <code>verify -partial_chain
 <li><strong>Concurrent human changes</strong> to the same profiles during a run.</li>
 <li><strong>Power loss or <code>kill -9</code> mid-run.</strong> Cleanup cannot run; the recovery (stale lock removal, staging sweep) is
   described in the operations guide, and the atomic transaction means the BIG-IP is never left half-switched.</li>
-<li><strong><code>shellcheck</code></strong> was not available where the code was developed. Run it: <code>shellcheck f5-cert-push.sh tests/*.sh</code>.</li>
 </ul>
+<h2 id="static-analysis">Static analysis</h2>
+<p><code>shellcheck</code> 0.11.0 over <code>f5-cert-push.sh</code>, <code>f5-cert-install.sh</code> and <code>tests/*.sh</code> reports <strong>no errors</strong>. It reports
+13 warnings and 26 notes, all reviewed by hand and none a defect: a few variables that are set but not used
+later, <code>ls | grep</code> over directory names that are already restricted to <code>YYYYMMDD-HHMMSS</code>, <code>a &amp;&amp; b || die</code>
+patterns where the right-hand side is the error exit, a one-item loop kept for readability, and functions that
+are only called from traps. Run it yourself: <code>pip install shellcheck-py</code> (or your package manager), then
+<code>shellcheck f5-cert-push.sh f5-cert-install.sh tests/*.sh</code>.</p>
 <h2 id="adding-a-test">Adding a test</h2>
 <p>Both suites use the helpers in <code>tests/lib.sh</code>: <code>run CMD...</code> captures <code>OUT</code> and <code>RC</code>; <code>expect_rc</code>, <code>expect_has</code>,
 <code>expect_lacks</code>, <code>expect_eq</code>, <code>expect_true</code>, <code>expect_false</code> assert; <code>t_case</code> names the current case. A new

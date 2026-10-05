@@ -106,7 +106,7 @@ These are the places the author is least sure about. They are leads, not claims.
 
 ```bash
 tests/offline.sh                      # no BIG-IP needed; Linux; about a minute
-shellcheck f5-cert-push.sh tests/*.sh # not run by the author (unavailable); please run it
+shellcheck f5-cert-push.sh f5-cert-install.sh tests/*.sh   # 0.11.0: no errors; 13 warnings, reviewed, none a defect (see docs/TESTING.md)
 # with a LAB BIG-IP you may modify (creates and removes zzz-* objects only):
 F5_TEST_CONFIRM=yes F5_TEST_HOST=... F5_TEST_KEY=... tests/f5.sh
 ```
@@ -130,7 +130,7 @@ response, describe the exact tmsh output; the remote scripts can be fed canned i
 
 - The standby refusal and "configuration not loaded" refusal (`job_gate`) were **never exercised against a
   real device in those states** (the lab unit is standalone and healthy). Review them by reading.
-- `shellcheck` was not run (not installed where developed).
+- `shellcheck` 0.11.0 reports no errors. Its 13 warnings were reviewed by hand (unused variables, `ls | grep` over names already restricted to digits and a hyphen, a deliberate one-item loop); none is a defect.
 - Tests do not cover `kill -9` or power loss.
 
 ## 7. Issues the author already found and fixed during development

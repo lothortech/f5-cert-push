@@ -123,7 +123,15 @@ Stated plainly so you can decide how much to trust them:
 - **Concurrent human changes** to the same profiles during a run.
 - **Power loss or `kill -9` mid-run.** Cleanup cannot run; the recovery (stale lock removal, staging sweep) is
   described in the operations guide, and the atomic transaction means the BIG-IP is never left half-switched.
-- **`shellcheck`** was not available where the code was developed. Run it: `shellcheck f5-cert-push.sh tests/*.sh`.
+
+## Static analysis
+
+`shellcheck` 0.11.0 over `f5-cert-push.sh`, `f5-cert-install.sh` and `tests/*.sh` reports **no errors**. It reports
+13 warnings and 26 notes, all reviewed by hand and none a defect: a few variables that are set but not used
+later, `ls | grep` over directory names that are already restricted to `YYYYMMDD-HHMMSS`, `a && b || die`
+patterns where the right-hand side is the error exit, a one-item loop kept for readability, and functions that
+are only called from traps. Run it yourself: `pip install shellcheck-py` (or your package manager), then
+`shellcheck f5-cert-push.sh f5-cert-install.sh tests/*.sh`.
 
 ## Adding a test
 

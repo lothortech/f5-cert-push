@@ -249,7 +249,7 @@ and the <strong>remote scripts</strong> (<code>define R_*</code>, bash 4.2 code 
 </ol>
 <h2 id="5-running-the-evidence">5. Running the evidence</h2>
 <pre><code class="language-bash">tests/offline.sh                      # no BIG-IP needed; Linux; about a minute
-shellcheck f5-cert-push.sh tests/*.sh # not run by the author (unavailable); please run it
+shellcheck f5-cert-push.sh f5-cert-install.sh tests/*.sh   # 0.11.0: no errors; 13 warnings, reviewed, none a defect (see docs/TESTING.md)
 # with a LAB BIG-IP you may modify (creates and removes zzz-* objects only):
 F5_TEST_CONFIRM=yes F5_TEST_HOST=... F5_TEST_KEY=... tests/f5.sh
 </code></pre>
@@ -270,7 +270,7 @@ response, describe the exact tmsh output; the remote scripts can be fed canned i
 <ul>
 <li>The standby refusal and "configuration not loaded" refusal (<code>job_gate</code>) were <strong>never exercised against a
   real device in those states</strong> (the lab unit is standalone and healthy). Review them by reading.</li>
-<li><code>shellcheck</code> was not run (not installed where developed).</li>
+<li><code>shellcheck</code> 0.11.0 reports no errors. Its 13 warnings were reviewed by hand (unused variables, <code>ls | grep</code> over names already restricted to digits and a hyphen, a deliberate one-item loop); none is a defect.</li>
 <li>Tests do not cover <code>kill -9</code> or power loss.</li>
 </ul>
 <h2 id="7-issues-the-author-already-found-and-fixed-during-development">7. Issues the author already found and fixed during development</h2>
