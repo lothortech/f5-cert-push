@@ -85,7 +85,7 @@ home folder (<code>~</code>), not under <code>/mnt/c</code>, so file permissions
 <h2 id="2-one-time-setup">2. One-time setup</h2>
 <pre><code class="language-bash">mkdir -p ~/f5-cert-push/certs ~/f5-cert-push/backups
 cd ~/f5-cert-push
-tar xzf /path/to/f5-cert-push-2.0.0.tar.gz --strip-components=1     # puts f5-cert-push.sh here
+tar xzf /path/to/f5-cert-push-2.1.0.tar.gz --strip-components=1     # puts f5-cert-push.sh here
 chmod 700 ~/f5-cert-push
 chmod 750 f5-cert-push.sh
 ./f5-cert-push.sh --version
@@ -446,8 +446,11 @@ learning; it touches exactly one thing.</p>
 <pre><code class="language-bash">./f5-cert-push.sh --deploy www --list-backups                 # shows the backup sets, newest first
 ./f5-cert-push.sh --deploy www --rollback --set 20261005-143015     # choose a set from that list
 </code></pre>
-<p>This puts the previous certificate back in the profile and verifies the backup files' checksums first.
-Each backup also contains a <code>restore.sh</code> you can use directly on the BIG-IP.</p>
+<p>It checks the backup set first (every file present and matching its checksums), puts the previous
+certificate back, and then <strong>re-reads the BIG-IP to confirm</strong> every profile and object is exactly as it was:
+the summary says <code>RESTORED</code> only when that is confirmed. It does not need the new certificate's files, so it
+works even if you have already deleted or replaced them. Each backup also contains a
+<code>restore-&lt;time&gt;.sh</code> you can run directly on the BIG-IP.</p>
 <h2 id="9-high-availability-pairs">9. High-availability pairs</h2>
 <p>Run the tool <strong>once, against the active BIG-IP</strong>, not once per unit. Certificates, keys and profiles are part of
 the synchronised configuration, so config-sync carries them to the peer. Refer to
@@ -519,8 +522,11 @@ against each unit in turn, active first.</p>
 </tbody>
 </table>
 <p>Exit codes: <code>0</code> success, <code>1</code> a failure (the message says why), <code>2</code> usage error, <code>3</code> the change was rolled back,
-<code>4</code> <code>--check</code> found a certificate that is out of date, <code>5</code> a rollback failed (the BIG-IP may be in a mixed
-state; follow the printed restore command and call your BIG-IP administrator), <code>6</code> another run in progress.</p><footer>Generated from <code>docs/USER-GUIDE.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
+<code>4</code> <code>--check</code> found a certificate that is out of date, <code>5</code> CRITICAL: the BIG-IP's state could not be
+confirmed (follow the printed instructions and call your BIG-IP administrator; see OPERATIONS.md section 8),
+<code>6</code> another run is in progress, <code>130</code> you interrupted it (Ctrl-C) before anything was changed, or after it
+had finished. Interrupting it in the middle of a change is safe: it finishes the step and puts the previous
+certificate back (exit 3).</p><footer>Generated from <code>docs/USER-GUIDE.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
 document.querySelectorAll('pre').forEach(function(p){
   if(!navigator.clipboard){return}
   var b=document.createElement('button');b.className='copy';b.textContent='Copy';

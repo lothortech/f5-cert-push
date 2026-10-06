@@ -12,17 +12,27 @@
 #      and then, LAST, creates an empty file named READY.
 #      A folder without READY is ignored, so a half-finished upload is never used.
 #   2. Each run, for every <certname> folder that has READY:
-#        - the files are copied into a private scratch directory (symlinks and
-#          non-regular files are refused), and validated with f5-cert-push's own
-#          checks: key matches certificate, chain present and verifies, not expired,
-#          not expiring within --min-days, not older than the certificate already
-#          installed (unless --allow-older);
+#        - the files are copied into a private scratch directory (symlinks, hard
+#          links and non-regular files are refused), and validated with
+#          f5-cert-push's own checks: key matches certificate, chain present and
+#          verifies, not expired, not expiring within --min-days, not older than
+#          the certificate already installed (unless --allow-older);
 #        - they are installed as a new release under <store>/<certname>/releases/<UTC time>/
 #          and <store>/<certname>/current is switched to it atomically;
-#        - the upload folder is emptied (the key is shredded).
+#        - the upload folder is emptied (the uploaded files are deleted; the
+#          private copies are shredded).
 #      A folder that fails validation gets a FAILED file explaining why, and its
 #      READY file is removed, so it is not retried until someone fixes it and
 #      creates READY again.
+#
+# TRUST BOUNDARY: this runs as root over folders that other people can write to.
+# It refuses to run unless <incoming> and every directory above it can be changed
+# only by root (or the user running it), and it skips an upload folder that is not
+# owned by root with the sticky bit set (mode 3770): with the sticky bit, uploaders
+# can add files but cannot rename or replace the folder, or anything root created
+# in it. Root never opens a path in an upload folder for writing: FAILED is written
+# to a new private file and renamed into place, and uploads are removed with
+# unlink(), which never follows a link.
 #   3. If anything was installed (or an earlier push did not succeed), it runs
 #        f5-cert-push.sh --config <config> --all     (or --env LABEL ...)
 #      and keeps retrying on later runs until that push succeeds.
@@ -60,7 +70,7 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.0.0"
+readonly VERSION="2.1.0"
 readonly PROG="f5-cert-install"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
@@ -87,7 +97,9 @@ WORK=""
 declare -a INSTALLED=() REJECTED=()
 
 sanitize() { LC_ALL=C tr -cd '\11\12\40-\176'; }
-_out() { printf '%s %s\n' "$1" "$2" | sanitize; }
+# Continuation lines of a multi-line message are marked, so they cannot pass for
+# messages of their own.
+_out() { printf '%s %s\n' "$1" "$2" | sanitize | awk '{ printf "%s%s\n", (NR > 1 ? "    | " : ""), $0 }'; }
 info() { if (( ! QUIET )); then _out "[*]" "$*"; fi; }
 ok()   { _out "[+]" "$*"; }
 warn() { _out "[!]" "$*" >&2; }
@@ -166,17 +178,87 @@ fp_of_dir()  { leaf_of "$1" | openssl x509 -noout -fingerprint -sha256 2>/dev/nu
 end_of_dir() { leaf_of "$1" | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2-; }
 count_certs() { local n; n="$(grep -c -- '-----BEGIN CERTIFICATE-----' "$1" 2>/dev/null)" || n=0; printf '%s' "$n"; }
 
+# ---- trust checks -----------------------------------------------------
+ME_UID="$(id -u)"
+TRUST_BAD=""
+# One directory, not following links: owned by root or by us, and not writable by
+# group or others unless the sticky bit is set.
+dir_safe() {   # dir_safe PATH
+  local st uid mode
+  [[ -d "$1" && ! -L "$1" ]] || return 1
+  st="$(stat -c '%u %a' -- "$1" 2>/dev/null)" || return 1
+  uid="${st% *}"; mode="${st#* }"
+  [[ "$uid" == 0 || "$uid" == "$ME_UID" ]] || return 1
+  if (( (8#$mode & 8#022) != 0 && (8#$mode & 8#1000) == 0 )); then return 1; fi
+  return 0
+}
+# A path, its real location and every directory above it are dir_safe: nobody
+# else can change where it leads. Prints the real path.
+trusted_tree() {   # trusted_tree PATH
+  local real p="" c
+  real="$(readlink -f -- "$1" 2>/dev/null)" || { TRUST_BAD="$1"; return 1; }
+  [[ "$real" == /* ]] || { TRUST_BAD="$1"; return 1; }
+  dir_safe / || { TRUST_BAD=/; return 1; }
+  local IFS=/
+  for c in ${real#/}; do
+    p="${p}/${c}"
+    dir_safe "$p" || { TRUST_BAD="$p"; return 1; }
+  done
+  printf '%s' "$real"
+}
+# An upload folder: a real directory directly in INCOMING, owned by root (or us),
+# and, if uploaders can write to it, with the sticky bit set.
+upload_dir_ok() {   # upload_dir_ok NAME
+  local d="${INCOMING}/$1" st uid
+  dir_safe "$d" || return 1
+  st="$(stat -c '%u' -- "$d" 2>/dev/null)" || return 1
+  [[ "$st" == 0 || "$st" == "$ME_UID" ]]
+}
+
+# Run a command INSIDE an upload folder, holding it as the working directory: the
+# folder is checked (upload_dir_ok), its device:inode recorded, then entered
+# without following links, and the directory actually entered must be that same
+# inode. From then on the command uses relative paths, which resolve through the
+# held directory: renaming or replacing the folder's name afterwards cannot
+# redirect them. (Defence in depth: with the documented permissions an uploader
+# cannot rename the folder at all.) Runs in a subshell; returns the command's status,
+# or 90 if the folder could not be entered safely.
+in_upload_dir() {   # in_upload_dir NAME COMMAND...
+  local name="$1"; shift
+  (
+    d="${INCOMING}/${name}"
+    upload_dir_ok "$name" || exit 90
+    want="$(stat -c '%d:%i' -- "$d" 2>/dev/null)" || exit 90
+    cd -P -- "$d" 2>/dev/null || exit 90
+    [[ "$(stat -c '%d:%i' . 2>/dev/null)" == "$want" ]] || exit 90
+    dir_safe . || exit 90
+    "$@"
+  )
+}
+
+# Write FAILED without ever opening an uploader-controlled path for writing: the
+# report goes into a new file (mktemp: O_EXCL, so a planted name cannot be
+# followed), which is then renamed over whatever FAILED is (rename replaces the
+# directory entry; it does not follow a symlink). In a sticky folder the uploader
+# cannot touch the root-owned temporary file meanwhile.
+write_failed() {   # write_failed TEXT    (run inside the upload folder: in_upload_dir)
+  local tmp
+  tmp="$(mktemp ./.FAILED.XXXXXXXX 2>/dev/null)" || return 1
+  if ! printf '%s' "$1" >"$tmp" || ! chmod 644 -- "$tmp" || ! mv -fT -- "$tmp" ./FAILED; then
+    rm -f -- "$tmp"; return 1
+  fi
+  rm -f -- ./READY
+  return 0
+}
+
 # Mark an upload as rejected: write FAILED, remove READY so it is not retried.
 reject() {   # reject NAME REASON
-  local name="$1" reason="$2" dir="${INCOMING}/$1"
+  local name="$1" reason="$2"
   err "upload '${name}' rejected: ${reason}"
   REJECTED+=("$name")
   if (( DRY_RUN )); then return 0; fi
-  { printf 'Rejected by %s at %s UTC\n\n' "$PROG" "$(date -u '+%Y-%m-%d %H:%M:%S')"
-    printf '%s\n\n' "$reason"
-    printf 'Fix the files in this folder, then create READY again (touch READY).\n'
-  } > "${dir}/FAILED" 2>/dev/null || warn "could not write ${dir}/FAILED"
-  rm -f -- "${dir}/READY"
+  in_upload_dir "$name" write_failed "$(printf 'Rejected by %s at %s UTC\n\n%s\n\nFix the files in this folder, then create READY again (touch READY).\n' \
+      "$PROG" "$(date -u '+%Y-%m-%d %H:%M:%S')" "$reason")" || warn "could not write ${INCOMING}/${name}/FAILED"
 }
 
 #######################################################################
@@ -191,22 +273,24 @@ process_upload() {   # process_upload NAME
 
   # Copy into the private scratch directory, THEN inspect the copies: nothing the
   # uploader does after this point can change what is validated and installed.
-  # The copy is made with dd so that it can never be steered by the uploader:
+  # The folder itself cannot be swapped (upload_dir_ok: root-owned, sticky, in a
+  # trusted tree), so only the last path component is uploader-controlled, and dd
+  # opens it so that it can never be steered:
   #   iflag=nofollow  refuses a symbolic link at open() time (no check-then-use race)
   #   iflag=nonblock  a FIFO cannot make the run hang waiting for a writer
   #   count=1 of 1 MiB + 1 byte, so a huge file is never copied in full
   #   timeout         a last resort against anything else that blocks
-  for f in cert.pem fullchain.pem chain.pem privkey.pem; do
-    if [[ -e "${src}/${f}" || -L "${src}/${f}" ]]; then
-      if [[ -L "${src}/${f}" ]]; then reject "$name" "${f} is a symbolic link (symbolic links are refused; upload the file itself)"; return 1; fi
-      if [[ ! -f "${src}/${f}" ]]; then reject "$name" "${f} is not a regular file"; return 1; fi
-      if ! timeout 20 dd if="${src}/${f}" of="${stg}/${f}" iflag=nofollow,nonblock bs=1048577 count=1 status=none 2>/dev/null; then
-        reject "$name" "cannot read ${f} (it must be a regular file, not a link)"; return 1
-      fi
-      sz="$(wc -c < "${stg}/${f}")"; sz="${sz//[[:space:]]/}"
-      if (( sz == 0 || sz > 1048576 )); then reject "$name" "${f} is empty or larger than 1 MiB"; return 1; fi
-    fi
-  done
+  # A hard link is refused too (with fs.protected_hardlinks=1 an uploader can only
+  # link files they own anyway). The copy is made from inside the folder, held as
+  # the working directory (in_upload_dir), so not even a swap of the folder itself
+  # can redirect it.
+  local cout crc=0
+  cout="$(in_upload_dir "$name" copy_upload_files "$stg")" || crc=$?
+  if (( crc != 0 )); then
+    if [[ "$cout" == REJECT\ * ]]; then reject "$name" "${cout#REJECT }"
+    else reject "$name" "the upload folder could not be entered safely (it must be a directory owned by root with the sticky bit set)"; fi
+    return 1
+  fi
   [[ -f "${stg}/cert.pem" ]] && have_cert=1
   [[ -f "${stg}/fullchain.pem" ]] && have_full=1
   [[ -f "${stg}/chain.pem" ]] && have_chain=1
@@ -293,7 +377,9 @@ process_upload() {   # process_upload NAME
   if [[ ! -f "${rel}/fullchain.pem" && -f "${rel}/cert.pem" && -f "${rel}/chain.pem" ]]; then
     cat -- "${rel}/cert.pem" "${rel}/chain.pem" > "${rel}/fullchain.pem"
   fi
-  chmod 600 -- "${rel}"/*.pem 2>/dev/null
+  for f in cert.pem fullchain.pem chain.pem privkey.pem; do
+    if [[ -f "${rel}/${f}" ]]; then chmod 600 -- "${rel}/${f}" || { reject "$name" "cannot set the mode of ${rel}/${f}"; return 1; }; fi
+  done
   # A symlink cannot be replaced atomically in place, so create it beside the old
   # one and rename it over (rename(2) is atomic).
   rm -f -- "${STORE}/${name}/current.new"
@@ -312,15 +398,40 @@ process_upload() {   # process_upload NAME
   return 0
 }
 
-clear_upload() {   # remove the uploaded files (shred the key) and the markers
-  local name="$1" dir="${INCOMING}/$1" f
+# Remove the uploaded files and the markers. unlink() only: it removes the
+# directory entry and never follows a link, so whatever the uploader has put there
+# meanwhile, nothing outside the folder is touched. (The uploaded files are not
+# overwritten first: that would mean opening an uploader-controlled path for
+# writing. The private copies are shredded, and docs/SECURITY.md explains how to
+# keep the upload area off persistent storage.)
+clear_upload() {   # clear_upload NAME
+  in_upload_dir "$1" remove_upload_files || warn "could not empty the upload folder ${INCOMING}/$1"
+}
+remove_upload_files() {   # (run inside the upload folder: in_upload_dir)
+  local f
   for f in privkey.pem cert.pem fullchain.pem chain.pem READY FAILED; do
-    if [[ -f "${dir}/${f}" && ! -L "${dir}/${f}" ]]; then
-      shred -u -- "${dir}/${f}" 2>/dev/null || rm -f -- "${dir}/${f}"
-    elif [[ -L "${dir}/${f}" ]]; then
-      rm -f -- "${dir}/${f}"
+    rm -f -- "./${f}" 2>/dev/null || true
+  done
+  return 0
+}
+
+# Copy the uploaded files into the private scratch directory STG (run inside the
+# upload folder: in_upload_dir). Prints "REJECT <reason>" and returns 1 on refusal.
+copy_upload_files() {   # copy_upload_files STG
+  local stg="$1" f sz
+  for f in cert.pem fullchain.pem chain.pem privkey.pem; do
+    if [[ -e "./${f}" || -L "./${f}" ]]; then
+      if [[ -L "./${f}" ]]; then echo "REJECT ${f} is a symbolic link (symbolic links are refused; upload the file itself)"; return 1; fi
+      if [[ ! -f "./${f}" ]]; then echo "REJECT ${f} is not a regular file"; return 1; fi
+      if [[ "$(stat -c '%h' -- "./${f}" 2>/dev/null)" != 1 ]]; then echo "REJECT ${f} is a hard link to another file (upload the file itself)"; return 1; fi
+      if ! timeout 20 dd if="./${f}" of="${stg}/${f}" iflag=nofollow,nonblock bs=1048577 count=1 status=none 2>/dev/null; then
+        echo "REJECT cannot read ${f} (it must be a regular file, not a link)"; return 1
+      fi
+      sz="$(wc -c < "${stg}/${f}")"; sz="${sz//[[:space:]]/}"
+      if (( sz == 0 || sz > 1048576 )); then echo "REJECT ${f} is empty or larger than 1 MiB"; return 1; fi
     fi
   done
+  return 0
 }
 
 prune_releases() {   # keep the newest KEEP_RELEASES releases (never the current one)
@@ -352,8 +463,10 @@ show_status() {
   while IFS= read -r name; do
     is_name "$name" || continue
     d="${INCOMING}/${name}"
-    if [[ -f "$d/READY" ]]; then echo "  ${name}: READY (will be installed on the next run)"
-    elif [[ -f "$d/FAILED" ]]; then echo "  ${name}: FAILED - $(sed -n 3p "$d/FAILED" | cut -c1-150)"
+    if ! upload_dir_ok "$name"; then echo "  ${name}: NOT USED - the folder must be owned by root with the sticky bit set (chmod 3770)"
+    elif [[ -f "$d/READY" ]]; then echo "  ${name}: READY (will be installed on the next run)"
+    elif [[ -f "$d/FAILED" && ! -L "$d/FAILED" ]]; then
+      echo "  ${name}: FAILED - $(timeout 5 dd if="$d/FAILED" iflag=nofollow,nonblock bs=4096 count=1 status=none 2>/dev/null | sed -n 3p | sanitize | cut -c1-150)"
     elif [[ -n "$(ls -A "$d" 2>/dev/null)" ]]; then echo "  ${name}: files present, waiting for READY"
     fi
   done < <(find "$INCOMING" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
@@ -371,10 +484,18 @@ main() {
   done
   [[ -x "$PUSH_BIN" ]] || usage_die "f5-cert-push not found or not executable: ${PUSH_BIN}"
   [[ -d "$INCOMING" ]] || usage_die "incoming directory does not exist: ${INCOMING}"
+  local real
+  real="$(trusted_tree "$INCOMING")" \
+    || usage_die "refusing to use ${INCOMING}: ${TRUST_BAD} can be changed by someone other than root. Every directory from / down to the upload directory must be owned by root and not writable by group or others (the upload folders inside it: owned by root, mode 3770). See docs/MANUAL-UPLOAD.md."
+  INCOMING="$real"
 
   if (( STATUS )); then show_status; exit 0; fi
 
-  mkdir -p -- "$STORE" && chmod 700 -- "$STORE" || usage_die "cannot use the store directory ${STORE}"
+  if [[ ! -d "$STORE" ]]; then mkdir -p -- "$STORE" || usage_die "cannot create the store directory ${STORE}"; fi
+  real="$(trusted_tree "$STORE")" \
+    || usage_die "refusing to use ${STORE}: ${TRUST_BAD} can be changed by someone other than root"
+  STORE="$real"
+  chmod 700 -- "$STORE" || usage_die "cannot use the store directory ${STORE}"
   exec 9>"${STORE}/.lock" || usage_die "cannot open ${STORE}/.lock"
   if ! flock -n 9; then warn "another ${PROG} run is in progress"; exit 6; fi
 
@@ -390,6 +511,10 @@ main() {
     if ! is_name "$name"; then warn "ignoring upload folder with an unusable name: ${name}"; continue; fi
     if [[ -L "${INCOMING}/${name}" ]]; then warn "ignoring upload folder that is a symbolic link: ${name}"; continue; fi
     if [[ ! -f "${INCOMING}/${name}/READY" || -L "${INCOMING}/${name}/READY" ]]; then continue; fi
+    if ! upload_dir_ok "$name"; then
+      warn "ignoring upload folder ${name}: it must be a directory owned by root, not writable by group or others unless the sticky bit is set (install -d -m 3770 -o root -g GROUP ...)"
+      continue
+    fi
     n=$((n + 1))
     process_upload "$name" || true
   done < <(find "$INCOMING" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -printf '%f\n' 2>/dev/null | sort)

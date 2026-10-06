@@ -56,11 +56,19 @@ worth more than a style remark.</p>
 </tr>
 <tr>
 <td><code>f5-cert-push.sh</code></td>
-<td>the code (one file, about 2,300 lines)</td>
+<td>the code (one file, about 2,900 lines)</td>
 </tr>
 <tr>
-<td><code>tests/offline.sh</code>, <code>tests/f5.sh</code>, <code>tests/lib.sh</code></td>
+<td><code>f5-cert-install.sh</code></td>
+<td>the upload wrapper (runs as root over uploader-writable folders)</td>
+</tr>
+<tr>
+<td><code>tests/offline.sh</code>, <code>tests/install.sh</code>, <code>tests/regress.sh</code>, <code>tests/f5.sh</code>, <code>tests/lib.sh</code></td>
 <td>the evidence</td>
+</tr>
+<tr>
+<td>Section 7 below</td>
+<td>the findings of the first adversarial review (2.0.0) and how each was fixed and tested</td>
 </tr>
 </tbody>
 </table>
@@ -69,8 +77,13 @@ worth more than a style remark.</p>
 <strong>local certificate preparation</strong> (<code>prepare_cert</code>); <strong>BIG-IP access</strong> (<code>f5_load</code>, <code>f5_sh</code>, <code>f5_put</code>, <code>f5_get</code>)
 and the <strong>remote scripts</strong> (<code>define R_*</code>, bash 4.2 code that runs on the BIG-IP); <strong>per-job stages</strong>
 (<code>job_probe</code>, <code>job_gate</code>, <code>job_select_targets</code>, <code>job_backup</code>, <code>job_stage</code>, <code>job_install_*</code>,
-<code>job_switch_profiles</code>, <code>job_verify_*</code>, <code>job_rollback</code>, <code>job_prune</code>); the <strong>job runner</strong> (<code>run_job</code>);
-<strong>selection and actions</strong>; <strong>CLI</strong> (<code>parse_args</code>, <code>main</code>).</p>
+<code>job_switch_profiles</code>, <code>job_verify_*</code>, <code>job_rollback</code>, <code>restore_and_verify</code>, <code>job_prune</code>); the <strong>job
+runner</strong> (<code>run_job</code>, <code>job_abort</code>, <code>job_handle_failure</code>); <strong>selection and actions</strong>; <strong>CLI</strong> (<code>parse_args</code>, <code>main</code>).</p>
+<p>Since 2.1.0 every step that changes the BIG-IP goes through <strong><code>f5_mut</code></strong>: the remote side ignores
+HUP/PIPE, checks that the run still holds the BIG-IP lock (fencing), records the step's output and exit status
+in the lock directory, and ends its reply with <code>STEPEND|&lt;rc&gt;</code>; a lost reply is resolved by polling
+<code>R_STEPRESULT</code>. Signals are handled by <code>on_signal</code> / <code>signal_finish</code> / <code>sig_check</code>, deferred while
+<code>IN_MUTATION</code> is non-zero (<code>mut_begin</code>/<code>mut_end</code>, nestable).</p>
 <h2 id="2-what-the-tool-must-guarantee-the-invariants">2. What the tool must guarantee (the invariants)</h2>
 <p>Try to violate each. A violation is a bug even if no exploit follows.</p>
 <table>
@@ -111,7 +124,7 @@ and the <strong>remote scripts</strong> (<code>define R_*</code>, bash 4.2 code 
 </tr>
 <tr>
 <td><strong>I8</strong></td>
-<td><strong>Mutual exclusion</strong>: two runs against the same BIG-IP (same host or different hosts) cannot interleave their changes.</td>
+<td><strong>Mutual exclusion</strong>: two runs against the same BIG-IP (same host or different hosts) cannot interleave their changes. (The BIG-IP lock is a renewed lease with fencing; the residual case is stated in SECURITY.md section 6, item 5.)</td>
 </tr>
 <tr>
 <td><strong>I9</strong></td>
@@ -178,13 +191,23 @@ and the <strong>remote scripts</strong> (<code>define R_*</code>, bash 4.2 code 
 </tr>
 <tr>
 <td>Locking</td>
-<td><code>lock_acquire</code>, <code>remote_lock_acquire</code>, <code>R_LOCK</code>, <code>R_UNLOCK</code></td>
-<td>Races (check-then-act), stale-lock logic, PID reuse, lock release by a non-owner, behaviour when the BIG-IP is unreachable during release</td>
+<td><code>lock_acquire</code>, <code>lock_take</code>, <code>remote_lock_acquire</code>, <code>remote_lock_beat</code>, <code>R_LOCK</code>, <code>R_UNLOCK</code>, <code>R_BEAT</code>, the fence in <code>f5_mut</code></td>
+<td>Races in take-over and release (rename-then-check), lease renewal gaps, PID reuse, a displaced owner continuing, behaviour when the BIG-IP is unreachable during release, the lock deliberately kept after <code>CRITICAL</code></td>
+</tr>
+<tr>
+<td>Tracked steps</td>
+<td><code>f5_mut</code>, <code>R_STEPRESULT</code></td>
+<td>A reply that is lost, truncated, duplicated or forged; a <code>STEPEND</code> line inside a step's own output; a step that never starts vs one that is still running; the poll deadline</td>
 </tr>
 <tr>
 <td>State machine</td>
-<td><code>run_job</code>, <code>job_handle_failure</code>, <code>job_rollback</code></td>
-<td>A failure ordering that leaves the BIG-IP changed but reported as success or plain error; rollback that "succeeds" without actually restoring; double-fault paths</td>
+<td><code>run_job</code>, <code>job_abort</code>, <code>job_handle_failure</code>, <code>job_switch_profiles</code>, <code>job_rollback</code>, <code>restore_and_verify</code>, <code>check_bindings</code></td>
+<td>A failure ordering that leaves the BIG-IP changed but reported as success or plain error; rollback that "succeeds" without actually restoring; double-fault paths; <code>J_CHANGED</code> / <code>J_UNKNOWN</code> transitions</td>
+</tr>
+<tr>
+<td>Backup integrity</td>
+<td><code>job_backup</code>, <code>verify_backup_set</code>, <code>parse_inventory</code> (including the 2.0.0 fallback), <code>fetch_backup_set</code>, <code>R_BACKUP</code>, <code>R_LISTFILES</code></td>
+<td>A set that passes with an item missing, an extra file, a checksum list that does not cover everything, an inventory that disagrees with the plan, a legacy restore script with crafted lines</td>
 </tr>
 <tr>
 <td>SSH connection reuse</td>
@@ -198,8 +221,8 @@ and the <strong>remote scripts</strong> (<code>define R_*</code>, bash 4.2 code 
 </tr>
 <tr>
 <td><strong>Upload wrapper</strong></td>
-<td><code>f5-cert-install.sh</code>: <code>process_upload</code>, <code>clear_upload</code>, <code>prune_releases</code>, <code>main</code></td>
-<td>Runs as root over a directory <strong>writable by uploaders</strong>. Symlinks, hard links, FIFOs, devices or races planted in <code>incoming/</code>; the <code>dd iflag=nofollow,nonblock</code>-then-inspect copy; names of folders; the atomic <code>current</code> switch (<code>ln</code> + <code>mv -T</code>); what a hostile upload can make root read, write or print (the <code>FAILED</code> file is written into the uploader-writable folder)</td>
+<td><code>f5-cert-install.sh</code>: <code>trusted_tree</code>, <code>dir_safe</code>, <code>upload_dir_ok</code>, <code>write_failed</code>, <code>process_upload</code>, <code>clear_upload</code>, <code>prune_releases</code>, <code>main</code></td>
+<td>Runs as root over folders <strong>writable by uploaders</strong>. The trust model is now: every directory down to <code>incoming</code> changeable only by root; upload folders root-owned and sticky; root never opens an uploader-controlled path for writing (<code>mktemp</code> + rename for <code>FAILED</code>, <code>unlink</code> for removal); reads via <code>dd iflag=nofollow,nonblock</code> with link-count check. Try: a configuration of permissions the checks accept but that still lets an uploader redirect root; <code>readlink -f</code> edge cases; a race the sticky bit does not cover</td>
 </tr>
 <tr>
 <td>Selection</td>
@@ -246,10 +269,24 @@ and the <strong>remote scripts</strong> (<code>define R_*</code>, bash 4.2 code 
     Can they get root to read a file they cannot (via a hard link on a system without
     <code>fs.protected_hardlinks</code>), install something that was not validated, delete or overwrite outside their
     folder, or leak content through <code>FAILED</code>? Can a crafted folder name or <code>READY</code> cause harm?</li>
+<li><strong>Tracked steps (2.1.0).</strong> <code>f5_mut</code> decides the outcome from the last <code>STEPEND|n</code> line of the reply, then
+    from <code>R_STEPRESULT</code>. Can a step's own output, a partial reply, or a slow BIG-IP make it report a wrong
+    outcome? Two consecutive <code>STEP|NONE</code> answers are read as "never started": is there a schedule in which the
+    step starts after that?</li>
+<li><strong>The lease (2.1.0).</strong> <code>R_LOCK</code> renames a stale lock away, checks it is still the stale owner's, and puts it
+    back otherwise. Is there an interleaving of two contenders and a renewing owner in which two runs both
+    believe they hold the lock <em>and both pass their fence checks</em>?</li>
+<li><strong>Rollback verification (2.1.0).</strong> <code>restore_and_verify</code> compares certificate objects by the fingerprint
+    <code>tmsh</code> reports, and keys by the SHA-256 of their public key computed on the BIG-IP from the filestore file
+    (<code>find_pem</code>). Can a restore that did not really restore pass these checks?</li>
+<li><strong>2.0.0 backup sets</strong> are read by parsing their restore script (<code>parse_inventory</code>). Can a crafted 2.0.0-style
+    script make the parser accept a line that the script would execute differently?</li>
 </ol>
 <h2 id="5-running-the-evidence">5. Running the evidence</h2>
 <pre><code class="language-bash">tests/offline.sh                      # no BIG-IP needed; Linux; about a minute
-shellcheck f5-cert-push.sh f5-cert-install.sh tests/*.sh   # 0.11.0: no errors; 13 warnings, reviewed, none a defect (see docs/TESTING.md)
+tests/install.sh                      # the upload wrapper; no BIG-IP
+tests/regress.sh                      # one or more cases per finding of the first review; run as root for all of them
+shellcheck f5-cert-push.sh f5-cert-install.sh tests/*.sh   # see docs/TESTING.md, &quot;Static analysis&quot;
 # with a LAB BIG-IP you may modify (creates and removes zzz-* objects only):
 F5_TEST_CONFIRM=yes F5_TEST_HOST=... F5_TEST_KEY=... tests/f5.sh
 </code></pre>
@@ -346,6 +383,150 @@ response, describe the exact tmsh output; the remote scripts can be fed canned i
 <tr>
 <td>Unvalidated remote data</td>
 <td>Names read back from the BIG-IP (used in rollback specs and the restore script) were not re-validated. Added <code>safe_obj</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="7a-findings-of-the-first-adversarial-review-200-fixed-in-210">7a. Findings of the first adversarial review (2.0.0), fixed in 2.1.0</h3>
+<p>Each was reproduced independently before it was fixed (all 14 reproductions confirmed). Against 2.1.0 the
+review's own harness reproduces 13 of the 14 no longer; the 14th (<code>backup_without_integrity</code>) asserts only that
+no local <code>SHA256SUMS</code> was written, which is also true when the backup is refused, as it now is. Each has at least
+one case in <code>tests/regress.sh</code> that sets up the reported failure and requires the safe outcome. Where the BIG-IP
+itself matters, <code>tests/f5.sh</code> covers it too.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Finding (severity)</th>
+<th>Fix</th>
+<th>Tests</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R1</td>
+<td>Rejection followed an uploader-planted <code>FAILED</code> symlink (high)</td>
+<td><code>write_failed</code>: report written to a <code>mktemp</code> file in the folder, then <code>mv -T</code> over <code>FAILED</code> (replaces the entry, never follows it). Folders must be root-owned and sticky, so the temporary file cannot be touched meanwhile</td>
+<td>regress R1; R1-R3 as root with a real unprivileged uploader</td>
+</tr>
+<tr>
+<td>R2</td>
+<td>Upload cleanup could <code>shred</code> a swapped-in symlink's target (high)</td>
+<td>Uploads are removed with <code>unlink</code> only; never opened for writing. Private copies are still shredded</td>
+<td>regress R2</td>
+</tr>
+<tr>
+<td>R3</td>
+<td><code>nofollow</code> did not protect the upload folder or its ancestors (high)</td>
+<td><code>trusted_tree</code>: the real path of <code>incoming</code> and every ancestor must be changeable only by root (or the invoking user); <code>upload_dir_ok</code>: an upload folder must be root-owned and, if writable, sticky. Hard-linked upload files are refused</td>
+<td>regress R3 (three cases) and the root case</td>
+</tr>
+<tr>
+<td>R4</td>
+<td>A lost reply after a commit was treated as "unchanged" (high)</td>
+<td><code>f5_mut</code> tracked steps; <code>J_CHANGED=1</code> before dispatch; an explicit failure is confirmed by <code>check_bindings</code>; an unknown outcome sets <code>J_UNKNOWN</code> and ends <code>CRITICAL</code> even after a verified rollback; created objects are only removed once the state is confirmed</td>
+<td>regress R4 (four cases); f5 s21</td>
+</tr>
+<tr>
+<td>R5</td>
+<td>Rollback could confirm success with a target missing (high)</td>
+<td><code>restore_and_verify</code> + <code>check_bindings</code>: every profile exists with exactly one matching entry and exact bindings; object contents compared by fingerprint / public-key hash; absent objects must be absent. Used by automatic and manual rollback</td>
+<td>regress R5 (two cases); f5 s5, s6, s9</td>
+</tr>
+<tr>
+<td>R6</td>
+<td><code>tmsh</code> exit status ignored; restore ignored a failed save (high)</td>
+<td><code>tmsh_ok</code> / <code>run_txn</code> require exit 0 <strong>and</strong> no error text; the restore script checks every command including the save</td>
+<td>regress R6 (four cases)</td>
+</tr>
+<tr>
+<td>R7</td>
+<td>Signals after a change exited without rollback (high)</td>
+<td><code>on_signal</code> defers during a BIG-IP step (<code>IN_MUTATION</code>), then <code>signal_finish</code> rolls back and verifies (3 / 5); before any change 130</td>
+<td>regress R7 (four cases); f5 s12 now requires the previous certificate unless <code>UPDATED</code>; f5 s23 (SIGTERM during the switch on a real BIG-IP: switch finishes, rolled back, exit 3)</td>
+</tr>
+<tr>
+<td>R8</td>
+<td>A live run's BIG-IP lock could expire and be stolen (high)</td>
+<td>Lease renewed at every step (<code>beat</code>); atomic take-over and release (rename, check owner, put back); fencing in every tracked step; <code>remote_lock_stale_minutes</code> must exceed <code>2 x remote_timeout + 300 s</code>; local stale take-over made atomic too</td>
+<td>regress R8 (three cases); f5 s11, s22</td>
+</tr>
+<tr>
+<td>R9</td>
+<td>A partial fixed-name refresh reported <code>UPDATED</code>/0 (high)</td>
+<td>A fixed-name failure is a failed deployment (<code>job_abort</code> -&gt; rollback); <code>job_verify_fixed</code> reads back certificate, chain, fullchain and key</td>
+<td>regress R9 (two cases); f5 s13, s14</td>
+</tr>
+<tr>
+<td>R10</td>
+<td>Backup accepted without its files or checksum coverage (medium)</td>
+<td>Inventory planned locally and compared exactly; <code>SHA256SUMS</code> strictly parsed and covering every file (restore script, inventory, manifest included); every PEM parses; restore script exits 10 on a missing or mismatched checksum list</td>
+<td>regress R10 (seven cases); f5 s2, s5</td>
+</tr>
+<tr>
+<td>R11</td>
+<td>Explicit fullchain not validated (medium)</td>
+<td>A supplied fullchain must equal cert + chain (by fingerprints); the uploaded fullchain object is always built from the validated parts</td>
+<td>regress R11</td>
+</tr>
+<tr>
+<td>R12</td>
+<td>Conflicts compared spellings, not targets (medium)</td>
+<td>Compared by device (host:port), fully qualified profile, and entry overlap (an implicit entry overlaps all)</td>
+<td>regress R12 (five configurations)</td>
+</tr>
+<tr>
+<td>R13</td>
+<td>Manual rollback needed the new local certificate (medium)</td>
+<td><code>job_init_restore</code> needs only the target configuration; the set is fetched from the BIG-IP and checked; 2.0.0 sets still restorable</td>
+<td>regress R13 (two cases); f5 s5</td>
+</tr>
+<tr>
+<td>obs</td>
+<td>Multi-line messages could look like records</td>
+<td>Continuation lines are prefixed <code>|</code></td>
+<td>regress (log lines)</td>
+</tr>
+<tr>
+<td>obs</td>
+<td><code>job_is_current</code> ignored fixed-name drift</td>
+<td>Fixed-name objects compared completely (certificate, chain, fullchain, key)</td>
+<td>f5 s13, s14</td>
+</tr>
+<tr>
+<td>obs</td>
+<td>Local stale-lock race</td>
+<td>Rename-then-check take-over</td>
+<td>regress R8 (local)</td>
+</tr>
+<tr>
+<td>obs</td>
+<td><code>--list-backups</code> / <code>--rollback</code> exit codes</td>
+<td>Listing failures exit 1; lock busy 6, lock error 1</td>
+<td>-</td>
+</tr>
+<tr>
+<td>obs</td>
+<td>Wrapper <code>chmod</code> relied on a glob under <code>set -f</code></td>
+<td>Explicit file list</td>
+<td>regress (chmod)</td>
+</tr>
+<tr>
+<td>obs</td>
+<td><code>collect_created</code> / discovery trusted reply names</td>
+<td>Only the objects requested are recorded as created; discovery skips names in unexpected forms</td>
+<td>regress (created objects)</td>
+</tr>
+<tr>
+<td>(found while testing the fixes)</td>
+<td><code>lock_dir</code> was documented for <code>[f5:]</code> but rejected there</td>
+<td>Accepted</td>
+<td>regress R13</td>
+</tr>
+<tr>
+<td>(found by the BIG-IP suite while testing the fixes)</td>
+<td>The new <code>--rollback</code> fetch called <code>ssh</code> inside a <code>while read</code> loop; <code>ssh</code> swallowed the rest of the file list, so only one file was copied (and the set was then, correctly, refused)</td>
+<td><code>f5_get</code> reads stdin from <code>/dev/null</code>; the list is collected before any transfer</td>
+<td>regress R13 (fails without the fix); f5 s5</td>
 </tr>
 </tbody>
 </table>

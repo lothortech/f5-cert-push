@@ -45,7 +45,7 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
                                         not older than what is installed)
                               /etc/f5-certs/www/releases/&lt;time&gt;/   (new release)
                               /etc/f5-certs/www/current  -&gt; releases/&lt;time&gt;  (atomic switch)
-                              shred the upload
+                              remove the upload
                               f5-cert-push.sh --all   ------------------------------------&gt;  profiles updated
                               (retried on later runs until it succeeds)
 </code></pre>
@@ -79,12 +79,16 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 <td>Rejected if it expires within <code>--min-days</code> (default 7)</td>
 </tr>
 <tr>
-<td>A symlink planted in the upload folder</td>
-<td>Files are copied without following links and anything that is not a plain file is refused</td>
+<td>A symlink or hard link planted in the upload folder</td>
+<td>Files are copied without following links; anything that is not a plain, singly-linked file is refused. Root never writes or deletes through a path the uploader can redirect: <code>FAILED</code> is written to a new file and renamed into place, uploads are removed with <code>unlink</code></td>
+</tr>
+<tr>
+<td>The upload folder swapped for another directory</td>
+<td>The upload folders must be owned by root with the sticky bit set, below directories only root can change; the wrapper refuses to run, or skips the folder, otherwise</td>
 </tr>
 <tr>
 <td>Keys left lying around</td>
-<td>The upload is shredded after a successful install; installed files are root-only (0600 in 0700 directories)</td>
+<td>The upload is removed after a successful install (and the private copies shredded); installed files are root-only (0600 in 0700 directories). Put the upload area on tmpfs or an encrypted filesystem if the uploaded key must not linger on disk</td>
 </tr>
 <tr>
 <td>A failed push forgotten</td>
@@ -108,10 +112,15 @@ $EDITOR /etc/f5-cert-push.conf
 
 # 3. Where people upload: a group of uploaders, one folder per certificate.
 groupadd certupload                                 # add the operators to this group
-install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming
-install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming/www
-install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming/api
+install -d -m 0755 -o root -g root       /srv/f5-certs
+install -d -m 0750 -o root -g certupload /srv/f5-certs/incoming
+install -d -m 3770 -o root -g certupload /srv/f5-certs/incoming/www
+install -d -m 3770 -o root -g certupload /srv/f5-certs/incoming/api
 # (one folder per [cert:NAME] in the config; the folder name IS the cert name)
+# 3770 = setgid (new files stay in the group) + sticky (uploaders cannot rename or
+# remove anything they did not create, including the folder's contents made by root).
+# The wrapper refuses to run unless every directory from / down to incoming can only
+# be changed by root, and skips an upload folder that is not root-owned and sticky.
 
 # 4. Where certificates are installed: root only.
 install -d -m 700 /etc/f5-certs
@@ -183,7 +192,8 @@ never need access to <code>/etc/f5-certs</code>.</p>
    sftp&gt; put /dev/null READY          # or: touch READY</code></p>
 <ol start="3">
 <li>Within 15 minutes it is installed and pushed. The folder is then empty. If it was rejected, the folder
-   still holds your files plus a <code>FAILED</code> file that says why; fix the problem and create <code>READY</code> again.</li>
+   still holds your files plus a <code>FAILED</code> file that says why; fix the problem and create <code>READY</code> again.
+   (<code>FAILED</code> belongs to root: you can read it but not delete it; it is replaced or removed on the next run.)</li>
 </ol>
 <p>To see what is installed and what is waiting:</p>
 <pre><code class="language-bash">sudo /opt/f5-cert-push/f5-cert-install.sh --status
@@ -232,6 +242,10 @@ Upload folders in /srv/f5-certs/incoming:
 <tr>
 <td>is not a regular file (symbolic links are refused)</td>
 <td>Upload the file itself, not a link.</td>
+</tr>
+<tr>
+<td>is a hard link to another file</td>
+<td>Upload a copy of the file, not a hard link.</td>
 </tr>
 </tbody>
 </table>

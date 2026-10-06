@@ -242,6 +242,8 @@ expect_eq "$(local_backups zzz-cert)" "1" "one backup set on this host"
 B1="$(newest_backup zzz-cert)"
 expect_true "the restore script exists on the BIG-IP" f5 "test -x /shared/cert-backups/zzz-cert/$B1/restore-$B1.sh"
 expect_true "the local backup matches its checksums" bash -c "cd '$BK/t/zzz-cert/$B1' && sha256sum -c --quiet SHA256SUMS"
+expect_true "the checksums cover the restore script and the inventory" bash -c "grep -q ' restore-$B1.sh\$' '$BK/t/zzz-cert/$B1/SHA256SUMS' && grep -q ' INVENTORY\$' '$BK/t/zzz-cert/$B1/SHA256SUMS'"
+expect_true "the inventory records the old binding of zzz-t1" grep -q '^bind|zzz-t1|e1|' "$BK/t/zzz-cert/$B1/INVENTORY"
 expect_true "the backup holds the old (default) key" test -n "$(ls "$BK/t/zzz-cert/$B1"/key.* 2>/dev/null)"
 expect_eq "$(stat -c %a "$BK/t/zzz-cert/$B1")" "700" "the local backup directory is mode 0700"
 expect_eq "$(stat -c %a "$BK/t/zzz-cert/$B1/restore-$B1.sh")" "600" "backup files are mode 0600"
@@ -531,8 +533,17 @@ conf "$BASE_DEPLOY"
 tool --deploy basic --force >/dev/null
 for T in 2 4 6 8 11 14; do
   use_cert "$( [[ $((T % 4)) -eq 0 ]] && echo b || echo c )"
-  run timeout -s TERM "$T" "$BIN" --config "$CF" --deploy basic --force
+  PREV="$(bound_cert zzz-t1 e1)"
+  run timeout --preserve-status -s TERM "$T" "$BIN" --config "$CF" --deploy basic --force
   t_case "interrupted after ${T}s"
+  # The run either finished (UPDATED), or the profiles are back on (or never left)
+  # the previous certificate: rolled back = 3, interrupted before any change = 130.
+  case "$RC" in 0|3|130) t_pass "after ${T}s: exit ${RC} is one of 0, 3, 130" ;; *) t_fail "after ${T}s: exit ${RC}"; printf '%s\n' "$OUT" | tail -8 | sed 's/^/      | /' ;; esac
+  if [[ "$OUT" == *UPDATED* ]]; then
+    [[ "$(bound_cert zzz-t1 e1)" != "$PREV" ]] && t_pass "after ${T}s: the run completed and the new certificate is live" || t_fail "after ${T}s: UPDATED but the profile did not change"
+  else
+    expect_eq "$(bound_cert zzz-t1 e1)" "$PREV" "after ${T}s: the previous certificate is in place (never changed, or rolled back)"
+  fi
   LEFT="$(stage_left)"
   expect_eq "$LEFT" "0" "after ${T}s: no staging directory left on the BIG-IP"
   expect_eq "$(ls -A "$LOCKS" 2>/dev/null | wc -l)" "0" "after ${T}s: the lock was released"
@@ -783,6 +794,103 @@ mkdir -p "$UPIN/up"; cp "$PKI/d.pem" "$UPIN/up/cert.pem"; cp "$PKI/d.chain.pem" 
 run "$INST" --config "$CF" --incoming "$UPIN" --store "$UPST" --min-days 1
 expect_rc 1 "a bad upload (wrong key) is rejected"; expect_eq "$(served_fp "$VSA")" "$(fp_of "$PKI/c.pem")" "the BIG-IP still serves the previous certificate"
 expect_true "the rejection is explained in FAILED" test -s "$UPIN/up/FAILED"
+fi
+
+# A stand-in for ssh, first on PATH, that passes everything to the real ssh but can
+# lose the reply of one particular step, or hand the BIG-IP lock to someone else
+# just before one particular step (FAKE_SSH_MODE; acts once per FAKE_SSH_FLAG).
+FAKEBIN="${TMP}/fakebin"; mkdir -p "$FAKEBIN"
+REALSSH="$(command -v ssh)"
+cat > "$FAKEBIN/ssh" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" bash -s "*) ;; *) exec "${REALSSH}" "\$@" ;; esac
+script="\$(cat)"
+if [[ -n "\${FAKE_SSH_FLAG:-}" && ! -e "\${FAKE_SSH_FLAG}" ]]; then
+  case "\${FAKE_SSH_MODE:-}" in
+    lose-txn-reply)
+      if [[ "\$script" == *'TXNOUT|'* ]]; then
+        : > "\${FAKE_SSH_FLAG}"
+        printf '%s\n' "\$script" | "${REALSSH}" "\$@" >/dev/null 2>&1
+        exit 255
+      fi ;;
+    term-during-txn)
+      if [[ "\$script" == *'TXNOUT|'* ]]; then
+        : > "\${FAKE_SSH_FLAG}"
+        pkill -TERM -o -f -- "f5-cert-push.sh --config \${FAKE_SSH_CF}" 2>/dev/null
+      fi ;;
+    steal-lock-before-backup)
+      if [[ "\$script" == *'absent-cert|absent-key)'* ]]; then
+        : > "\${FAKE_SSH_FLAG}"
+        "${REALSSH}" -T -i "${KEY}" -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile="${KH}" -p "${PORT}" "${BUSER}@${HOST}" \
+          "printf 'other-token\nadmin@elsewhere pid 1\n' > /var/run/f5-cert-push.lock/owner" </dev/null
+      fi ;;
+  esac
+fi
+printf '%s\n' "\$script" | exec "${REALSSH}" "\$@"
+EOF
+chmod 755 "$FAKEBIN/ssh"
+
+#######################################################################
+if want s21; then
+echo "== s21: the reply to the profile switch is lost after the BIG-IP committed it"
+#######################################################################
+use_cert a
+conf "$BASE_DEPLOY"
+tool --deploy basic --force >/dev/null
+use_cert b
+export FAKE_SSH_MODE=lose-txn-reply FAKE_SSH_FLAG="${TMP}/s21.flag"
+rm -f "$FAKE_SSH_FLAG"
+PATH="$FAKEBIN:$PATH" run "$BIN" --config "$CF" --deploy basic
+unset FAKE_SSH_MODE FAKE_SSH_FLAG
+expect_true "the reply of the switch really was dropped" test -e "${TMP}/s21.flag"
+expect_rc 0 "the outcome is read back from the BIG-IP and the deploy completes (exit 0)"
+expect_has "reading the outcome of the step from the BIG-IP" "the lost reply is reported"
+expect_eq "$(bound_fp zzz-t1 e1)" "$CUR_FP" "the profile uses the new certificate"
+expect_eq "$(served_fp "$VSA")" "$CUR_FP" "the virtual server serves the new certificate"
+expect_true "the BIG-IP-side lock was released" f5 "test ! -d /var/run/f5-cert-push.lock"
+fi
+
+#######################################################################
+if want s22; then
+echo "== s22: another run takes the BIG-IP lock mid-run: this run is fenced and stops"
+#######################################################################
+use_cert c
+conf "$BASE_DEPLOY"
+S0="$(snapshot)"
+export FAKE_SSH_MODE=steal-lock-before-backup FAKE_SSH_FLAG="${TMP}/s22.flag"
+rm -f "$FAKE_SSH_FLAG"
+PATH="$FAKEBIN:$PATH" run "$BIN" --config "$CF" --deploy basic --force
+unset FAKE_SSH_MODE FAKE_SSH_FLAG
+expect_true "the lock really was taken over" test -e "${TMP}/s22.flag"
+expect_rc 1 "a run that lost its lock fails (exit 1)"
+expect_has "no longer holds the lock" "the lost lock is reported"
+expect_eq "$(snapshot)" "$S0" "the fenced run changed nothing on the BIG-IP"
+expect_true "the new owner's lock was not removed" f5 "grep -q other-token /var/run/f5-cert-push.lock/owner"
+f5 "rm -rf /var/run/f5-cert-push.lock"
+fi
+
+#######################################################################
+if want s23; then
+echo "== s23: SIGTERM while the profile switch is running on the BIG-IP"
+#######################################################################
+use_cert a
+conf "$BASE_DEPLOY"
+tool --deploy basic --force >/dev/null
+PREV="$(bound_cert zzz-t1 e1)"; PREV_FP="$(bound_fp zzz-t1 e1)"
+use_cert b
+export FAKE_SSH_MODE=term-during-txn FAKE_SSH_FLAG="${TMP}/s23.flag" FAKE_SSH_CF="$CF"
+rm -f "$FAKE_SSH_FLAG"
+PATH="$FAKEBIN:$PATH" run "$BIN" --config "$CF" --deploy basic
+unset FAKE_SSH_MODE FAKE_SSH_FLAG FAKE_SSH_CF
+expect_true "the signal really was sent during the switch" test -e "${TMP}/s23.flag"
+expect_rc 3 "the run rolls back and exits 3"
+expect_has "letting the current step on the BIG-IP finish" "the switch was allowed to finish first"
+expect_has "ROLLED_BACK" "the summary says ROLLED_BACK"
+expect_eq "$(bound_cert zzz-t1 e1)" "$PREV" "zzz-t1 is back on its previous certificate"
+expect_eq "$(bound_cert zzz-t2 e1)" "$PREV" "zzz-t2 is back on its previous certificate"
+expect_eq "$(served_fp "$VSA")" "$PREV_FP" "the virtual server serves the previous certificate"
+expect_true "the BIG-IP-side lock was released" f5 "test ! -d /var/run/f5-cert-push.lock"
+expect_eq "$(stage_left)" "0" "no staging directory is left on the BIG-IP"
 fi
 
 t_summary

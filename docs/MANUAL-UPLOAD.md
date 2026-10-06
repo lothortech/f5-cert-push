@@ -19,7 +19,7 @@ Use this when certificates are **not** issued on the server by certbot, but boug
                                         not older than what is installed)
                               /etc/f5-certs/www/releases/<time>/   (new release)
                               /etc/f5-certs/www/current  -> releases/<time>  (atomic switch)
-                              shred the upload
+                              remove the upload
                               f5-cert-push.sh --all   ------------------------------------>  profiles updated
                               (retried on later runs until it succeeds)
 ```
@@ -33,8 +33,9 @@ Why the extra step instead of pointing `f5-cert-push.sh` straight at the upload 
 | Chain forgotten, or the old chain left in place | `chain.pem` (or a fullchain containing it) is required and must verify against the certificate |
 | The wrong file uploaded (an old certificate) | Rejected if it expires **before** the one already installed (override with `--allow-older`) |
 | A certificate about to expire | Rejected if it expires within `--min-days` (default 7) |
-| A symlink planted in the upload folder | Files are copied without following links and anything that is not a plain file is refused |
-| Keys left lying around | The upload is shredded after a successful install; installed files are root-only (0600 in 0700 directories) |
+| A symlink or hard link planted in the upload folder | Files are copied without following links; anything that is not a plain, singly-linked file is refused. Root never writes or deletes through a path the uploader can redirect: `FAILED` is written to a new file and renamed into place, uploads are removed with `unlink` |
+| The upload folder swapped for another directory | The upload folders must be owned by root with the sticky bit set, below directories only root can change; the wrapper refuses to run, or skips the folder, otherwise |
+| Keys left lying around | The upload is removed after a successful install (and the private copies shredded); installed files are root-only (0600 in 0700 directories). Put the upload area on tmpfs or an encrypted filesystem if the uploaded key must not linger on disk |
 | A failed push forgotten | A pending marker makes every later run retry the push until it succeeds |
 | A rejected upload retried every 15 minutes | `READY` is removed and the reason written to `FAILED`; it waits for a person |
 
@@ -53,10 +54,15 @@ $EDITOR /etc/f5-cert-push.conf
 
 # 3. Where people upload: a group of uploaders, one folder per certificate.
 groupadd certupload                                 # add the operators to this group
-install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming
-install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming/www
-install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming/api
+install -d -m 0755 -o root -g root       /srv/f5-certs
+install -d -m 0750 -o root -g certupload /srv/f5-certs/incoming
+install -d -m 3770 -o root -g certupload /srv/f5-certs/incoming/www
+install -d -m 3770 -o root -g certupload /srv/f5-certs/incoming/api
 # (one folder per [cert:NAME] in the config; the folder name IS the cert name)
+# 3770 = setgid (new files stay in the group) + sticky (uploaders cannot rename or
+# remove anything they did not create, including the folder's contents made by root).
+# The wrapper refuses to run unless every directory from / down to incoming can only
+# be changed by root, and skips an upload folder that is not root-owned and sticky.
 
 # 4. Where certificates are installed: root only.
 install -d -m 700 /etc/f5-certs
@@ -124,6 +130,7 @@ never need access to `/etc/f5-certs`.
 
 3. Within 15 minutes it is installed and pushed. The folder is then empty. If it was rejected, the folder
    still holds your files plus a `FAILED` file that says why; fix the problem and create `READY` again.
+   (`FAILED` belongs to root: you can read it but not delete it; it is replaced or removed on the next run.)
 
 To see what is installed and what is waiting:
 
@@ -152,6 +159,7 @@ Upload folders in /srv/f5-certs/incoming:
 | expires ... BEFORE the installed one | You uploaded an older certificate. If that is intended, an administrator runs with `--allow-older`. |
 | min_days_valid | The certificate expires too soon to deploy. |
 | is not a regular file (symbolic links are refused) | Upload the file itself, not a link. |
+| is a hard link to another file | Upload a copy of the file, not a hard link. |
 
 ## 3. Running it by hand
 

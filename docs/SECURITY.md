@@ -78,18 +78,37 @@ half-finished run.
 Everything read from the BIG-IP is parsed with fixed `awk` programs into fixed fields. Profile, entry and
 object names that come back from it are re-checked against the same strict pattern as names in the
 configuration before they are used to build tmsh commands or the generated restore script, and file names
-returned by a backup are checked before being used to build a local path. Text is stripped to printable ASCII before it is shown or logged, so a hostile value cannot inject
-terminal escape sequences or forge log lines.
+returned by a backup are checked before being used to build a local path. Names that a step reports back
+are never trusted to say what it created: the tool records the exact objects it asked for, and only those
+are ever deleted again. Text is stripped to printable ASCII before it is shown or logged, so a hostile value
+cannot inject terminal escape sequences; a message that spans several lines has every continuation line
+indented and marked `    | `, so remote text cannot pass for a log record of its own.
+
+The device, not a reply, is the authority on what happened: a failed transaction is confirmed by re-reading
+the profiles before the BIG-IP is called unchanged, a rollback is verified by re-reading the profiles and the
+objects' contents (fingerprints and key identities), and the exit status of every `tmsh` command that changes
+something is checked in addition to its output.
 
 ### 4.5 Making unsafe states hard to reach
 
 - No "run everything" default: you must name a deployment, environment, lineage or `--all`.
 - The BIG-IP is refused unless its configuration is **fully loaded** and the unit is **active** (or standby
   with an explicit opt-in).
-- Nothing on the BIG-IP changes until the **backup is complete and verified** and the new files are
-  installed under **new names**. The live configuration changes in **one transaction**.
-- After the change the result is **verified and rolled back automatically** on failure.
-- **Per-BIG-IP locking**, both on this host and **on the BIG-IP itself**, prevents two runs (even from different hosts) from interleaving. The BIG-IP lock records its owner and is released only by the run that took it; one left by a killed run expires after `remote_lock_stale_minutes`.
+- Nothing on the BIG-IP changes until the **backup is complete and verified**: the set must contain exactly
+  the items planned (an inventory compared with a list worked out locally), and its checksums must cover
+  every file, the restore script included. The new files are installed under **new names**. The live
+  configuration changes in **one transaction**.
+- After the change the result is **verified and rolled back automatically** on failure, and the rollback is
+  itself verified on the device. A state that cannot be confirmed is reported `CRITICAL`, never success.
+- **Lost replies are not guessed at.** Each change runs on the BIG-IP immune to a dropped connection, with its
+  outcome recorded there; a lost reply is answered by reading that record.
+- **Signals** (Ctrl-C, `kill`) are deferred while a change is running on the BIG-IP and then lead to a verified
+  rollback if the BIG-IP had changed.
+- **Per-BIG-IP locking**, both on this host and **on the BIG-IP itself**, prevents two runs (even from different
+  hosts) from interleaving. The BIG-IP lock is a lease: it records its owner, is renewed at every step, can only
+  be taken over once it has not been renewed for `remote_lock_stale_minutes`, and take-over and release are
+  atomic (rename, then check). **Fencing**: every change first checks, on the BIG-IP, that its run still holds
+  the lock; a run that has lost it stops.
 - The configuration file must not be group- or world-writable.
 - Pruning only ever removes directories and objects matching the tool's own timestamp pattern, and the BIG-IP
   itself refuses to delete an object that a profile still uses.
@@ -105,25 +124,37 @@ because the tool runs several different commands.
 ### 4.7 The upload wrapper (`f5-cert-install.sh`)
 
 The wrapper runs as root over an upload directory that other people can write to, so it treats every upload
-as hostile:
+as hostile. The rule it follows: **root never acts through a path an uploader can redirect.**
 
-- Only folders whose names pass the same strict name pattern are considered; a folder or `READY` marker that
-  is a symbolic link is ignored.
-- Each file is copied into a private directory with `dd iflag=nofollow,nonblock`, at most 1 MiB + 1 byte, under
-  a timeout: a symbolic link is refused when it is opened (no check-then-use race), a FIFO cannot make the run
-  hang, and a huge file is never copied in full. What is validated and installed is that private copy, so the
-  uploader cannot change it afterwards.
+- **The directories are part of the boundary, and are checked.** The wrapper refuses to run unless the upload
+  directory and every directory above it (its real path, from `/`) are owned by root (or the account running
+  it) and not writable by group or others unless the sticky bit is set. An upload folder is used only if it is
+  a real directory owned by root and, if uploaders can write to it, has the **sticky bit** (mode `3770`). With
+  the sticky bit an uploader can add and change their own files, but cannot rename or replace the folder, nor
+  remove or replace anything root created in it. So the only uploader-controlled part of any path root uses is
+  the last component.
+- **Reading**: each file is copied into a private directory with `dd iflag=nofollow,nonblock`, at most 1 MiB + 1
+  byte, under a timeout: a symbolic link is refused when it is opened (no check-then-use race), a FIFO cannot
+  make the run hang, and a huge file is never copied in full. A file with more than one link (a hard link) is
+  refused. What is validated and installed is that private copy, so the uploader cannot change it afterwards.
+- **Writing**: root never opens an uploader-controlled path for writing. The `FAILED` report is written to a
+  new file created with `mktemp` (exclusive create: a planted name cannot be followed) and then renamed over
+  `FAILED`, which replaces the directory entry rather than following it, even if the uploader planted a
+  symbolic link there.
+- **Removing**: uploaded files are removed with `unlink(2)` (`rm -f`), which removes the directory entry and
+  never follows a link. They are **not** overwritten first (that would mean opening the uploader's path for
+  writing, which a swapped-in link could redirect). The tool's own private copies are shredded. If the uploaded
+  key must not linger on disk, put the upload area on `tmpfs` or an encrypted filesystem (see the checklist).
 - Validation is f5-cert-push's own (`--validate`), plus: the chain is required, and a certificate older than
   the installed one is refused.
 - Installed releases are root-only (0700 directories, 0600 files). The switch to a new release is one atomic
   `rename(2)` of the `current` symlink.
-- After a successful install the uploaded files (including the key) are shredded. A rejected upload's files
-  stay in the uploader's folder (they put them there); the `FAILED` file contains only the tool's message,
-  never file contents.
-- Hard links: on systems with `fs.protected_hardlinks = 1` (the default on current distributions) an uploader
-  cannot hard-link a file they do not own. Where it is 0, a hard link to a root-only file would be copied into
-  the private scratch directory, fail validation (it is not a certificate) and be shredded; its content is not
-  written anywhere the uploader can read. Keep `fs.protected_hardlinks = 1`.
+- A rejected upload's files stay in the uploader's folder (they put them there); the `FAILED` file contains
+  only the tool's message, never file contents.
+- Hard links: keep `fs.protected_hardlinks = 1` (the default on current distributions), so an uploader cannot
+  hard-link a file they do not own; the wrapper additionally refuses any upload file with more than one link.
+
+The `tests/regress.sh` suite checks this as an unprivileged uploader against the real kernel when run as root.
 
 ## 5. What the tool does **not** protect against
 
@@ -146,7 +177,15 @@ as hostile:
    a scratch directory can remain locally if tmpfs is not used (it is removed on reboot when it is).
 3. **The BIG-IP's own copy of a key** (the installed object, and the filestore) is, of course, on the BIG-IP.
 4. **Clock changes** affect the timestamped names and expiry arithmetic; the tool assumes a sane clock.
-5. **A weakened SSH configuration on the BIG-IP** (accepting password logins, old algorithms) is outside the
+5. **A stalled run can lose its lock.** If a run stops renewing the BIG-IP lock for `remote_lock_stale_minutes`
+   (a frozen host, a long network outage), another run may take it over. The first run is fenced at its next
+   step, but a step that was already running on the BIG-IP at that moment completes. The configuration check on
+   `remote_lock_stale_minutes` keeps this to a stall far longer than any single step can take.
+6. **A BIG-IP that stops answering mid-change** for longer than `remote_timeout` (twice: the step, then the
+   read-back) leaves an outcome the tool cannot know; it is reported `CRITICAL` and the lock is kept.
+7. **Uploaded keys are unlinked, not overwritten** (section 4.7). On persistent storage the freed blocks remain
+   until reused (as they would with `shred` on journalling filesystems and SSDs anyway).
+8. **A weakened SSH configuration on the BIG-IP** (accepting password logins, old algorithms) is outside the
    tool's control; `PasswordAuthentication` and the accepted key types are set on the device.
 
 ## 7. Hardening checklist
@@ -161,8 +200,10 @@ as hostile:
 - [ ] `log_file` set, and shipped to your log system. Alert on exit codes 3 and 5.
 - [ ] A scheduled `--check` alerts on exit 4 so a failed push is noticed.
 - [ ] Old tool keys removed from the BIG-IP when people, hosts or keys change (section 10 of the operations guide).
-- [ ] For manual uploads: an SFTP-only, chrooted upload account; `incoming/` mode 2770 root:certupload;
-      `/etc/f5-certs` mode 0700 root; `fs.protected_hardlinks = 1`.
+- [ ] For manual uploads: an SFTP-only, chrooted upload account; `incoming/` owned by root, mode 0750
+      (group `certupload`); each upload folder owned by root, mode **3770** (group `certupload`, sticky);
+      `/etc/f5-certs` mode 0700 root; `fs.protected_hardlinks = 1`; ideally the upload area on tmpfs or an
+      encrypted filesystem.
 - [ ] The test suite (docs/TESTING.md) run against a lab BIG-IP after any change to the script.
 
 ## 8. Reporting a problem

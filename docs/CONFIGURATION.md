@@ -53,12 +53,12 @@ Applies to everything. Any of these can also be set in a more specific section w
 | `connect_timeout` | `15` | f5 | Seconds to wait for the SSH connection. |
 | `remote_timeout` | `300` | f5 | Longest any single step on the BIG-IP may run, in seconds. |
 | `connection_reuse` | `yes` | f5 | Reuse one SSH connection for all the steps of a job (faster, and far fewer logins in the BIG-IP's logs). `no` opens a fresh connection per step. |
-| `remote_lock_stale_minutes` | `30` | f5 | The tool takes a lock **on the BIG-IP** (`/var/run/f5-cert-push.lock`) so two hosts cannot push to it at once. A lock older than this many minutes is assumed abandoned (a killed run) and is taken over. A normal run takes a few minutes; keep this comfortably above that. |
+| `remote_lock_stale_minutes` | `30` | f5 | The tool takes a lock **on the BIG-IP** (`/var/run/f5-cert-push.lock`) so two hosts cannot push to it at once. The lock is a lease, renewed at every step; one that has **not been renewed** for this many minutes belongs to a run that died, and is taken over. A run that has lost its lock stops before its next change. Must be at least `(2 x remote_timeout + 300)` seconds, rounded up to minutes (15 with the default `remote_timeout`); a shorter value is a configuration error. |
 | `min_days_valid` | `1` | cert | Refuse a certificate that expires within this many days. |
 | `auto_rollback` | `yes` | deploy | If a check fails after the profiles were switched, put everything back automatically. |
 | `verify_unreachable` | `warn` | deploy | What to do when a verify endpoint gives no TLS answer at all: `warn` or `fail`. |
 | `chain_check` | `warn` | cert | Whether the certificate must verify against the supplied chain: `off`, `warn` or `fail`. **Needs OpenSSL 1.1.0+**: older versions cannot do this reliably (their `verify -partial_chain` accepts a mismatched chain), so there the check is skipped with a warning, and `fail` is refused. |
-| `fixed_names` | `no` | deploy | Also maintain the four fixed-name objects `<prefix>-cert.pem`, `-chain.pem`, `-fullchain.pem`, `-privkey.pem`. See [Object naming](#object-naming). |
+| `fixed_names` | `no` | deploy | Also maintain the four fixed-name objects `<prefix>-cert.pem`, `-chain.pem`, `-fullchain.pem`, `-privkey.pem`. They are read back after being overwritten; if that fails, the whole deployment fails and is rolled back (profiles included). See [Object naming](#object-naming). |
 | `allow_standby` | `no` | f5 | Permit deploying to a BIG-IP that reports STANDBY. |
 | `log_file` | none | | Append a timestamped log of every run (created mode 0600). |
 | `lock_dir` | see right | f5 | Where the per-BIG-IP lock lives. Default `/var/lock/f5-cert-push` for root, otherwise `$XDG_RUNTIME_DIR` or `/tmp`. |
@@ -76,7 +76,7 @@ One BIG-IP. `NAME` is how deployments refer to it and appears in backup paths an
 | `user` | `root` | SSH account. It must be able to run `tmsh` **and** read `/config/filestore`; in practice `root`. |
 | `ssh_key` | ssh default | Private key file. Used with `IdentitiesOnly`, so only this key is offered. Prefer a key dedicated to this tool. |
 | `partition` | `Common` | The BIG-IP partition that holds the certificates and profiles. |
-| `known_hosts_file`, `strict_host_key_checking`, `connect_timeout`, `remote_timeout`, `backup_dir_remote`, `keep`, `allow_standby` | from `[defaults]` | Per-BIG-IP overrides. |
+| `known_hosts_file`, `strict_host_key_checking`, `connect_timeout`, `remote_timeout`, `remote_lock_stale_minutes`, `connection_reuse`, `backup_dir_remote`, `keep`, `allow_standby`, `lock_dir` | from `[defaults]` | Per-BIG-IP overrides. |
 
 Two `[f5:]` sections that point at the same `host:port` are treated as one device for locking: their
 deployments run one after another, never at once. The lock exists both on this host and **on the BIG-IP
@@ -92,7 +92,7 @@ One certificate: where its files are and what to call it on the BIG-IP.
 | `cert` | The **leaf** certificate only (exactly one certificate). |
 | `key` | The private key (PEM, unencrypted). |
 | `chain` | The intermediate certificates (optional). Leave it out if there are none. |
-| `fullchain` | Leaf followed by intermediates. If you give `fullchain` and `key` but no `cert`, the leaf and the chain are split out for you. |
+| `fullchain` | Leaf followed by intermediates. If you give `fullchain` and `key` but no `cert`, the leaf and the chain are split out for you. If you also give `cert` (or `chain`), the fullchain must be **exactly** that certificate followed by exactly those intermediates, or the certificate is refused. |
 | `object_prefix` | The name used for objects on the BIG-IP. Defaults to the section name. At most 48 characters. |
 | `min_days_valid`, `chain_check` | Overrides of the defaults. |
 
@@ -105,6 +105,8 @@ What is checked (all locally, before the BIG-IP is contacted):
 - the key is a single unencrypted PEM private key and **matches the leaf's public key** (RSA and EC);
 - the leaf is one certificate, currently valid, not expiring within `min_days_valid`;
 - every chain certificate parses, and (per `chain_check`) the leaf verifies against the chain;
+- a supplied fullchain matches the certificate and chain (every certificate in it parses). The fullchain
+  object uploaded for `fixed_names` is always built from the validated certificate and chain;
 - a key file readable by other users produces a warning.
 
 The files are copied once into a private scratch directory and **those copies** are validated and uploaded,
@@ -126,8 +128,17 @@ Connects one certificate to one or more BIG-IPs and says what to update there.
 | `keep`, `auto_rollback`, `fixed_names`, `verify_unreachable` | from `[defaults]` | Per-deployment overrides. |
 
 Two enabled deployments may not manage the same profile (or the same profile entry) on the same BIG-IP, and
-may not use the same `object_prefix` for different certificates on the same BIG-IP. The tool refuses such a
-file at load time.
+may not use the same `object_prefix` for different certificates on the same BIG-IP (and partition). The tool
+refuses such a file at load time. "The same" is decided by what the names mean on the device, not by how they
+are spelled:
+
+- a BIG-IP is identified by `host` and `port`, so two `[f5:]` sections for one device are one BIG-IP;
+- a bare profile name means `/<partition>/<name>`, so `www-clientssl` and `/Common/www-clientssl` are the same;
+- a profile given without an entry overlaps **every** entry of that profile; two different named entries
+  (for example `site:rsa` and `site:ecdsa`) do not overlap.
+
+The same overlap within one deployment's own `profile` lines is refused too. (One deployment that lists two
+`[f5:]` names for the same device deploys the same certificate twice, which is harmless and allowed.)
 
 ## Profiles and entries
 

@@ -138,7 +138,7 @@ by SHA-256 fingerprint), the deployment is skipped with <code>UPTODATE</code>, n
 </tr>
 <tr>
 <td>5</td>
-<td><strong>Back up</strong> the current objects to the BIG-IP and here; verify checksums</td>
+<td><strong>Back up</strong> the current objects to the BIG-IP and here. The set is checked against the list of what it must contain (worked out here, from the plan), every file is checked against <code>SHA256SUMS</code>, and the checksums must cover every file including the restore script</td>
 <td>stop; nothing touched</td>
 </tr>
 <tr>
@@ -154,12 +154,17 @@ by SHA-256 fingerprint), the deployment is skipped with <code>UPTODATE</code>, n
 <tr>
 <td>8</td>
 <td><strong>Switch</strong> all profiles in one transaction and save</td>
-<td>transaction failed: nothing changed, new objects removed</td>
+<td>if the BIG-IP reports a failure, the profiles are <strong>re-read</strong> to confirm nothing changed, then the new objects are removed; if it cannot be confirmed, as step 9</td>
 </tr>
 <tr>
 <td>9</td>
 <td>Verify bindings, then the endpoints</td>
 <td><strong>roll back</strong> (exit 3), or exit 1 if <code>auto_rollback = no</code></td>
+</tr>
+<tr>
+<td>9a</td>
+<td>With <code>fixed_names = yes</code>: overwrite the fixed-name objects, then read them back</td>
+<td><strong>roll back</strong> everything (exit 3), as step 9</td>
 </tr>
 <tr>
 <td>10</td>
@@ -174,6 +179,24 @@ by SHA-256 fingerprint), the deployment is skipped with <code>UPTODATE</code>, n
 </tbody>
 </table>
 <p>Steps 1 to 7 cannot alter what the BIG-IP serves. The single moment of change is step 8.</p>
+<p><strong>Every step that changes the BIG-IP is tracked on the BIG-IP.</strong> It runs only if this run still holds the
+BIG-IP lock, it keeps going if the SSH connection drops, and its output and exit status are recorded on the
+BIG-IP. If the reply is lost (a dropped connection, a timeout), the tool reads the step's real outcome back
+instead of guessing, waiting up to <code>remote_timeout</code> for a step that is still running. If the outcome still
+cannot be established, the job is treated as <strong>changed</strong>: it is rolled back, and the result is <code>CRITICAL</code>
+even if the rollback is verified (the step might still complete later).</p>
+<h3 id="interrupting-a-run-ctrl-c-kill-a-service-stop">Interrupting a run (Ctrl-C, <code>kill</code>, a service stop)</h3>
+<p>A signal never leaves a BIG-IP changed but unverified:</p>
+<ul>
+<li><strong>During a step on the BIG-IP</strong>, the step is allowed to finish (a profile switch is never cut in half), then
+  the tool recovers as below. Further signals are ignored while it recovers.</li>
+<li><strong>Before anything changed</strong>, the run stops: objects it installed are removed, exit 130.</li>
+<li><strong>After the profiles (or fixed-name objects) changed</strong>, it rolls back and verifies: exit 3, or 5 if that
+  cannot be confirmed. With <code>auto_rollback = no</code> it stops with <code>FAILED_CHANGED</code> and prints the rollback command.</li>
+<li><strong>After a deployment was completed and verified</strong> (during pruning), it finishes that deployment, skips the
+  rest, and exits 130.</li>
+</ul>
+<p><code>kill -9</code> cannot be handled by any program: see <a href="SECURITY.html">SECURITY.html</a>, section 6.</p>
 <h3 id="reading-the-summary">Reading the summary</h3>
 <pre><code>==================== SUMMARY ====================
   DEPLOYMENT@BIG-IP                  RESULT         DETAIL
@@ -208,7 +231,7 @@ by SHA-256 fingerprint), the deployment is skipped with <code>UPTODATE</code>, n
 </tr>
 <tr>
 <td><code>RESTORED</code></td>
-<td><code>--rollback</code> completed</td>
+<td><code>--rollback</code> completed <strong>and verified</strong> on the device</td>
 <td>0</td>
 </tr>
 <tr>
@@ -228,12 +251,12 @@ by SHA-256 fingerprint), the deployment is skipped with <code>UPTODATE</code>, n
 </tr>
 <tr>
 <td><code>ROLLED_BACK</code></td>
-<td>Failed after the switch; put back automatically</td>
+<td>Failed after the switch; put back automatically <strong>and verified</strong></td>
 <td>3</td>
 </tr>
 <tr>
 <td><code>CRITICAL</code></td>
-<td>Failed and the automatic rollback <strong>also</strong> failed; act now</td>
+<td>The BIG-IP's state is <strong>not confirmed</strong>: the rollback (or a <code>--rollback</code>) could not be verified, or a step never reported its outcome. Act now; see section 8. The BIG-IP lock is left in place</td>
 <td>5</td>
 </tr>
 <tr>
@@ -243,6 +266,7 @@ by SHA-256 fingerprint), the deployment is skipped with <code>UPTODATE</code>, n
 </tr>
 </tbody>
 </table>
+<p>An interrupted run that reported nothing worse exits 130.</p>
 <hr />
 <h2 id="3-automating-renewals-and-monitoring">3. Automating renewals and monitoring</h2>
 <h3 id="31-from-certbot">3.1 From certbot</h3>
@@ -302,29 +326,55 @@ regularly and alert on exit 4:</p>
 <h2 id="4-rollback">4. Rollback</h2>
 <h3 id="41-automatic">4.1 Automatic</h3>
 <p>After switching profiles the tool re-reads them and checks each target entry uses exactly the new
-objects, then probes your <code>verify</code> endpoints. If anything fails and <code>auto_rollback = yes</code> (the default) it
-runs the restore script and re-reads the profiles to confirm they are back on their previous objects.
-Result <code>ROLLED_BACK</code>, exit 3. The objects created for the failed attempt are removed.</p>
+objects, then probes your <code>verify</code> endpoints (and, with <code>fixed_names = yes</code>, reads the fixed-name objects
+back). If anything fails and <code>auto_rollback = yes</code> (the default) it runs the restore script and then
+<strong>verifies the result on the device</strong> (section 4.4). Result <code>ROLLED_BACK</code>, exit 3. The objects created for
+the failed attempt are removed. If the result cannot be verified: <code>CRITICAL</code>, exit 5.</p>
 <h3 id="42-manual">4.2 Manual</h3>
 <pre><code class="language-bash">f5-cert-push.sh --deploy prod-www --list-backups
 f5-cert-push.sh --deploy prod-www --rollback --set 20260930-162806
 </code></pre>
 <p><code>--set TS</code> restores <strong>the state captured just before run <code>TS</code></strong>, which is the state the BIG-IP was in
 before that deployment. Every run prints its own rollback command at the end.</p>
+<p>A manual rollback does <strong>not</strong> need the certificate that is being undone: the local certificate files may
+be missing, expired or invalid. It copies the backup set from the BIG-IP, checks it (every file present and
+covered by <code>SHA256SUMS</code>, the inventory well-formed, every PEM parses), runs its restore script, and verifies
+the result exactly like an automatic rollback. Result <code>RESTORED</code> (0), <code>FAILED</code> (1, nothing was changed: the
+set was missing or failed its checks) or <code>CRITICAL</code> (5, the restore ran but could not be verified).</p>
+<p>Sets written by version 2.0.0 have no inventory and their restore script is not covered by their checksums;
+they can still be restored: their contents are read from the restore script itself (only the exact lines 2.0.0
+wrote are accepted), the configuration is saved again afterwards (2.0.0's script ignored a failed save), and
+the result is verified the same way. The tool says when it is restoring a 2.0.0 set.</p>
 <p>You can also run the script directly on the BIG-IP without the tool:</p>
 <pre><code class="language-bash">bash /shared/cert-backups/&lt;object_prefix&gt;/&lt;TS&gt;/restore-&lt;TS&gt;.sh
+echo $?      # 0 restored and saved; 10 integrity check failed, nothing changed; other: failed part-way
 </code></pre>
 <h3 id="43-what-the-restore-script-does">4.3 What the restore script does</h3>
 <p><code>restore-&lt;TS&gt;.sh</code> is generated for each run and lists exactly what to undo:</p>
 <ol>
-<li><strong>Verifies the backup files against <code>SHA256SUMS</code>.</strong> If any file has changed it refuses and changes nothing.</li>
+<li><strong>Verifies the whole set against <code>SHA256SUMS</code></strong> (the PEM copies, the inventory, the manifest and the restore
+   script itself). If the checksum list is missing or anything does not match, it changes nothing and exits 10.</li>
 <li>Re-installs any old certificate or key <strong>object that no longer exists</strong> (for example one removed by
    pruning) from the backed-up PEM. Objects that still exist are left alone.</li>
 <li>Re-installs the <strong>fixed-name</strong> objects from backup (these were overwritten in place).</li>
 <li>Repoints every profile entry to its previous certificate, chain and key, in <strong>one transaction</strong>.</li>
+<li>Deletes fixed-name objects that <strong>did not exist</strong> before that run (they were created by it).</li>
 <li>Saves the configuration.</li>
 </ol>
+<p>Every <code>tmsh</code> command's exit status is checked as well as its output; any failure stops the script with a
+non-zero exit (a failed save included).</p>
 <p>Backups contain <strong>private keys</strong>; the restore script and PEMs are mode 0600 in a 0700 directory.</p>
+<h3 id="44-how-a-rollback-is-verified">4.4 How a rollback is verified</h3>
+<p>The device is the authority, not the restore script's exit status. After a restore the tool re-reads the
+BIG-IP and requires, for every item in the backup's <code>INVENTORY</code>:</p>
+<ul>
+<li>each profile exists and has <strong>exactly one</strong> entry of that name, bound to exactly the old certificate, chain
+  and key;</li>
+<li>each backed-up certificate object holds the backed-up certificate (SHA-256 fingerprint), and each backed-up
+  key object holds the backed-up key (compared by the SHA-256 of its public key);</li>
+<li>each object that did not exist before does not exist now.</li>
+</ul>
+<p>Anything else (including a profile or entry that is missing) is reported as not restored.</p>
 <hr />
 <h2 id="5-ha-pairs-and-multiple-big-ips">5. HA pairs and multiple BIG-IPs</h2>
 <p><strong>The tool does not synchronise a device group.</strong> For an HA pair:</p>
@@ -354,17 +404,26 @@ deployment does not stop the others unless you pass <code>--fail-fast</code>.</p
 <li><strong>A certificate version a profile still uses is never deleted</strong>; the BIG-IP refuses.</li>
 <li><strong>Leftover staging directories</strong> on the BIG-IP (<code>/var/tmp/f5-cert-push.*</code>, from a run killed with <code>kill -9</code>
   or a lost connection) are swept automatically by the next run once they are two hours old.</li>
-<li><strong>Stale locks</strong> from a killed run are cleaned up: a local lock whose process no longer exists is removed at
-  once; the lock on the BIG-IP (<code>/var/run/f5-cert-push.lock</code>, which records its owner) is taken over once it is
-  older than <code>remote_lock_stale_minutes</code> (default 30). You can also remove it by hand:
-  <code>rm -rf /var/run/f5-cert-push.lock</code> on the BIG-IP.</li>
+<li><strong>Locks.</strong> The local lock records its process; a lock whose process no longer exists is taken over at once.
+  The lock on the BIG-IP (<code>/var/run/f5-cert-push.lock</code>) is a <strong>lease</strong>: it records its owner and is renewed at
+  every step of the run that holds it, and every step that changes the BIG-IP first checks that its run still
+  holds it (a run that has lost its lock stops at once, without changing anything more). A lock that has not
+  been renewed for <code>remote_lock_stale_minutes</code> (default 30) belongs to a run that died, and may be taken over.
+  The configuration is refused if <code>remote_lock_stale_minutes</code> is too short for <code>remote_timeout</code> (it must be at
+  least <code>(2 x remote_timeout + 300)</code> seconds, rounded up to minutes).</li>
+<li><strong>After a <code>CRITICAL</code> result the BIG-IP lock is deliberately left in place</strong>, so that no other run touches the
+  device until someone has looked at it (it expires by itself after <code>remote_lock_stale_minutes</code>). Once you
+  have checked the device (<code>--check</code>, or <code>tmsh list ltm profile client-ssl NAME cert-key-chain</code>) and restored it
+  if needed, remove it: <code>rm -rf /var/run/f5-cert-push.lock</code> on the BIG-IP.</li>
 </ul>
 <hr />
 <h2 id="7-logs-and-output">7. Logs and output</h2>
 <p>Set <code>log_file</code> to keep a timestamped record of every run (mode 0600). Every line is prefixed with
 <code>[deployment@bigip]</code>. Nothing secret is logged: no key material, no passphrases, no file contents;
 certificate subjects and fingerprints are logged. Text that came from a remote system is stripped of control
-characters before it is printed or logged.</p>
+characters before it is printed or logged, and when a message spans several lines (for example the BIG-IP's
+own error text), every line after the first is indented and marked <code>|</code>, so it can never be mistaken for
+a record of its own.</p>
 <p><code>--quiet</code> prints only warnings, errors and the summary (the log file still gets everything).</p>
 <hr />
 <h2 id="8-troubleshooting">8. Troubleshooting</h2>
@@ -434,7 +493,31 @@ characters before it is printed or logged.</p>
 </tr>
 <tr>
 <td>Summary <code>CRITICAL</code></td>
-<td>Rollback failed. Run the printed <code>restore-&lt;TS&gt;.sh</code> on the BIG-IP by hand; if that fails too, <code>tmsh list ltm profile client-ssl &lt;name&gt; cert-key-chain</code> shows the current state and every old PEM is in the backup directory.</td>
+<td>The BIG-IP's state is not confirmed. 1) Look: <code>f5-cert-push.sh --deploy NAME --check</code>, or <code>tmsh list ltm profile client-ssl &lt;name&gt; cert-key-chain</code> on the BIG-IP. 2) Restore if needed with the printed <code>--rollback --set TS</code> command (or <code>bash restore-&lt;TS&gt;.sh</code> on the BIG-IP; every old PEM is in the backup directory). 3) Remove the BIG-IP lock the run left in place: <code>rm -rf /var/run/f5-cert-push.lock</code>.</td>
+</tr>
+<tr>
+<td><code>an earlier step never reported its outcome</code></td>
+<td>The BIG-IP stopped answering in the middle of a change for longer than <code>remote_timeout</code>. The tool rolled back and verified, but the stalled step might still complete. Check the device as for <code>CRITICAL</code>.</td>
+</tr>
+<tr>
+<td><code>no complete reply from the BIG-IP ...; reading the outcome of the step</code></td>
+<td>The connection dropped during a step. Not an error by itself: the outcome is read back from the BIG-IP and the run continues.</td>
+</tr>
+<tr>
+<td><code>this run no longer holds the lock on the BIG-IP</code></td>
+<td>Another run took over the BIG-IP lock (this run had not renewed it for <code>remote_lock_stale_minutes</code>: a stalled host or network). This run stopped before changing anything more. Find out which run holds it (<code>cat /var/run/f5-cert-push.lock/owner</code>).</td>
+</tr>
+<tr>
+<td><code>the backup is incomplete or does not verify (...)</code></td>
+<td>The backup set that came back from the BIG-IP is missing an item, has an unexpected file, or does not match its checksums. Nothing was changed. Check space and permissions on <code>backup_dir_remote</code> on the BIG-IP.</td>
+</tr>
+<tr>
+<td><code>remote_lock_stale_minutes (...) must be at least ...</code></td>
+<td>Raise <code>remote_lock_stale_minutes</code>, or lower <code>remote_timeout</code>.</td>
+</tr>
+<tr>
+<td><code>backup set ... cannot be used: ...</code></td>
+<td><code>--rollback</code> found the set missing, incomplete, or not matching its checksums, and changed nothing.</td>
 </tr>
 <tr>
 <td><code>cannot read the BIG-IP (ssh/tmsh failed, rc=124)</code></td>
@@ -450,13 +533,18 @@ characters before it is printed or logged.</p>
   other consumers are not updated. The optional fixed-name objects exist for those.</li>
 <li><strong>Private keys must be unencrypted.</strong> Encrypted keys are refused.</li>
 <li><strong>HA synchronisation is manual</strong> (section 5).</li>
-<li><strong>"Up to date" is decided by the leaf certificate's fingerprint.</strong> If only the chain (intermediates) changes
-  while the leaf stays the same, the tool sees nothing to do; use <code>--force</code> to redeploy.</li>
+<li><strong>"Up to date" is decided by the leaf certificate's fingerprint</strong> for profiles. If only the chain
+  (intermediates) changes while the leaf stays the same, the tool sees nothing to do; use <code>--force</code> to
+  redeploy. The fixed-name objects (<code>fixed_names = yes</code>, or no profile configured) are compared completely:
+  certificate, chain, fullchain and key.</li>
+<li><strong>A BIG-IP that stops answering in the middle of a change</strong> for longer than <code>remote_timeout</code> leaves an
+  outcome the tool cannot know. It is reported <code>CRITICAL</code> (section 2), never as success.</li>
 <li><strong>Dual RSA+ECDSA profiles</strong>: update one entry per deployment; the tool does not infer which certificate is
   which key type. Verification probes whichever certificate the default handshake selects.</li>
 <li><strong>SNI-multi-entry profiles</strong> with several same-type entries cannot exist on the BIG-IP; the tool's entry
   selection is for RSA+ECDSA pairs.</li>
-<li><strong>Fixed-name objects are overwritten in place</strong> (not atomic), by design and only when requested.</li>
+<li><strong>Fixed-name objects are overwritten in place</strong> (not atomic), by design and only when requested. They
+  are read back afterwards; a failed or partial overwrite fails the deployment and is rolled back.</li>
 <li><strong>Tested on BIG-IP 17.1.3.4, standalone.</strong> The standby refusal and "configuration not loaded" refusal are
   implemented but could not be exercised; see <a href="TESTING.html">TESTING.html</a>.</li>
 <li><strong>Chain verification needs OpenSSL 1.1.0 or newer</strong> on the host running the tool. With 1.0.x it is skipped (with

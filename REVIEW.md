@@ -14,16 +14,24 @@ Version under review: see `./f5-cert-push.sh --version`.
 | `README.md` | what it does, exit codes |
 | `docs/SECURITY.md` | threat model and stated controls: **the claims to falsify** |
 | `docs/CONFIGURATION.md` | config semantics |
-| `f5-cert-push.sh` | the code (one file, about 2,300 lines) |
-| `tests/offline.sh`, `tests/f5.sh`, `tests/lib.sh` | the evidence |
+| `f5-cert-push.sh` | the code (one file, about 2,900 lines) |
+| `f5-cert-install.sh` | the upload wrapper (runs as root over uploader-writable folders) |
+| `tests/offline.sh`, `tests/install.sh`, `tests/regress.sh`, `tests/f5.sh`, `tests/lib.sh` | the evidence |
+| Section 7 below | the findings of the first adversarial review (2.0.0) and how each was fixed and tested |
 
 Shape of the script, top to bottom: header and globals; logging and cleanup traps; built-in defaults;
 **config parser** (`parse_config`); **config validation** (`check_value`, `validate_config`);
 **local certificate preparation** (`prepare_cert`); **BIG-IP access** (`f5_load`, `f5_sh`, `f5_put`, `f5_get`)
 and the **remote scripts** (`define R_*`, bash 4.2 code that runs on the BIG-IP); **per-job stages**
 (`job_probe`, `job_gate`, `job_select_targets`, `job_backup`, `job_stage`, `job_install_*`,
-`job_switch_profiles`, `job_verify_*`, `job_rollback`, `job_prune`); the **job runner** (`run_job`);
-**selection and actions**; **CLI** (`parse_args`, `main`).
+`job_switch_profiles`, `job_verify_*`, `job_rollback`, `restore_and_verify`, `job_prune`); the **job
+runner** (`run_job`, `job_abort`, `job_handle_failure`); **selection and actions**; **CLI** (`parse_args`, `main`).
+
+Since 2.1.0 every step that changes the BIG-IP goes through **`f5_mut`**: the remote side ignores
+HUP/PIPE, checks that the run still holds the BIG-IP lock (fencing), records the step's output and exit status
+in the lock directory, and ends its reply with `STEPEND|<rc>`; a lost reply is resolved by polling
+`R_STEPRESULT`. Signals are handled by `on_signal` / `signal_finish` / `sig_check`, deferred while
+`IN_MUTATION` is non-zero (`mut_begin`/`mut_end`, nestable).
 
 ## 2. What the tool must guarantee (the invariants)
 
@@ -38,7 +46,7 @@ Try to violate each. A violation is a bug even if no exploit follows.
 | **I5** | **Private key material is written only to:** the private scratch dir (0700, tmpfs if available), the BIG-IP staging dir (0700, `mktemp -d`), the BIG-IP key objects, and the backups (0700/0600). It is **never logged, printed or placed in a command line.** |
 | **I6** | **Cleanup on every exit path**, including `SIGINT`/`SIGTERM`/`SIGHUP`: scratch dir shredded and removed, staging dir removed, both locks released. |
 | **I7** | **Pruning only ever removes** backup directories matching `^[0-9]{8}-[0-9]{6}$` under the tool's own backup root, and certificate objects named `<prefix>-(cert|chain|privkey)-<timestamp>.pem`; never an object a profile still uses. |
-| **I8** | **Mutual exclusion**: two runs against the same BIG-IP (same host or different hosts) cannot interleave their changes. |
+| **I8** | **Mutual exclusion**: two runs against the same BIG-IP (same host or different hosts) cannot interleave their changes. (The BIG-IP lock is a renewed lease with fencing; the residual case is stated in SECURITY.md section 6, item 5.) |
 | **I9** | **Exit codes are truthful** and follow the documented severity order. |
 | **I10** | **Idempotence**: if every target already has this exact certificate, nothing changes and no backup is made. |
 | **I11** | **No accidental fleet run**: nothing deploys without an explicit selector. |
@@ -55,11 +63,13 @@ Try to violate each. A violation is a bug even if no exploit follows.
 | tmsh output parsing | `R_PROBE`, `R_OBJINFO`, `R_DISCOVER`, `job_probe`, `job_objinfo` | Hostile or unusual profile/entry/object names returned by a (compromised or quirky) BIG-IP; names containing `|`; partition-qualified names; output format differences between BIG-IP versions |
 | Local file writes from remote data | `job_backup` (`f5_get` destinations), `job_prune` (local `rm -rf`) | Path traversal via a returned file name; symlinks in the backup dir; the validation of returned names |
 | Key material handling | `prepare_cert`, `copy_src`, `job_stage`, `wipe_dir`, `make_work_dir`, `cleanup` | Any path where a key lands outside the declared locations; leaks through `ps`, logs, error messages or `set -x`; tmpfs fallback behaviour; race between validation and upload |
-| Locking | `lock_acquire`, `remote_lock_acquire`, `R_LOCK`, `R_UNLOCK` | Races (check-then-act), stale-lock logic, PID reuse, lock release by a non-owner, behaviour when the BIG-IP is unreachable during release |
-| State machine | `run_job`, `job_handle_failure`, `job_rollback` | A failure ordering that leaves the BIG-IP changed but reported as success or plain error; rollback that "succeeds" without actually restoring; double-fault paths |
+| Locking | `lock_acquire`, `lock_take`, `remote_lock_acquire`, `remote_lock_beat`, `R_LOCK`, `R_UNLOCK`, `R_BEAT`, the fence in `f5_mut` | Races in take-over and release (rename-then-check), lease renewal gaps, PID reuse, a displaced owner continuing, behaviour when the BIG-IP is unreachable during release, the lock deliberately kept after `CRITICAL` |
+| Tracked steps | `f5_mut`, `R_STEPRESULT` | A reply that is lost, truncated, duplicated or forged; a `STEPEND` line inside a step's own output; a step that never starts vs one that is still running; the poll deadline |
+| State machine | `run_job`, `job_abort`, `job_handle_failure`, `job_switch_profiles`, `job_rollback`, `restore_and_verify`, `check_bindings` | A failure ordering that leaves the BIG-IP changed but reported as success or plain error; rollback that "succeeds" without actually restoring; double-fault paths; `J_CHANGED` / `J_UNKNOWN` transitions |
+| Backup integrity | `job_backup`, `verify_backup_set`, `parse_inventory` (including the 2.0.0 fallback), `fetch_backup_set`, `R_BACKUP`, `R_LISTFILES` | A set that passes with an item missing, an extra file, a checksum list that does not cover everything, an inventory that disagrees with the plan, a legacy restore script with crafted lines |
 | SSH connection reuse | `f5_load`, `f5_close` | The control socket (private scratch dir): can another local user reach it? Is it always closed? What if the master dies mid-job, or `timeout` kills a client during master set-up? |
 | Interrupts | `cleanup`, traps | Signals at each stage; `kill -9` (what is left, and is it recoverable); `set -u` with empty arrays on bash 4.2 |
-| **Upload wrapper** | `f5-cert-install.sh`: `process_upload`, `clear_upload`, `prune_releases`, `main` | Runs as root over a directory **writable by uploaders**. Symlinks, hard links, FIFOs, devices or races planted in `incoming/`; the `dd iflag=nofollow,nonblock`-then-inspect copy; names of folders; the atomic `current` switch (`ln` + `mv -T`); what a hostile upload can make root read, write or print (the `FAILED` file is written into the uploader-writable folder) |
+| **Upload wrapper** | `f5-cert-install.sh`: `trusted_tree`, `dir_safe`, `upload_dir_ok`, `write_failed`, `process_upload`, `clear_upload`, `prune_releases`, `main` | Runs as root over folders **writable by uploaders**. The trust model is now: every directory down to `incoming` changeable only by root; upload folders root-owned and sticky; root never opens an uploader-controlled path for writing (`mktemp` + rename for `FAILED`, `unlink` for removal); reads via `dd iflag=nofollow,nonblock` with link-count check. Try: a configuration of permissions the checks accept but that still lets an uploader redirect root; `readlink -f` edge cases; a race the sticky bit does not cover |
 | Selection | `select_jobs`, `parse_args`, `main` | Ways to run more than intended; `--lineage` edge cases (trailing slash, symlinks, empty); disabled deployments |
 
 ## 4. Specific hypotheses worth testing
@@ -101,12 +111,26 @@ These are the places the author is least sure about. They are leads, not claims.
     Can they get root to read a file they cannot (via a hard link on a system without
     `fs.protected_hardlinks`), install something that was not validated, delete or overwrite outside their
     folder, or leak content through `FAILED`? Can a crafted folder name or `READY` cause harm?
+15. **Tracked steps (2.1.0).** `f5_mut` decides the outcome from the last `STEPEND|n` line of the reply, then
+    from `R_STEPRESULT`. Can a step's own output, a partial reply, or a slow BIG-IP make it report a wrong
+    outcome? Two consecutive `STEP|NONE` answers are read as "never started": is there a schedule in which the
+    step starts after that?
+16. **The lease (2.1.0).** `R_LOCK` renames a stale lock away, checks it is still the stale owner's, and puts it
+    back otherwise. Is there an interleaving of two contenders and a renewing owner in which two runs both
+    believe they hold the lock *and both pass their fence checks*?
+17. **Rollback verification (2.1.0).** `restore_and_verify` compares certificate objects by the fingerprint
+    `tmsh` reports, and keys by the SHA-256 of their public key computed on the BIG-IP from the filestore file
+    (`find_pem`). Can a restore that did not really restore pass these checks?
+18. **2.0.0 backup sets** are read by parsing their restore script (`parse_inventory`). Can a crafted 2.0.0-style
+    script make the parser accept a line that the script would execute differently?
 
 ## 5. Running the evidence
 
 ```bash
 tests/offline.sh                      # no BIG-IP needed; Linux; about a minute
-shellcheck f5-cert-push.sh f5-cert-install.sh tests/*.sh   # 0.11.0: no errors; 13 warnings, reviewed, none a defect (see docs/TESTING.md)
+tests/install.sh                      # the upload wrapper; no BIG-IP
+tests/regress.sh                      # one or more cases per finding of the first review; run as root for all of them
+shellcheck f5-cert-push.sh f5-cert-install.sh tests/*.sh   # see docs/TESTING.md, "Static analysis"
 # with a LAB BIG-IP you may modify (creates and removes zzz-* objects only):
 F5_TEST_CONFIRM=yes F5_TEST_HOST=... F5_TEST_KEY=... tests/f5.sh
 ```
@@ -155,6 +179,38 @@ Listed so they are not re-reported, and because each shows a class of mistake wo
 | Time zones | Object and backup names were local time; now UTC so they sort chronologically through DST changes. |
 | Cross-host races | The lock was local only. Added a BIG-IP-side lock with an owner token. |
 | Unvalidated remote data | Names read back from the BIG-IP (used in rollback specs and the restore script) were not re-validated. Added `safe_obj`. |
+
+### 7a. Findings of the first adversarial review (2.0.0), fixed in 2.1.0
+
+Each was reproduced independently before it was fixed (all 14 reproductions confirmed). Against 2.1.0 the
+review's own harness reproduces 13 of the 14 no longer; the 14th (`backup_without_integrity`) asserts only that
+no local `SHA256SUMS` was written, which is also true when the backup is refused, as it now is. Each has at least
+one case in `tests/regress.sh` that sets up the reported failure and requires the safe outcome. Where the BIG-IP
+itself matters, `tests/f5.sh` covers it too.
+
+| # | Finding (severity) | Fix | Tests |
+|---|---|---|---|
+| R1 | Rejection followed an uploader-planted `FAILED` symlink (high) | `write_failed`: report written to a `mktemp` file in the folder, then `mv -T` over `FAILED` (replaces the entry, never follows it). Folders must be root-owned and sticky, so the temporary file cannot be touched meanwhile | regress R1; R1-R3 as root with a real unprivileged uploader |
+| R2 | Upload cleanup could `shred` a swapped-in symlink's target (high) | Uploads are removed with `unlink` only; never opened for writing. Private copies are still shredded | regress R2 |
+| R3 | `nofollow` did not protect the upload folder or its ancestors (high) | `trusted_tree`: the real path of `incoming` and every ancestor must be changeable only by root (or the invoking user); `upload_dir_ok`: an upload folder must be root-owned and, if writable, sticky. Hard-linked upload files are refused | regress R3 (three cases) and the root case |
+| R4 | A lost reply after a commit was treated as "unchanged" (high) | `f5_mut` tracked steps; `J_CHANGED=1` before dispatch; an explicit failure is confirmed by `check_bindings`; an unknown outcome sets `J_UNKNOWN` and ends `CRITICAL` even after a verified rollback; created objects are only removed once the state is confirmed | regress R4 (four cases); f5 s21 |
+| R5 | Rollback could confirm success with a target missing (high) | `restore_and_verify` + `check_bindings`: every profile exists with exactly one matching entry and exact bindings; object contents compared by fingerprint / public-key hash; absent objects must be absent. Used by automatic and manual rollback | regress R5 (two cases); f5 s5, s6, s9 |
+| R6 | `tmsh` exit status ignored; restore ignored a failed save (high) | `tmsh_ok` / `run_txn` require exit 0 **and** no error text; the restore script checks every command including the save | regress R6 (four cases) |
+| R7 | Signals after a change exited without rollback (high) | `on_signal` defers during a BIG-IP step (`IN_MUTATION`), then `signal_finish` rolls back and verifies (3 / 5); before any change 130 | regress R7 (four cases); f5 s12 now requires the previous certificate unless `UPDATED`; f5 s23 (SIGTERM during the switch on a real BIG-IP: switch finishes, rolled back, exit 3) |
+| R8 | A live run's BIG-IP lock could expire and be stolen (high) | Lease renewed at every step (`beat`); atomic take-over and release (rename, check owner, put back); fencing in every tracked step; `remote_lock_stale_minutes` must exceed `2 x remote_timeout + 300 s`; local stale take-over made atomic too | regress R8 (three cases); f5 s11, s22 |
+| R9 | A partial fixed-name refresh reported `UPDATED`/0 (high) | A fixed-name failure is a failed deployment (`job_abort` -> rollback); `job_verify_fixed` reads back certificate, chain, fullchain and key | regress R9 (two cases); f5 s13, s14 |
+| R10 | Backup accepted without its files or checksum coverage (medium) | Inventory planned locally and compared exactly; `SHA256SUMS` strictly parsed and covering every file (restore script, inventory, manifest included); every PEM parses; restore script exits 10 on a missing or mismatched checksum list | regress R10 (seven cases); f5 s2, s5 |
+| R11 | Explicit fullchain not validated (medium) | A supplied fullchain must equal cert + chain (by fingerprints); the uploaded fullchain object is always built from the validated parts | regress R11 |
+| R12 | Conflicts compared spellings, not targets (medium) | Compared by device (host:port), fully qualified profile, and entry overlap (an implicit entry overlaps all) | regress R12 (five configurations) |
+| R13 | Manual rollback needed the new local certificate (medium) | `job_init_restore` needs only the target configuration; the set is fetched from the BIG-IP and checked; 2.0.0 sets still restorable | regress R13 (two cases); f5 s5 |
+| obs | Multi-line messages could look like records | Continuation lines are prefixed `    | ` | regress (log lines) |
+| obs | `job_is_current` ignored fixed-name drift | Fixed-name objects compared completely (certificate, chain, fullchain, key) | f5 s13, s14 |
+| obs | Local stale-lock race | Rename-then-check take-over | regress R8 (local) |
+| obs | `--list-backups` / `--rollback` exit codes | Listing failures exit 1; lock busy 6, lock error 1 | - |
+| obs | Wrapper `chmod` relied on a glob under `set -f` | Explicit file list | regress (chmod) |
+| obs | `collect_created` / discovery trusted reply names | Only the objects requested are recorded as created; discovery skips names in unexpected forms | regress (created objects) |
+| (found while testing the fixes) | `lock_dir` was documented for `[f5:]` but rejected there | Accepted | regress R13 |
+| (found by the BIG-IP suite while testing the fixes) | The new `--rollback` fetch called `ssh` inside a `while read` loop; `ssh` swallowed the rest of the file list, so only one file was copied (and the set was then, correctly, refused) | `f5_get` reads stdin from `/dev/null`; the list is collected before any transfer | regress R13 (fails without the fix); f5 s5 |
 
 ## 8. How to report
 

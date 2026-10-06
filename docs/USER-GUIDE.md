@@ -37,7 +37,7 @@ home folder (`~`), not under `/mnt/c`, so file permissions work.
 ```bash
 mkdir -p ~/f5-cert-push/certs ~/f5-cert-push/backups
 cd ~/f5-cert-push
-tar xzf /path/to/f5-cert-push-2.0.0.tar.gz --strip-components=1     # puts f5-cert-push.sh here
+tar xzf /path/to/f5-cert-push-2.1.0.tar.gz --strip-components=1     # puts f5-cert-push.sh here
 chmod 700 ~/f5-cert-push
 chmod 750 f5-cert-push.sh
 ./f5-cert-push.sh --version
@@ -382,8 +382,11 @@ Manual, any time later:
 ./f5-cert-push.sh --deploy www --rollback --set 20261005-143015     # choose a set from that list
 ```
 
-This puts the previous certificate back in the profile and verifies the backup files' checksums first.
-Each backup also contains a `restore.sh` you can use directly on the BIG-IP.
+It checks the backup set first (every file present and matching its checksums), puts the previous
+certificate back, and then **re-reads the BIG-IP to confirm** every profile and object is exactly as it was:
+the summary says `RESTORED` only when that is confirmed. It does not need the new certificate's files, so it
+works even if you have already deleted or replaced them. Each backup also contains a
+`restore-<time>.sh` you can run directly on the BIG-IP.
 
 ## 9. High-availability pairs
 
@@ -433,5 +436,8 @@ cd ~/f5-cert-push
 | exit 3 | The change was rolled back automatically. The BIG-IP is back on the old certificate. |
 
 Exit codes: `0` success, `1` a failure (the message says why), `2` usage error, `3` the change was rolled back,
-`4` `--check` found a certificate that is out of date, `5` a rollback failed (the BIG-IP may be in a mixed
-state; follow the printed restore command and call your BIG-IP administrator), `6` another run in progress.
+`4` `--check` found a certificate that is out of date, `5` CRITICAL: the BIG-IP's state could not be
+confirmed (follow the printed instructions and call your BIG-IP administrator; see OPERATIONS.md section 8),
+`6` another run is in progress, `130` you interrupted it (Ctrl-C) before anything was changed, or after it
+had finished. Interrupting it in the middle of a change is safe: it finishes the step and puts the previous
+certificate back (exit 3).

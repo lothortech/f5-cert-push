@@ -7,6 +7,7 @@ There are two suites in `tests/`. Together they are the evidence that the tool b
 |---|---|---|---|
 | `tests/offline.sh` | Linux, bash, openssl; **no BIG-IP** | No (works in a temp dir) | Configuration parsing and validation, injection attempts, selection, certificate validation |
 | `tests/install.sh` | Linux, bash, openssl; **no BIG-IP** | No (works in a temp dir) | `f5-cert-install.sh`: READY handling, validation and rejection, symlink refusal, atomic install, retention, push retry, locking |
+| `tests/regress.sh` | Linux, bash, openssl; **no BIG-IP**; root for one case | No (works in a temp dir) | A regression test for every finding of the 2.0.0 adversarial review (R1-R13 and the additional observations), against a local stand-in for the BIG-IP |
 | `tests/f5.sh` | Linux, SSH access to a **lab BIG-IP** | **Yes**: creates and removes `zzz-*` objects | Real deployments, rollback, retention, locking, interruption, partitions, SSH trust |
 
 `tests/lib.sh` holds shared helpers, including a small **test PKI** (root, intermediate, RSA and ECDSA leaves,
@@ -41,6 +42,24 @@ What it covers:
   key mismatch, expired, not yet valid, `min_days_valid`, encrypted key, PKCS#1 key, combined PEM, multi-cert
   `cert`, two keys in one file, garbage, empty and oversized files, certbot-style symlinks, explicit overrides,
   a readable key warning, and that no scratch directory is left behind.
+
+## Running the regression suite
+
+```bash
+tests/regress.sh                 # as root, to include the real-permission uploader case
+```
+
+It loads the scripts' own functions (without running them) and replaces the BIG-IP with a **local stand-in**:
+the remote scripts run under `bash` with the BIG-IP's paths (`/var/run/f5-cert-push.lock`,
+`/config/filestore`) moved into a temporary directory and `tmsh` replaced by a stub whose exit status the case
+chooses. That lets each case set up the exact failure the review described (a lost reply after a commit, a
+`tmsh` that fails silently, a backup reply missing its checksums, a lock that expires while its owner lives, a
+signal at a chosen moment) and require the safe outcome. One case per finding at least; see
+[REVIEW.md](../REVIEW.md), section 7, for the mapping.
+
+Run as root with `setpriv` available, one case also checks the upload wrapper's trust boundary for real: an
+unprivileged uploader (uid 65534) tries to rename the upload folder, plant a `FAILED` symlink before a rejection,
+and replace root's `FAILED`; all three must fail.
 
 ## Running the BIG-IP suite
 
@@ -77,7 +96,7 @@ own connections) and pins nothing outside its temporary directory.
 | **s9** auto-rollback | a wrong certificate on a verify endpoint rolls back (exit 3) and restores what is served; `auto_rollback = no`; unreachable endpoints warn or roll back per `verify_unreachable` |
 | **s10** retention | after five deployments with `keep = 2`, exactly two backup sets (both sides), two certificate, chain and key versions remain, and the newest is in use; `keep = 0` disables pruning |
 | **s11** locking | a live local lock gives exit 6 and changes nothing; a lock **held on the BIG-IP by another host** gives exit 6, shows its owner and is not removed; read-only runs ignore both; stale locks (local and on the BIG-IP) are cleaned; two simultaneous runs: one wins, one gets exit 6 |
-| **s12** interruption | `SIGTERM` at six different moments: no staging directory, no local or BIG-IP lock, every profile still points at existing objects, both profiles agree (atomic), and a normal run afterwards succeeds |
+| **s12** interruption | `SIGTERM` at six different moments: the exit code is 0, 3 or 130; unless the run reported `UPDATED`, **the previous certificate is in place** (never changed, or rolled back); no staging directory, no local or BIG-IP lock; every profile still points at existing objects; both profiles agree (atomic); a normal run afterwards succeeds |
 | **s13** objects-only | no profile configured: fixed-name objects replaced in place; idempotent; rollback restores the previous content |
 | **s14** fixed names | `fixed_names = yes` alongside a profile |
 | **s15** partition | a non-Common partition: bare profile name resolved, objects created in the partition, pruning and rollback work |
@@ -86,6 +105,22 @@ own connections) and pins nothing outside its temporary directory.
 | **s18** lineage | `--lineage` deploys the matching certbot-style certificate and exits 0 for an unmanaged one |
 | **s20** manual upload | `f5-cert-install.sh` end to end: an upload is installed and served by the virtual server; a renewal; a run with nothing new does not contact the BIG-IP; a bad upload is rejected and the BIG-IP keeps the previous certificate |
 | **s19** local verification | `verify_from = local` against a local TLS server: match passes, mismatch rolls back |
+| **s21** lost reply | The reply to the profile switch is dropped **after the BIG-IP committed it** (an `ssh` stand-in discards it): the outcome is read back from the BIG-IP and the deployment completes correctly |
+| **s22** lock taken over | Another "host" takes the BIG-IP lock in the middle of a run: the run is fenced at its next step, changes nothing, fails with exit 1, and does not remove the new owner's lock |
+| **s23** signal during the switch | `SIGTERM` arrives while the profile switch is running on the BIG-IP: the switch finishes, then the run rolls back and verifies (exit 3); both profiles and the virtual server are back on the previous certificate |
+
+## Results for 2.1.0
+
+| Suite | Where | Result |
+|---|---|---|
+| `offline.sh` | webserver-101 (Ubuntu, bash 5.1, OpenSSL 3) | 236 passed |
+| `install.sh` | webserver-101 | 154 passed |
+| `regress.sh` | webserver-101, as root | 40 passed (all cases, including the real-permission uploader case) |
+| `regress.sh` | the lab BIG-IP itself (bash 4.2.46, OpenSSL 1.0.2za), as root | 40 passed |
+| `offline.sh` with `T_SKIP_CERTS=1` | the lab BIG-IP itself | 193 passed |
+| `f5.sh` s1-s22 | lab BIG-IP 17.1.3.4 | 262 passed, 6 failed: the 6 were a bug **in the new s12 check** (it read `timeout`'s own exit code 124 instead of the tool's); fixed with `timeout --preserve-status`, then s12 alone: **55 passed** |
+| `f5.sh` s23 | lab BIG-IP | 9 passed |
+| The first review's own harness (`review-evidence/reproduce.sh`) | webserver-101 | 13 of 14 no longer reproduce. The remaining one ("backup accepted without checksums") only checks that no local `SHA256SUMS` file was written; the backup is in fact refused (see `regress.sh` R10) |
 
 ## Old platforms (bash 4.2, OpenSSL 1.0.2)
 
@@ -95,13 +130,19 @@ exercise that claim: copy `f5-cert-push.sh` and `tests/` to `/var/tmp/` and run
 
 ```bash
 T_SKIP_CERTS=1 bash tests/offline.sh      # config parsing, validation, selection (no PKI needed)
+REGRESS_PKI=/var/tmp/pki bash tests/regress.sh   # with a test PKI made on a modern host (below)
 ```
 
 `T_SKIP_CERTS=1` skips the certificate cases, because building the test PKI needs OpenSSL 1.1.1 (`req -addext`).
-To exercise certificate validation on the old OpenSSL, generate the test PKI on a modern host
-(`pki_init` / `pki_leaf` from `tests/lib.sh`), copy it over and run `--validate` against it.
+For `regress.sh`, make the PKI on a modern host (`source tests/lib.sh; pki_init DIR; pki_leaf DIR a a.test
+DNS:a.test; pki_leaf DIR b b.test DNS:b.test`), copy `DIR` over and point `REGRESS_PKI` at it.
 
-Results when this was done (bash 4.2.46, OpenSSL 1.0.2za): all 193 non-certificate assertions passed; RSA,
+**2.1.0** (bash 4.2.46, OpenSSL 1.0.2za, run as root on the lab BIG-IP): offline 193 passed (1 skipped);
+regress **40 of 40 passed**, including the real-permission uploader case (the BIG-IP has `setpriv`). The run
+also caught a bash 4.2 difference in a test (an empty array is "unbound" under `set -u` in 4.2), fixed in the
+test; the tool's own code always fills that array first.
+
+**2.0.0** (same platform): all 193 non-certificate assertions passed; RSA,
 ECDSA, fullchain-only, expired and mismatched-key certificates behaved correctly. It also found a real bug that
 the modern-platform tests could not: OpenSSL 1.0.x's `verify -partial_chain` accepts a mismatched chain and exits
 0 on failure. The chain check is therefore skipped on OpenSSL older than 1.1.0 (warning, or refusal under
@@ -126,12 +167,14 @@ Stated plainly so you can decide how much to trust them:
 
 ## Static analysis
 
-`shellcheck` 0.11.0 over `f5-cert-push.sh`, `f5-cert-install.sh` and `tests/*.sh` reports **no errors**. It reports
-13 warnings and 26 notes, all reviewed by hand and none a defect: a few variables that are set but not used
-later, `ls | grep` over directory names that are already restricted to `YYYYMMDD-HHMMSS`, `a && b || die`
-patterns where the right-hand side is the error exit, a one-item loop kept for readability, and functions that
-are only called from traps. Run it yourself: `pip install shellcheck-py` (or your package manager), then
-`shellcheck f5-cert-push.sh f5-cert-install.sh tests/*.sh`.
+`shellcheck` 0.11.0 over `f5-cert-push.sh`, `f5-cert-install.sh` and `tests/*.sh` reports **no errors**. In the
+two production scripts it reports 10 warnings, all reviewed by hand and none a defect: variables that are set
+but not used later, `ls | grep` over directory names already restricted to `YYYYMMDD-HHMMSS`, and a one-item
+loop kept for readability. Its notes are of the same kind, plus `a && b || die` patterns where the right-hand
+side is the error exit, and functions that are only called from traps or through the remote scripts. Run it
+yourself: `pip install shellcheck-py` (or your package manager), then
+`shellcheck f5-cert-push.sh f5-cert-install.sh tests/*.sh`. The remote scripts are embedded as text; to check
+them, extract them (`define R_... <<'REMOTE_EOF'` blocks) and run `bash -n` and shellcheck on each.
 
 ## Adding a test
 

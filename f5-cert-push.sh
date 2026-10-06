@@ -29,7 +29,7 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.0.0"
+readonly VERSION="2.1.0"
 readonly PROG="f5-cert-push"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
@@ -69,15 +69,19 @@ readonly NAME_RX='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 #######################################################################
 # Everything that came from a remote system or a file is passed through
 # sanitize() before it is printed or logged, so a hostile value cannot inject
-# terminal escape sequences or forge log lines.
+# terminal escape sequences. A message that spans several lines has every line
+# after the first indented and marked with "|", so it can never look like a
+# record of its own (see quote_lines).
 sanitize() { LC_ALL=C tr -cd '\11\12\40-\176'; }
+quote_lines() { sanitize | awk '{ printf "%s%s\n", (NR > 1 ? "    | " : ""), $0 }'; }
+indent_block() { sanitize | awk '{ printf "    | %s\n", $0 }'; }
 
 _logfile() {
   [[ -n "${LOG_FILE}" ]] || return 0
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>"${LOG_FILE}" 2>/dev/null || true
 }
 
-_fmt() { local tag="$1"; shift; printf '%s %s%s' "$tag" "${JOB_TAG:+[${JOB_TAG}] }" "$*" | sanitize; }
+_fmt() { local tag="$1"; shift; printf '%s %s%s\n' "$tag" "${JOB_TAG:+[${JOB_TAG}] }" "$*" | quote_lines; }
 
 info() { local l; l="$(_fmt '[*]' "$@")"; _logfile "$l"; if (( ! QUIET )); then printf '%s\n' "$l"; fi; }
 ok()   { local l; l="$(_fmt '[+]' "$@")"; _logfile "$l"; if (( ! QUIET )); then printf '%s\n' "$l"; fi; }
@@ -108,7 +112,8 @@ release_all_locks() {
 
 cleanup() {
   local rc=$?
-  trap - EXIT INT TERM HUP
+  trap - EXIT
+  trap '' INT TERM HUP
   if [[ -n "${STAGE_DIR}" ]]; then
     remote_remove_stage || warn "could not remove remote staging directory ${STAGE_DIR}; remove it by hand"
   fi
@@ -118,8 +123,62 @@ cleanup() {
   wipe_dir "${WORK}"
   exit "$rc"
 }
+
+# Signals. A signal must never leave the BIG-IP changed but unverified:
+#   - while a step is running on the BIG-IP (IN_MUTATION), the signal is only
+#     recorded; the step finishes, and the job then recovers at the next check;
+#   - otherwise, if this job may have changed the BIG-IP, it is rolled back (or
+#     reported CRITICAL) before the process exits with the job's own exit code;
+#   - otherwise the run stops with exit code 130.
+# Further signals are ignored while recovering.
+SIGNALLED=""
+IN_MUTATION=0
+JOB_ACTIVE=0
+
+on_signal() {
+  SIGNALLED="$1"
+  trap '' INT TERM HUP
+  if (( IN_MUTATION )); then
+    warn "received SIG$1: letting the current step on the BIG-IP finish, then recovering"
+    return 0
+  fi
+  err "interrupted (SIG$1)"
+  signal_finish
+}
+
+# J_CHANGED is 1 exactly while the current job may have changed the BIG-IP and that
+# change is neither verified (deployment complete) nor already dealt with (rolled
+# back, or reported): it alone decides whether a signal triggers a rollback.
+signal_finish() {
+  if (( J_CHANGED )); then
+    job_handle_failure "interrupted by SIG${SIGNALLED} after the BIG-IP was changed"
+    J_CHANGED=0; JOB_ACTIVE=0
+    record_result "${J_DEP}@${J_F5}"
+    JOB_TAG=""
+    print_summary
+    exit "${J_RC}"
+  fi
+  if (( JOB_ACTIVE )); then
+    JOB_ACTIVE=0
+    job_remove_created || true
+    J_RESULT=FAILED; J_RC=130; J_MSG="interrupted by SIG${SIGNALLED}; the profiles were not changed"
+    record_result "${J_DEP}@${J_F5}"
+    JOB_TAG=""
+    print_summary
+    exit 130
+  fi
+  exit 130
+}
+
+sig_check() { if [[ -n "$SIGNALLED" ]] && (( ! IN_MUTATION )); then signal_finish; fi; }
+# Nestable: a rollback (itself several steps) runs inside a failure handler.
+mut_begin() { IN_MUTATION=$((IN_MUTATION + 1)); }
+mut_end()   { if (( IN_MUTATION > 0 )); then IN_MUTATION=$((IN_MUTATION - 1)); fi; }
+
 trap cleanup EXIT
-trap 'err "interrupted"; exit 130' INT TERM HUP
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
+trap 'on_signal HUP' HUP
 
 #######################################################################
 # Built-in defaults (every one can be overridden in [defaults] or a section)
@@ -217,7 +276,7 @@ key_allowed() {   # key_allowed TYPE KEY
       esac ;;
     f5)
       case "$2" in
-        host|port|user|ssh_key|partition|known_hosts_file|strict_host_key_checking|backup_dir_remote|connect_timeout|remote_timeout|remote_lock_stale_minutes|connection_reuse|allow_standby|keep) return 0 ;;
+        host|port|user|ssh_key|partition|known_hosts_file|strict_host_key_checking|backup_dir_remote|connect_timeout|remote_timeout|remote_lock_stale_minutes|connection_reuse|allow_standby|keep|lock_dir) return 0 ;;
       esac ;;
     cert)
       case "$2" in
@@ -479,7 +538,24 @@ validate_config() {
     done
   done
 
+  # The BIG-IP lock must outlive the longest single step plus the time spent
+  # reading back that step's outcome when its reply is lost (see f5_mut).
+  local st rt need
+  for f in ${F5S[@]+"${F5S[@]}"}; do
+    st="$(eff remote_lock_stale_minutes "f5:${f}")"; rt="$(eff remote_timeout "f5:${f}")"
+    is_uint "$st" && is_uint "$rt" || continue
+    need=$(( (2 * 10#$rt + 300 + 59) / 60 ))
+    if (( 10#$st < need )); then
+      cfg_err_sec "f5:${f}" "remote_lock_stale_minutes (${st}) must be at least ${need} with remote_timeout = ${rt}: the lock on the BIG-IP must outlive a step that runs for the whole timeout"
+    fi
+  done
+
   # Two deployments must not manage the same objects or profiles on one BIG-IP.
+  # Targets are compared by what they are on the device, not by how they are
+  # spelled: the BIG-IP is identified by host and port (two [f5:] sections can
+  # name the same device), profiles are fully qualified with their partition, and
+  # a profile named without an entry overlaps every entry of that profile.
+  local dev part pq od oe of r
   for d in ${DEPLOYS[@]+"${DEPLOYS[@]}"}; do
     s="deploy:${d}"
     [[ "$(eff_bool enabled "$s")" == yes ]] || continue
@@ -487,9 +563,12 @@ validate_config() {
     [[ -n "$certn" && -n "${SECT_SEEN[cert:${certn}]+x}" ]] || continue
     prefix="$(cert_prefix "$certn")"
     for f5n in $(deploy_f5s "$d"); do
-      pk="${f5n}|${prefix}"
+      [[ -n "${SECT_SEEN[f5:${f5n}]+x}" ]] || continue
+      dev="$(printf '%s' "${CFG[f5:${f5n}|host]-}" | tr 'A-Z' 'a-z')|$(eff port "f5:${f5n}")"
+      part="$(eff partition "f5:${f5n}")"
+      pk="${dev}|${part}|${prefix}"
       if [[ -n "${prefix_owner[$pk]+x}" && "${prefix_owner[$pk]}" != "$certn" ]]; then
-        cfg_err_sec "$s" "object prefix '${prefix}' on f5 '${f5n}' is already used by cert '${prefix_owner[$pk]}'"
+        cfg_err_sec "$s" "object prefix '${prefix}' on the BIG-IP at ${dev%|*} (f5 '${f5n}', partition ${part}) is already used by cert '${prefix_owner[$pk]}'"
       fi
       prefix_owner[$pk]="$certn"
       while IFS= read -r line; do
@@ -497,11 +576,20 @@ validate_config() {
         p="${line%%:*}"
         e=""
         if [[ "$line" == *:* ]]; then e="${line#*:}"; fi
-        pk="${f5n}|${p}|${e}"
-        if [[ -n "${prof_owner[$pk]+x}" && "${prof_owner[$pk]}" != "$d" ]]; then
-          cfg_err_sec "$s" "profile '${line}' on f5 '${f5n}' is already managed by deployment '${prof_owner[$pk]}'"
-        fi
-        prof_owner[$pk]="$d"
+        case "$p" in /*) pq="$p" ;; *) pq="/${part}/${p}" ;; esac
+        pk="${dev}|${pq}"
+        while IFS= read -r r; do
+          [[ -n "$r" ]] || continue
+          IFS='|' read -r od oe of <<<"$r"
+          if [[ -z "$oe" || -z "$e" || "$oe" == "$e" ]]; then
+            if [[ "$od" != "$d" ]]; then
+              cfg_err_sec "$s" "profile '${line}' on f5 '${f5n}' overlaps ${pq}${oe:+:${oe}} on f5 '${of}', already managed by deployment '${od}'"
+            elif [[ "$of" == "$f5n" ]]; then
+              cfg_err_sec "$s" "profile '${line}' is listed more than once for f5 '${f5n}' (it overlaps ${pq}${oe:+:${oe}})"
+            fi
+          fi
+        done <<<"${prof_owner[$pk]-}"
+        prof_owner[$pk]="${prof_owner[$pk]-}${d}|${e}|${f5n}"$'\n'
       done <<<"${CFG[$s|profile]-}"
     done
   done
@@ -513,6 +601,7 @@ validate_config() {
 OPENSSL_VERSION="" OPENSSL_OLD=0
 declare -A CERT_STATE=() CERT_DIR=() CERT_FP=() CERT_SUBJ=() CERT_SAN=() CERT_END=()
 declare -A CERT_DAYS=() CERT_HAVE_CHAIN=() CERT_HAVE_FULL=() CERT_SNI=() CERT_ALGO=()
+declare -A CERT_KEYPUB=() CERT_CHAINFP=()
 
 # Print PEM CERTIFICATE blocks FROM..TO (1-based, TO=0 means "to the end").
 # Anything that is not a CERTIFICATE block (comments, bag attributes) is dropped.
@@ -529,6 +618,24 @@ pem_count() {
   n="$(grep -c -- '-----BEGIN CERTIFICATE-----' "$1" 2>/dev/null)" || n=0
   printf '%s' "$n"
 }
+
+# SHA-256 fingerprint of a certificate (upper-case hex, no colons), the form used
+# everywhere: CERT_FP, the BIG-IP object listing, the verify endpoints.
+fp_pem() { openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr 'a-f' 'A-F'; }
+
+# Fingerprint of every certificate in a PEM file ("-" = stdin), one per line.
+pem_fps() {
+  local f="$1" tmp i n
+  if [[ "$f" == - ]]; then tmp="$(mktemp "${WORK}/fps.XXXXXXXX")" || return 1; cat >"$tmp"; f="$tmp"; fi
+  n="$(pem_count "$f")"
+  for (( i = 1; i <= n; i++ )); do pem_range "$f" "$i" "$i" | fp_pem; done
+  if [[ -n "${tmp:-}" ]]; then rm -f -- "$tmp"; fi
+}
+
+# SHA-256 of a private key's public half (DER), lower-case hex: identifies a key
+# without exposing it. The BIG-IP computes the same value (R_OBJINFO keypub:).
+keypub_of() { openssl pkey -in "$1" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}'; }
+readonly EMPTY_SHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 
 # Copy a source file into the private work dir, refusing empty or absurdly
 # large files, so validation and upload operate on the same bytes.
@@ -611,6 +718,13 @@ prepare_cert() {   # prepare_cert NAME   -> 0 if usable; result cached per cert
     pem_range "$d/in.full" 2 0 >"$d/chain.split"
   fi
 
+  # A fullchain given together with a cert is read too, so that it can be checked
+  # against the cert and chain below (it is never used unchecked).
+  if [[ -n "$p_full" && ! -f "$d/in.full" ]]; then
+    if ! copy_src "$p_full" "$d/in.full"; then err "${tag}: cannot read the fullchain: ${p_full}"; return 1; fi
+    pem_range "$d/in.full" 2 0 >"$d/chain.split"
+  fi
+
   : >"$d/chain.pem"
   if [[ -n "$p_chain" ]]; then
     if ! copy_src "$p_chain" "$d/in.chain"; then err "${tag}: cannot read the chain: ${p_chain}"; return 1; fi
@@ -630,18 +744,26 @@ prepare_cert() {   # prepare_cert NAME   -> 0 if usable; result cached per cert
     fi
   done
 
-  # fullchain object (only used when fixed_names = yes): supplied, or leaf+chain.
-  if [[ -n "$p_full" && -f "$d/in.full" ]]; then
-    pem_range "$d/in.full" 1 0 >"$d/fullchain.pem"
-  elif [[ -n "$p_full" ]]; then
-    if copy_src "$p_full" "$d/in.full"; then pem_range "$d/in.full" 1 0 >"$d/fullchain.pem"; else : >"$d/fullchain.pem"; fi
-  else
-    cat -- "$d/cert.pem" "$d/chain.pem" >"$d/fullchain.pem"
+  # A supplied fullchain must be exactly this leaf followed by this chain.
+  if [[ -f "$d/in.full" ]]; then
+    local fn
+    fn="$(pem_count "$d/in.full")"
+    for (( i = 1; i <= fn; i++ )); do
+      if ! pem_range "$d/in.full" "$i" "$i" | openssl x509 -noout >/dev/null 2>&1; then
+        err "${tag}: certificate ${i} of the fullchain does not parse"; return 1
+      fi
+    done
+    if [[ "$(pem_fps "$d/in.full")" != "$(cat -- "$d/cert.pem" "$d/chain.pem" | pem_fps -)" ]]; then
+      err "${tag}: the fullchain does not match the certificate and chain (it must be the certificate followed by exactly the intermediates in the chain)"
+      return 1
+    fi
   fi
+
+  # The fullchain object (fixed_names) is always built from the validated parts.
+  cat -- "$d/cert.pem" "$d/chain.pem" >"$d/fullchain.pem"
   CERT_HAVE_CHAIN[$name]=0
   if [[ -s "$d/chain.pem" ]]; then CERT_HAVE_CHAIN[$name]=1; fi
-  CERT_HAVE_FULL[$name]=0
-  if [[ -s "$d/fullchain.pem" ]]; then CERT_HAVE_FULL[$name]=1; fi
+  CERT_HAVE_FULL[$name]=1
 
   # ---- consistency and validity ------------------------------------
   local cpub kpub
@@ -694,7 +816,13 @@ prepare_cert() {   # prepare_cert NAME   -> 0 if usable; result cached per cert
   fi
 
   CERT_DIR[$name]="$d"
-  CERT_FP[$name]="$(openssl x509 -in "$d/cert.pem" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr 'a-f' 'A-F')"
+  CERT_FP[$name]="$(fp_pem <"$d/cert.pem")"
+  CERT_KEYPUB[$name]="$(keypub_of "$d/key.pem")"
+  CERT_CHAINFP[$name]=""
+  if [[ -s "$d/chain.pem" ]]; then CERT_CHAINFP[$name]="$(pem_range "$d/chain.pem" 1 1 | fp_pem)"; fi
+  if [[ -z "${CERT_FP[$name]}" || -z "${CERT_KEYPUB[$name]}" || "${CERT_KEYPUB[$name]}" == "${EMPTY_SHA256}" ]]; then
+    err "${tag}: cannot compute the certificate fingerprint or the key identity"; return 1
+  fi
   CERT_SUBJ[$name]="$(openssl x509 -in "$d/cert.pem" -noout -subject | sed 's/^subject= *//')"
   CERT_SAN[$name]="$(openssl x509 -in "$d/cert.pem" -noout -text 2>/dev/null | awk '/Subject Alternative Name/{getline; gsub(/^ +/, ""); print; exit}')"
   CERT_END[$name]="$na_s"
@@ -785,8 +913,10 @@ f5_put() {   # f5_put LOCALFILE REMOTEPATH
 
 f5_get() {   # f5_get REMOTEPATH LOCALFILE
   local src="$1" dst="$2" rc=0
+  # stdin from /dev/null: ssh would otherwise read (and swallow) the caller's
+  # stdin, for example the rest of a list being read in a while-loop.
   timeout "${REMOTE_TIMEOUT}" ssh "${SSH_OPTS[@]}" -- "${F5_USER}@${F5_HOST}" \
-    "cat -- $(printf '%q' "$src")" >"$dst" 2>"${WORK}/ssh.err" || rc=$?
+    "cat -- $(printf '%q' "$src")" >"$dst" 2>"${WORK}/ssh.err" </dev/null || rc=$?
   return "$rc"
 }
 
@@ -798,6 +928,69 @@ f5_close() {
 }
 
 define() { IFS= read -r -d '' "$1" || true; }
+
+# Every step that changes the BIG-IP runs through f5_mut. On the BIG-IP the step
+#   1. ignores SIGHUP/SIGPIPE, so a dropped connection cannot stop it half way;
+#   2. checks that this run still holds the BIG-IP lock (fencing) and renews it;
+#      if not, it does nothing and answers FENCE|LOST;
+#   3. runs, with its output and exit status recorded in the lock directory;
+#   4. replies with its output and a final STEPEND|<status> line.
+# If the reply is lost (connection dropped, timeout), the outcome is read back
+# from the BIG-IP (R_STEPRESULT) instead of being guessed.
+# Returns the step's own exit status, or one of:
+readonly ST_NOTRUN=96     # the step never started on the BIG-IP
+readonly ST_LOCKLOST=97   # this run no longer holds the BIG-IP lock; the step did not run
+readonly ST_UNKNOWN=98    # the outcome could not be established
+f5_mut() {   # f5_mut SCRIPT ARGS...   (stdout: the step's output)
+  local script="$1"; shift
+  local id out rc=0 last r none=0 deadline
+  trap '' INT TERM HUP      # (this is a subshell) the parent decides what a signal means
+  id="${J_TS:-0}.$$.${RANDOM}${RANDOM}"
+  out="$(f5_sh "$(printf '%s\n' \
+      "trap '' HUP PIPE" \
+      "_FL=/var/run/f5-cert-push.lock" \
+      "_FT='${REMOTE_LOCK_TOKEN}'" \
+      'if [ -z "$_FT" ] || [ "$(sed -n 1p "$_FL/owner" 2>/dev/null)" != "$_FT" ]; then echo "FENCE|LOST"; exit 97; fi' \
+      "_FS=\"\$_FL/step.${id}\"" \
+      'touch "$_FL/beat" "$_FS.start"' \
+      '(' "$script" ') >"$_FS.out" 2>"$_FS.err" </dev/null' \
+      'echo $? >"$_FS.rc.tmp" && mv -f "$_FS.rc.tmp" "$_FS.rc"' \
+      'cat "$_FS.out"; head -c 4000 "$_FS.err" >&2' \
+      'echo "STEPEND|$(cat "$_FS.rc")"')" "$@")" || rc=$?
+  last="$(printf '%s\n' "$out" | grep -E '^STEPEND\|[0-9]+$' | tail -n 1)"
+  if [[ -n "$last" ]]; then
+    printf '%s\n' "$out" | grep -v -E '^STEPEND\|'
+    return "${last#STEPEND|}"
+  fi
+  if printf '%s\n' "$out" | grep -q -x 'FENCE|LOST'; then return "${ST_LOCKLOST}"; fi
+  warn "no complete reply from the BIG-IP (rc=${rc}); reading the outcome of the step from the BIG-IP"
+  deadline=$(( $(date +%s) + REMOTE_TIMEOUT ))
+  while :; do
+    sleep 5
+    r="$(f5_sh "${R_STEPRESULT}" "${REMOTE_LOCK_TOKEN}" "$id" 2>/dev/null)" || r=""
+    last="$(printf '%s\n' "$r" | grep -E '^STEPEND\|[0-9]+$' | tail -n 1)"
+    if [[ -n "$last" ]]; then
+      printf '%s\n' "$r" | grep -v -E '^STEPEND\|'
+      return "${last#STEPEND|}"
+    fi
+    case "$(printf '%s\n' "$r" | head -n 1)" in
+      'STEP|NONE')    none=$((none + 1)); if (( none >= 2 )); then return "${ST_NOTRUN}"; fi ;;
+      'STEP|NOLOCK')  return "${ST_UNKNOWN}" ;;
+      'STEP|RUNNING') none=0 ;;
+    esac
+    if (( $(date +%s) >= deadline )); then return "${ST_UNKNOWN}"; fi
+  done
+}
+
+# A plain-language description of f5_mut's special return values.
+mut_status_text() {
+  case "$1" in
+    "${ST_NOTRUN}")   printf 'the step never started on the BIG-IP' ;;
+    "${ST_LOCKLOST}") printf 'this run no longer holds the lock on the BIG-IP, so the step was not run' ;;
+    "${ST_UNKNOWN}")  printf 'the BIG-IP did not report the outcome of the step' ;;
+    *)                printf 'rc=%s' "$1" ;;
+  esac
+}
 
 #######################################################################
 # Remote scripts (bash 4.2 compatible; run on the BIG-IP)
@@ -835,13 +1028,23 @@ find_pem() {
 }
 
 # Run tmsh commands from stdin as one transaction. Prints tmsh's output;
-# returns 1 if the transaction failed.
+# returns 1 if the transaction failed: tmsh exited non-zero, or printed an error.
 run_txn() {
-  local out
+  local out rc
   out="$( { echo "create cli transaction"; cat; echo "submit cli transaction"; } | tmsh 2>&1 )"
+  rc=$?
   printf '%s\n' "$out"
-  if tmsh_failed "$out"; then return 1; fi
+  if [ "$rc" -ne 0 ] || tmsh_failed "$out"; then return 1; fi
   return 0
+}
+
+# Run one tmsh command; succeed only if it exits 0 and prints no error.
+# The output is left in TMSH_OUT.
+tmsh_ok() {
+  local rc
+  TMSH_OUT="$(tmsh "$@" 2>&1)"
+  rc=$?
+  [ "$rc" -eq 0 ] && ! tmsh_failed "$TMSH_OUT"
 }
 REMOTE_EOF
 
@@ -874,38 +1077,56 @@ done
 REMOTE_EOF
 
 define R_OBJINFO <<'REMOTE_EOF'
-# args: cert:NAME | key:NAME ...
+# (needs R_LIB) args: cert:NAME | key:NAME | keypub:NAME ...
+#   cert:   OBJ|cert|NAME|OK|FINGERPRINT|EXPIRY      or OBJ|cert|NAME|MISSING
+#   key:    OBJ|key|NAME|OK                          or OBJ|key|NAME|MISSING
+#   keypub: OBJ|keypub|NAME|OK|SHA256-OF-PUBLIC-KEY  or OBJ|keypub|NAME|MISSING
 for spec in "$@"; do
   kind="${spec%%:*}"; name="${spec#*:}"
-  if [ "$kind" = cert ]; then
-    o="$(tmsh -q list sys file ssl-cert "$name" fingerprint expiration-date 2>/dev/null)" || o=""
-    if [ -z "$o" ]; then echo "OBJ|cert|$name|MISSING"; continue; fi
-    fp="$(printf '%s\n' "$o" | awk '$1=="fingerprint"{print $2}')"
-    ex="$(printf '%s\n' "$o" | awk '$1=="expiration-date"{print $2}')"
-    fp="$(printf '%s' "${fp#*/}" | tr -d ':' | tr 'a-f' 'A-F')"
-    echo "OBJ|cert|$name|OK|$fp|$ex"
-  else
-    o="$(tmsh -q list sys file ssl-key "$name" key-type 2>/dev/null)" || o=""
-    if [ -n "$o" ]; then echo "OBJ|key|$name|OK"; else echo "OBJ|key|$name|MISSING"; fi
-  fi
+  case "$kind" in
+    cert)
+      o="$(tmsh -q list sys file ssl-cert "$name" fingerprint expiration-date 2>/dev/null)" || o=""
+      if [ -z "$o" ]; then echo "OBJ|cert|$name|MISSING"; continue; fi
+      fp="$(printf '%s\n' "$o" | awk '$1=="fingerprint"{print $2}')"
+      ex="$(printf '%s\n' "$o" | awk '$1=="expiration-date"{print $2}')"
+      fp="$(printf '%s' "${fp#*/}" | tr -d ':' | tr 'a-f' 'A-F')"
+      echo "OBJ|cert|$name|OK|$fp|$ex" ;;
+    key)
+      o="$(tmsh -q list sys file ssl-key "$name" key-type 2>/dev/null)" || o=""
+      if [ -n "$o" ]; then echo "OBJ|key|$name|OK"; else echo "OBJ|key|$name|MISSING"; fi ;;
+    keypub)
+      o="$(tmsh -q list sys file ssl-key "$name" key-type 2>/dev/null)" || o=""
+      f=""; h=""
+      if [ -n "$o" ]; then f="$(find_pem key "$name")"; fi
+      if [ -n "$f" ]; then h="$(openssl pkey -in "$f" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"; fi
+      if [ -n "$h" ] && [ "$h" != e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ]; then
+        echo "OBJ|keypub|$name|OK|$h"
+      else
+        echo "OBJ|keypub|$name|MISSING"
+      fi ;;
+  esac
 done
 REMOTE_EOF
 
 define R_BACKUP <<'REMOTE_EOF'
-# args: BDIR TS SPEC...
+# (needs R_LIB) args: BDIR TS SPEC...
 #   SPEC = meta:KEY=VALUE | keep-cert:NAME | keep-key:NAME | fix-cert:NAME | fix-key:NAME
-#        | bind:PROFILE:ENTRY:CERT:CHAIN:KEY
-# keep-*  the old object stays on the BIG-IP; restore only reinstalls it if missing
-# fix-*   the object will be overwritten in place; restore always reinstalls it
+#        | absent-cert:NAME | absent-key:NAME | bind:PROFILE:ENTRY:CERT:CHAIN:KEY
+# keep-*    the old object stays on the BIG-IP; restore reinstalls it only if missing
+# fix-*     the object will be overwritten in place; restore always reinstalls it
+# absent-*  the object does not exist yet; restore deletes it if it exists then
+# Writes the PEM copies, INVENTORY (what the set contains, one line per item),
+# MANIFEST, restore-TS.sh and SHA256SUMS (covering every other file in the set).
 set -u
 BDIR="$1"; TS="$2"; shift 2
 umask 077
 mkdir -p "$(dirname "$BDIR")" || { echo "ERR|cannot create $(dirname "$BDIR")"; exit 1; }
 mkdir "$BDIR" || { echo "ERR|backup directory already exists: $BDIR"; exit 1; }
-R="$BDIR/restore-$TS.sh"
-BODY="$BDIR/.body"; TXN="$BDIR/.txn"
-: > "$BODY"; : > "$TXN"; : > "$BDIR/MANIFEST"
+R="restore-$TS.sh"
+BODY="$BDIR/.body"; TXN="$BDIR/.txn"; ABS="$BDIR/.absent"
+: > "$BODY"; : > "$TXN"; : > "$ABS"; : > "$BDIR/MANIFEST"; : > "$BDIR/INVENTORY"
 files=""
+n=0
 
 for spec in "$@"; do
   kind="${spec%%:*}"; rest="${spec#*:}"
@@ -913,26 +1134,30 @@ for spec in "$@"; do
     meta)
       printf '%s\n' "$rest" >> "$BDIR/MANIFEST" ;;
     keep-cert|keep-key|fix-cert|fix-key)
-      t="${kind#*-}"; name="$rest"
+      mode="${kind%%-*}"; t="${kind#*-}"; name="$rest"
       path="$(find_pem "$t" "$name")"
-      if [ -z "$path" ]; then
-        case "$kind" in
-          keep-*) echo "ERR|cannot locate the file behind $t object $name"; exit 1 ;;
-          *)      echo "NOTE|$t object $name has no file to back up"; continue ;;
-        esac
-      fi
+      if [ -z "$path" ]; then echo "ERR|cannot locate the file behind $t object $name"; exit 1; fi
+      n=$((n + 1))
       safe="${name#/}"; safe="${safe//\//__}"
-      out="$t.$safe"
+      out="$t.$n.$safe"
       cat -- "$path" > "$BDIR/$out" || { echo "ERR|cannot copy $path"; exit 1; }
       [ -s "$BDIR/$out" ] || { echo "ERR|backup of $name is empty"; exit 1; }
       files="$files $out"
-      case "$kind" in
-        keep-*) printf "ensure %s '%s' \"\$D/%s\"\n" "$t" "$name" "$out" >> "$BODY" ;;
-        fix-*)  printf "force %s '%s' \"\$D/%s\"\n" "$t" "$name" "$out" >> "$BODY" ;;
+      echo "obj|$mode|$t|$name|$out" >> "$BDIR/INVENTORY"
+      case "$mode" in
+        keep) printf "ensure %s '%s' \"\$D/%s\"\n" "$t" "$name" "$out" >> "$BODY" ;;
+        fix)  printf "force %s '%s' \"\$D/%s\"\n" "$t" "$name" "$out" >> "$BODY" ;;
       esac ;;
+    absent-cert|absent-key)
+      t="${kind#*-}"; name="$rest"
+      echo "absent|$t|$name" >> "$BDIR/INVENTORY"
+      printf "remove %s '%s'\n" "$t" "$name" >> "$ABS" ;;
     bind)
       IFS=: read -r _ p e c h k <<< "$spec"
+      echo "bind|$p|$e|$c|$h|$k" >> "$BDIR/INVENTORY"
       printf 'modify ltm profile client-ssl %s cert-key-chain modify { %s { cert %s chain %s key %s } }\n' "$p" "$e" "$c" "$h" "$k" >> "$TXN" ;;
+    *)
+      echo "ERR|unknown backup item $kind"; exit 1 ;;
   esac
 done
 
@@ -940,24 +1165,32 @@ done
   echo '#!/bin/bash'
   echo "# Generated by f5-cert-push. Restores the BIG-IP state captured just before run $TS."
   echo "# Run on the BIG-IP as root:   bash restore-$TS.sh"
+  echo "# Exit status: 0 restored and saved; 10 the backup failed its integrity check"
+  echo "# (nothing was changed); anything else: a step failed part-way."
   cat <<'HDR'
 set -u
 D="$(cd "$(dirname "$0")" && pwd)"
-if [ -s "$D/SHA256SUMS" ]; then
-  ( cd "$D" && sha256sum -c --quiet SHA256SUMS ) || { echo "backup integrity check FAILED; nothing was changed" >&2; exit 1; }
+if [ ! -s "$D/SHA256SUMS" ] || ! ( cd "$D" && sha256sum -c --quiet SHA256SUMS ) >/dev/null 2>&1; then
+  echo "backup integrity check FAILED (SHA256SUMS missing or not matching); nothing was changed" >&2
+  exit 10
 fi
 failed() { printf '%s\n' "$1" | grep -Eq '^[0-9a-fA-F]{8}:[0-3]:|transaction failed|Syntax Error|Unexpected Error'; }
 inst() {
-  out="$(tmsh install sys crypto "$1" "$2" from-local-file "$3" 2>&1)"
-  if failed "$out"; then echo "install of $1 $2 FAILED: $out" >&2; exit 1; fi
+  out="$(tmsh install sys crypto "$1" "$2" from-local-file "$3" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ] || failed "$out"; then echo "install of $1 $2 FAILED (rc=$rc): $out" >&2; exit 1; fi
   echo "    reinstalled $1 $2"
 }
-exists() { [ -n "$(tmsh -q list sys file "$1" "$2" 2>/dev/null)" ]; }
-ensure() {
-  if [ "$1" = key ]; then c=ssl-key; else c=ssl-cert; fi
-  if exists "$c" "$2"; then echo "    $1 $2 still present"; else inst "$1" "$2" "$3"; fi
-}
+cls() { if [ "$1" = key ]; then echo ssl-key; else echo ssl-cert; fi; }
+exists() { [ -n "$(tmsh -q list sys file "$(cls "$1")" "$2" 2>/dev/null)" ]; }
+ensure() { if exists "$1" "$2"; then echo "    $1 $2 still present"; else inst "$1" "$2" "$3"; fi; }
 force() { inst "$1" "$2" "$3"; }
+remove() {
+  if exists "$1" "$2"; then
+    out="$(tmsh delete sys crypto "$1" "$2" 2>&1)"; rc=$?
+    if [ "$rc" -ne 0 ] || failed "$out"; then echo "removing $1 $2 FAILED (rc=$rc): $out" >&2; exit 1; fi
+    echo "    removed $1 $2 (it did not exist before)"
+  fi
+}
 HDR
   cat "$BODY"
   if [ -s "$TXN" ]; then
@@ -965,23 +1198,22 @@ HDR
     echo 'echo "create cli transaction"'
     while IFS= read -r l; do printf "echo '%s'\n" "$l"; done < "$TXN"
     echo 'echo "submit cli transaction"'
-    echo '} | tmsh 2>&1)"'
+    echo '} | tmsh 2>&1)"; RC=$?'
     echo 'printf "%s\n" "$OUT"'
-    echo 'if failed "$OUT"; then echo "restoring the profiles FAILED" >&2; exit 1; fi'
+    echo 'if [ "$RC" -ne 0 ] || failed "$OUT"; then echo "restoring the profiles FAILED (rc=$RC)" >&2; exit 1; fi'
     echo 'echo "    profiles repointed"'
   fi
-  echo 'tmsh save sys config > /dev/null'
+  cat "$ABS"
+  echo 'OUT="$(tmsh save sys config 2>&1)"; RC=$?'
+  echo 'if [ "$RC" -ne 0 ] || failed "$OUT"; then echo "saving the configuration FAILED (rc=$RC): $OUT" >&2; exit 1; fi'
   echo "echo '[+] restored the state captured before run $TS'"
-} > "$R"
-chmod 700 "$R"
-rm -f "$BODY" "$TXN"
+} > "$BDIR/$R"
+chmod 700 "$BDIR/$R"
+rm -f "$BODY" "$TXN" "$ABS"
 
-if [ -n "$files" ]; then
-  ( cd "$BDIR" && sha256sum -- $files > SHA256SUMS ) || { echo "ERR|cannot checksum the backup"; exit 1; }
-else
-  : > "$BDIR/SHA256SUMS"
-fi
-for f in $files "restore-$TS.sh" MANIFEST SHA256SUMS; do echo "FILE|$f"; done
+( cd "$BDIR" && sha256sum -- $files "$R" INVENTORY MANIFEST > SHA256SUMS.tmp && mv -f SHA256SUMS.tmp SHA256SUMS ) \
+  || { echo "ERR|cannot checksum the backup"; exit 1; }
+for f in $files "$R" INVENTORY MANIFEST SHA256SUMS; do echo "FILE|$f"; done
 REMOTE_EOF
 
 define R_STAGE <<'REMOTE_EOF'
@@ -1013,9 +1245,8 @@ for spec in "$@"; do
     new-cert|set-cert) kind=cert ;;
     *) echo "FAIL|bad install spec $spec"; exit 1 ;;
   esac
-  out="$(tmsh install sys crypto "$kind" "$name" from-local-file "$STAGE/$file" 2>&1)"
-  if tmsh_failed "$out"; then
-    echo "FAIL|install of $kind $name: $(printf '%s' "$out" | tr '\n|' '  ' | head -c 300)"
+  if ! tmsh_ok install sys crypto "$kind" "$name" from-local-file "$STAGE/$file"; then
+    echo "FAIL|install of $kind $name: $(printf '%s' "$TMSH_OUT" | tr '\n|' '  ' | head -c 300)"
     exit 1
   fi
   case "$mode" in
@@ -1036,19 +1267,19 @@ rc=$?
 printf '%s' "$out" | tr '
 |' '  ' | head -c 600 | sed 's/^/TXNOUT|/'; echo
 if [ $rc -ne 0 ]; then echo "TXN|FAILED"; exit 1; fi
-out="$(tmsh save sys config 2>&1)"
-if tmsh_failed "$out"; then echo "SAVE|FAILED"; exit 2; fi
+if ! tmsh_ok save sys config; then echo "SAVE|FAILED"; exit 2; fi
 echo "TXN|OK"
 REMOTE_EOF
 
 define R_DELETE <<'REMOTE_EOF'
-# args: cert:NAME | key:NAME ...   best-effort removal of objects we created
+# (needs R_LIB) args: cert:NAME | key:NAME ...   best-effort removal of objects we created
 for spec in "$@"; do
   kind="${spec%%:*}"; name="${spec#*:}"
-  out="$(tmsh delete sys crypto "$kind" "$name" 2>&1)"
-  if tmsh_failed "$out"; then echo "KEPT|$kind|$name"; else echo "DELETED|$kind|$name"; fi
+  if [ "$kind" = key ]; then c=ssl-key; else c=ssl-cert; fi
+  if [ -z "$(tmsh -q list sys file "$c" "$name" 2>/dev/null)" ]; then echo "ABSENT|$kind|$name"; continue; fi
+  if tmsh_ok delete sys crypto "$kind" "$name"; then echo "DELETED|$kind|$name"; else echo "KEPT|$kind|$name"; fi
 done
-tmsh save sys config >/dev/null 2>&1
+if ! tmsh_ok save sys config; then echo "SAVE|FAILED"; exit 2; fi
 REMOTE_EOF
 
 define R_PRUNE_BACKUPS <<'REMOTE_EOF'
@@ -1093,11 +1324,12 @@ printf '%s\n' "$stamps" | head -n -"$KEEP" | while read -r s; do
   [ -n "$s" ] || continue
   for o in "cert:${pfx}${PREFIX}-cert-${s}.pem" "cert:${pfx}${PREFIX}-chain-${s}.pem" "key:${pfx}${PREFIX}-privkey-${s}.pem"; do
     kind="${o%%:*}"; nm="${o#*:}"
-    out="$(tmsh delete sys crypto "$kind" "$nm" 2>&1)"
-    if tmsh_failed "$out"; then echo "KEPT|$kind|$nm"; else echo "DELETED|$kind|$nm"; fi
+    if [ "$kind" = key ]; then c=ssl-key; else c=ssl-cert; fi
+    [ -n "$(tmsh -q list sys file "$c" "$nm" 2>/dev/null)" ] || continue
+    if tmsh_ok delete sys crypto "$kind" "$nm"; then echo "DELETED|$kind|$nm"; else echo "KEPT|$kind|$nm"; fi
   done
 done
-tmsh save sys config >/dev/null 2>&1
+if ! tmsh_ok save sys config; then echo "SAVE|FAILED"; exit 2; fi
 exit 0
 REMOTE_EOF
 
@@ -1122,21 +1354,59 @@ done
 REMOTE_EOF
 
 define R_RESTORE <<'REMOTE_EOF'
-# args: BDIR TS
+# args: BDIR TS     exit status: the restore script's (10 = integrity check failed, nothing changed)
 BDIR="$1"; TS="$2"
-[ -f "$BDIR/restore-$TS.sh" ] || { echo "no restore script at $BDIR/restore-$TS.sh" >&2; exit 1; }
+[ -f "$BDIR/restore-$TS.sh" ] || { echo "no restore script at $BDIR/restore-$TS.sh" >&2; exit 11; }
 bash "$BDIR/restore-$TS.sh"
+exit $?
 REMOTE_EOF
 
+define R_SAVE <<'REMOTE_EOF'
+# (needs R_LIB)
+if tmsh_ok save sys config; then echo "SAVE|OK"; else echo "SAVE|FAILED"; exit 1; fi
+REMOTE_EOF
+
+define R_LISTFILES <<'REMOTE_EOF'
+# args: BDIR   -> FILE|name for every regular file (names only of the safe form)
+[ -d "$1" ] || { echo "NODIR"; exit 0; }
+for f in "$1"/*; do
+  b="${f##*/}"
+  if [ -f "$f" ] && [ ! -L "$f" ]; then echo "FILE|$b"; elif [ -e "$f" ] || [ -L "$f" ]; then echo "OTHER|$b"; fi
+done
+REMOTE_EOF
+
+# The BIG-IP lock is a lease: a directory holding the owner's token, renewed by
+# touching "beat" at every step (f5_mut, R_BEAT, R_STEPRESULT). A lock whose beat
+# is older than remote_lock_stale_minutes is abandoned and may be taken over.
+# Take-over and release are atomic: the lock directory is renamed away first (a
+# rename succeeds for exactly one contender), then the owner is checked; a lock
+# that turns out to have been renewed or replaced meanwhile is put back. A run that
+# loses its lock finds out at its next step (fencing) and stops.
 define R_LOCK <<'REMOTE_EOF'
 # args: STALE_MINUTES TOKEN OWNER-TEXT      -> LOCK|OK|new, LOCK|OK|stale or LOCK|BUSY|<owner>
 stale="$1"; token="$2"; owner="$3"
 L=/var/run/f5-cert-push.lock
-take() { printf '%s\n%s\n' "$token" "$owner" > "$L/owner" && echo "LOCK|OK|$1"; }
+take() {
+  printf '%s\n%s\n' "$token" "$owner" > "$L/owner.tmp" && mv -f "$L/owner.tmp" "$L/owner" && touch "$L/beat" \
+    && echo "LOCK|OK|$1"
+}
+is_stale() {   # is_stale DIR: no renewal for more than $stale minutes
+  local ref="$1/beat"
+  [ -e "$ref" ] || ref="$1"
+  [ -n "$(find "$ref" -maxdepth 0 -mmin +"$stale" 2>/dev/null)" ]
+}
 if mkdir -m 700 "$L" 2>/dev/null; then take new; exit 0; fi
-if [ -n "$(find "$L" -maxdepth 0 -mmin +"$stale" 2>/dev/null)" ]; then
-  rm -rf "$L"
-  if mkdir -m 700 "$L" 2>/dev/null; then take stale; exit 0; fi
+old="$(sed -n 1p "$L/owner" 2>/dev/null)"
+if is_stale "$L"; then
+  G="$L.stale.$$.$RANDOM"
+  if mv -T "$L" "$G" 2>/dev/null; then
+    if [ "$(sed -n 1p "$G/owner" 2>/dev/null)" = "$old" ] && is_stale "$G"; then
+      rm -rf "$G"
+      if mkdir -m 700 "$L" 2>/dev/null; then take stale; exit 0; fi
+    else
+      mv -T "$G" "$L" 2>/dev/null || rm -rf "$G"
+    fi
+  fi
 fi
 echo "LOCK|BUSY|$(sed -n 2p "$L/owner" 2>/dev/null | head -c 120 | tr '|' ' ')"
 exit 0
@@ -1145,7 +1415,38 @@ REMOTE_EOF
 define R_UNLOCK <<'REMOTE_EOF'
 # args: TOKEN      (removes the lock only if we still own it)
 L=/var/run/f5-cert-push.lock
-if [ "$(sed -n 1p "$L/owner" 2>/dev/null)" = "$1" ]; then rm -rf "$L"; echo "UNLOCK|OK"; else echo "UNLOCK|NOTOURS"; fi
+if [ "$(sed -n 1p "$L/owner" 2>/dev/null)" != "$1" ]; then echo "UNLOCK|NOTOURS"; exit 0; fi
+G="$L.release.$$.$RANDOM"
+if ! mv -T "$L" "$G" 2>/dev/null; then echo "UNLOCK|NOTOURS"; exit 0; fi
+if [ "$(sed -n 1p "$G/owner" 2>/dev/null)" = "$1" ]; then
+  rm -rf "$G"; echo "UNLOCK|OK"
+else
+  mv -T "$G" "$L" 2>/dev/null || rm -rf "$G"
+  echo "UNLOCK|NOTOURS"
+fi
+REMOTE_EOF
+
+define R_BEAT <<'REMOTE_EOF'
+# args: TOKEN   -> BEAT|OK (lease renewed) or BEAT|LOST
+L=/var/run/f5-cert-push.lock
+if [ "$(sed -n 1p "$L/owner" 2>/dev/null)" = "$1" ] && touch "$L/beat"; then echo "BEAT|OK"; else echo "BEAT|LOST"; fi
+REMOTE_EOF
+
+define R_STEPRESULT <<'REMOTE_EOF'
+# args: TOKEN ID   -> the step's stored output and STEPEND|rc, or STEP|RUNNING, STEP|NONE, STEP|NOLOCK
+L=/var/run/f5-cert-push.lock
+case "$2" in *[!A-Za-z0-9.-]*|'') echo "STEP|NONE"; exit 0 ;; esac
+S="$L/step.$2"
+if [ "$(sed -n 1p "$L/owner" 2>/dev/null)" != "$1" ]; then echo "STEP|NOLOCK"; exit 0; fi
+touch "$L/beat"
+if [ -f "$S.rc" ]; then
+  cat "$S.out" 2>/dev/null
+  echo "STEPEND|$(cat "$S.rc")"
+elif [ -e "$S.start" ]; then
+  echo "STEP|RUNNING"
+else
+  echo "STEP|NONE"
+fi
 REMOTE_EOF
 
 define R_DISCOVER <<'REMOTE_EOF'
@@ -1179,20 +1480,34 @@ lock_acquire() {
   local dir key lk pid
   dir="$(lock_dir)"
   mkdir -p -- "$dir" 2>/dev/null && chmod 700 -- "$dir" 2>/dev/null || { err "cannot create lock directory ${dir}"; return 1; }
+  if [[ ! -O "$dir" || -L "$dir" ]]; then err "lock directory ${dir} is not a directory owned by you"; return 1; fi
   key="$(printf '%s_%s' "$F5_HOST" "$F5_PORT" | tr -c 'A-Za-z0-9._-' '_')"
   lk="${dir}/${key}.lock"
-  if mkdir -m 700 -- "$lk" 2>/dev/null; then
-    printf '%s\n' "$$" >"$lk/pid"; HELD_LOCKS+=("$lk"); return 0
-  fi
+  if lock_take "$lk"; then return 0; fi
   pid="$(cat -- "$lk/pid" 2>/dev/null)" || pid=""
   if [[ "$pid" =~ ^[0-9]+$ ]] && ! kill -0 "$pid" 2>/dev/null; then
-    warn "removing stale lock left by process ${pid}"
-    rm -rf -- "$lk"
-    if mkdir -m 700 -- "$lk" 2>/dev/null; then
-      printf '%s\n' "$$" >"$lk/pid"; HELD_LOCKS+=("$lk"); return 0
+    # Take over atomically: rename the dead owner's lock away (only one contender
+    # can), and only discard it if it is still the one we judged dead.
+    local g="${lk}.stale.$$"
+    if mv -T -- "$lk" "$g" 2>/dev/null; then
+      if [[ "$(cat -- "$g/pid" 2>/dev/null)" == "$pid" ]]; then
+        warn "removing stale lock left by process ${pid}"
+        rm -rf -- "$g"
+        if lock_take "$lk"; then return 0; fi
+      else
+        mv -T -- "$g" "$lk" 2>/dev/null || rm -rf -- "$g"
+      fi
     fi
   fi
   return 2
+}
+
+lock_take() {   # create the lock directory with our pid in it, atomically
+  local lk="$1"
+  mkdir -m 700 -- "$lk" 2>/dev/null || return 1
+  printf '%s\n' "$$" >"$lk/pid.tmp" && mv -f -- "$lk/pid.tmp" "$lk/pid"
+  HELD_LOCKS+=("$lk")
+  return 0
 }
 
 lock_release() { remote_lock_release || true; release_all_locks; }
@@ -1200,6 +1515,7 @@ lock_release() { remote_lock_release || true; release_all_locks; }
 # The BIG-IP-side lock makes the "one run at a time" rule hold across hosts: two
 # machines that both push to one BIG-IP cannot interleave.
 REMOTE_LOCK_TOKEN=""
+REMOTE_LOCK_KEEP=0
 
 # 0 acquired, 2 busy, 1 error
 remote_lock_acquire() {
@@ -1240,7 +1556,25 @@ remote_lock_release() {
   [[ -n "${REMOTE_LOCK_TOKEN}" ]] || return 0
   local t="${REMOTE_LOCK_TOKEN}"
   REMOTE_LOCK_TOKEN=""
+  if (( REMOTE_LOCK_KEEP )); then
+    # After a CRITICAL result a step may still be running on the BIG-IP, or its
+    # state is unknown: keep other runs out until it expires (no renewal) or an
+    # administrator has checked the device.
+    REMOTE_LOCK_KEEP=0
+    warn "the lock on the BIG-IP (/var/run/f5-cert-push.lock) is left in place: no other run can change this BIG-IP until it expires after remote_lock_stale_minutes, or an administrator removes it after checking the device"
+    return 0
+  fi
   f5_sh "${R_UNLOCK}" "$t" >/dev/null 2>&1
+}
+
+# Renew the lease on the BIG-IP lock; fails if this run no longer holds it.
+remote_lock_beat() {
+  [[ -n "${REMOTE_LOCK_TOKEN}" ]] || return 1
+  local out
+  out="$(f5_sh "${R_BEAT}" "${REMOTE_LOCK_TOKEN}" 2>/dev/null)" || true
+  [[ "$out" == *'BEAT|OK'* ]] && return 0
+  [[ "$out" == *'BEAT|LOST'* ]] && { err "this run no longer holds the lock on the BIG-IP"; return 1; }
+  return 0     # no answer: the next step's fence decides
 }
 
 # Both locks: this host's, then the BIG-IP's. Returns 0, 2 (busy) or 1 (error).
@@ -1258,10 +1592,14 @@ job_lock() {
 #######################################################################
 J_DEP="" J_F5="" J_CERT="" J_PREFIX="" J_PART="" J_TS="" J_KEEP=4
 J_AUTOROLL=yes J_FIXED=no J_VUNREACH=warn J_VFROM=f5 J_FP="" J_MODE=""
-J_RC=0 J_MSG="" J_RESULT="" J_CHANGED=0 J_BDIR_R="" J_BDIR_L=""
+# J_CHANGED: 1 from the moment a step that changes the profiles or the fixed-name
+# objects is dispatched, until the BIG-IP is confirmed to be back on (or never to
+# have left) its previous state. J_UNKNOWN: a step's outcome could not be read
+# back, so even a verified rollback is reported CRITICAL.
+J_RC=0 J_MSG="" J_RESULT="" J_CHANGED=0 J_UNKNOWN=0 J_BDIR_R="" J_BDIR_L=""
 declare -a J_PROF=() J_VERIFY=() J_TARGETS=() J_CREATED=()
 X_VERSION="" X_PHASE="" X_LASTLOAD="" X_FAILOVER="" X_SYNC="" X_PARTITION=""
-declare -A PR_STATE=() PR_INH=() OBJ_FP=() OBJ_EXP=() OBJ_OK=()
+declare -A PR_STATE=() PR_INH=() OBJ_FP=() OBJ_EXP=() OBJ_OK=() OBJ_KEYPUB=()
 declare -a ENT_LIST=()
 LAST_TS=""
 
@@ -1296,14 +1634,16 @@ job_init() {   # job_init DEPLOY F5NAME
   J_FIXED="$(eff_bool fixed_names "$sd")"
   J_VUNREACH="$(eff verify_unreachable "$sd")"
   J_VFROM="$(eff verify_from "$sd")"
-  J_RC=0; J_MSG=""; J_RESULT=""; J_CHANGED=0; J_BDIR_R=""; J_BDIR_L=""
+  J_RC=0; J_MSG=""; J_RESULT=""; J_CHANGED=0; J_UNKNOWN=0; J_BDIR_R=""; J_BDIR_L=""
   J_PROF=(); J_VERIFY=(); J_TARGETS=(); J_CREATED=()
   while IFS= read -r line; do [[ -n "$line" ]] && J_PROF+=("$line"); done <<<"${CFG[$sd|profile]-}"
   while IFS= read -r line; do [[ -n "$line" ]] && J_VERIFY+=("$line"); done <<<"${CFG[$sd|verify]-}"
   if (( ${#J_PROF[@]} > 0 )); then J_MODE=atomic; else J_MODE=objects; fi
   f5_load "$f"
   J_PART="$F5_PART"
-  J_FP="${CERT_FP[$J_CERT]}"
+  # The new certificate's fingerprint. Empty for a restore (--rollback), which
+  # must not depend on the certificate being replaced.
+  J_FP="${CERT_FP[$J_CERT]-}"
   # Unique, sortable run id; never reuse one within this process.
   # UTC, so names sort chronologically through daylight-saving changes and across
   # time zones (retention relies on the sort order).
@@ -1318,9 +1658,14 @@ job_init() {   # job_init DEPLOY F5NAME
 #######################################################################
 job_probe() {
   local -a pn=()
-  local sp out rc=0 tag a b c d e f nc nh nk bad=0
+  local sp
   for sp in ${J_PROF[@]+"${J_PROF[@]}"}; do pn+=("$(profile_fq "${sp%%:*}")"); done
-  out="$(f5_sh "${R_PROBE}" "${F5_PART}" ${pn[@]+"${pn[@]}"})" || rc=$?
+  job_probe_profiles ${pn[@]+"${pn[@]}"}
+}
+
+job_probe_profiles() {   # job_probe_profiles PROFILE...   (fully qualified or Common names)
+  local out rc=0 tag a b c d e f nc nh nk bad=0
+  out="$(f5_sh "${R_PROBE}" "${F5_PART}" "$@")" || rc=$?
   if (( rc != 0 )); then
     job_fail "${EX_ERR}" "cannot read the BIG-IP (ssh/tmsh failed, rc=${rc}): $(remote_err)"; return 1
   fi
@@ -1422,55 +1767,81 @@ fixed_full_obj()  { qual "${J_PREFIX}-fullchain.pem"; }
 job_objinfo() {
   local -a specs=()
   local t c h k out rc=0 tag a b cc d e
-  OBJ_FP=(); OBJ_EXP=(); OBJ_OK=()
+  OBJ_FP=(); OBJ_EXP=(); OBJ_OK=(); OBJ_KEYPUB=()
   for t in ${J_TARGETS[@]+"${J_TARGETS[@]}"}; do
     IFS='|' read -r _ _ c h k <<<"$t"
     specs+=("cert:${c}" "key:${k}")
     if [[ "$h" != none ]]; then specs+=("cert:${h}"); fi
   done
   if [[ "$J_MODE" == objects || "$J_FIXED" == yes ]]; then
-    specs+=("cert:$(fixed_cert_obj)" "key:$(fixed_key_obj)" "cert:$(fixed_chain_obj)" "cert:$(fixed_full_obj)")
+    specs+=("cert:$(fixed_cert_obj)" "key:$(fixed_key_obj)" "keypub:$(fixed_key_obj)" "cert:$(fixed_chain_obj)" "cert:$(fixed_full_obj)")
   fi
   if (( ${#specs[@]} == 0 )); then return 0; fi
-  out="$(f5_sh "${R_OBJINFO}" "${specs[@]}")" || rc=$?
-  if (( rc != 0 )); then job_fail "${EX_ERR}" "cannot read certificate objects on the BIG-IP: $(remote_err)"; return 1; fi
+  objinfo_read "${specs[@]}" || { job_fail "${EX_ERR}" "cannot read certificate objects on the BIG-IP: $(remote_err)"; return 1; }
+  return 0
+}
+
+# Read objects into OBJ_OK / OBJ_FP / OBJ_EXP / OBJ_KEYPUB (adding to what is there).
+objinfo_read() {   # objinfo_read SPEC...
+  local out rc=0 tag a b cc d e
+  out="$(f5_sh "${R_LIB}"$'\n'"${R_OBJINFO}" "$@")" || rc=$?
+  (( rc == 0 )) || return 1
   while IFS='|' read -r tag a b cc d e; do
     [[ "$tag" == OBJ ]] || continue
-    # OBJ|kind|name|OK|fp|expiry   or   OBJ|kind|name|MISSING
+    # OBJ|kind|name|OK|...   or   OBJ|kind|name|MISSING
+    safe_obj "$b" || continue
     if [[ "$cc" == OK ]]; then
-      OBJ_OK["${a}:${b}"]=1
-      if [[ "$a" == cert ]]; then OBJ_FP["$b"]="$d"; OBJ_EXP["$b"]="$e"; fi
+      case "$a" in
+        cert)   OBJ_OK["cert:${b}"]=1; OBJ_FP["$b"]="$d"; OBJ_EXP["$b"]="$e" ;;
+        key)    OBJ_OK["key:${b}"]=1 ;;
+        keypub) OBJ_KEYPUB["$b"]="$d" ;;
+      esac
+    else
+      case "$a" in
+        cert)   unset "OBJ_OK[cert:${b}]" "OBJ_FP[$b]" "OBJ_EXP[$b]" ;;
+        key)    unset "OBJ_OK[key:${b}]" ;;
+        keypub) unset "OBJ_KEYPUB[$b]" ;;
+      esac
     fi
   done <<<"$out"
   return 0
 }
 
+# The fixed-name objects hold exactly the new certificate, chain, fullchain and key.
+fixed_is_current() {
+  [[ "${OBJ_FP[$(fixed_cert_obj)]:-}" == "$J_FP" ]] || return 1
+  [[ "${OBJ_KEYPUB[$(fixed_key_obj)]:-}" == "${CERT_KEYPUB[$J_CERT]}" ]] || return 1
+  [[ "${OBJ_FP[$(fixed_full_obj)]:-}" == "$J_FP" ]] || return 1
+  if [[ "${CERT_HAVE_CHAIN[$J_CERT]}" == 1 ]]; then
+    [[ "${OBJ_FP[$(fixed_chain_obj)]:-}" == "${CERT_CHAINFP[$J_CERT]}" ]] || return 1
+  fi
+  return 0
+}
+
 job_is_current() {
   local t c
-  if (( ${#J_TARGETS[@]} > 0 )); then
-    for t in "${J_TARGETS[@]}"; do
-      IFS='|' read -r _ _ c _ <<<"$t"
-      [[ "${OBJ_FP[$c]:-}" == "$J_FP" ]] || return 1
-    done
-    return 0
-  fi
-  [[ "${OBJ_FP[$(fixed_cert_obj)]:-}" == "$J_FP" && -n "${OBJ_OK[key:$(fixed_key_obj)]+x}" ]]
+  for t in ${J_TARGETS[@]+"${J_TARGETS[@]}"}; do
+    IFS='|' read -r _ _ c _ <<<"$t"
+    [[ "${OBJ_FP[$c]:-}" == "$J_FP" ]] || return 1
+  done
+  if [[ "$J_MODE" == objects || "$J_FIXED" == yes ]]; then fixed_is_current || return 1; fi
+  return 0
 }
 
 job_report_state() {
   local t p e c h k fp state
-  if (( ${#J_TARGETS[@]} > 0 )); then
-    for t in "${J_TARGETS[@]}"; do
-      IFS='|' read -r p e c h k <<<"$t"
-      fp="${OBJ_FP[$c]:-}"
-      if [[ "$fp" == "$J_FP" ]]; then state="up to date"; else state="OUT OF DATE"; fi
-      info "${p} / ${e}: uses ${c}, expires $(hex_to_date "${OBJ_EXP[$c]:-0}"), ${state}"
-    done
-  else
-    c="$(fixed_cert_obj)"
+  for t in ${J_TARGETS[@]+"${J_TARGETS[@]}"}; do
+    IFS='|' read -r p e c h k <<<"$t"
     fp="${OBJ_FP[$c]:-}"
-    if [[ -z "$fp" ]]; then state="not installed"; elif [[ "$fp" == "$J_FP" ]]; then state="up to date"; else state="OUT OF DATE"; fi
-    info "object ${c}: ${state}"
+    if [[ "$fp" == "$J_FP" ]]; then state="up to date"; else state="OUT OF DATE"; fi
+    info "${p} / ${e}: uses ${c}, expires $(hex_to_date "${OBJ_EXP[$c]:-0}"), ${state}"
+  done
+  if [[ "$J_MODE" == objects || "$J_FIXED" == yes ]]; then
+    c="$(fixed_cert_obj)"
+    if [[ -z "${OBJ_FP[$c]:-}" ]]; then state="not installed"
+    elif fixed_is_current; then state="up to date (certificate, chain, fullchain and key)"
+    else state="OUT OF DATE"; fi
+    info "fixed-name objects ${J_PREFIX}-{cert,chain,fullchain,privkey}.pem: ${state}"
   fi
 }
 
@@ -1478,54 +1849,166 @@ job_report_state() {
 # Changing the BIG-IP
 #######################################################################
 job_backup() {
-  local root="${F5_BACKUP_ROOT}/${J_PREFIX}" out rc=0 tag a b line
-  local -a specs=() files=()
+  local root="${F5_BACKUP_ROOT}/${J_PREFIX}" out rc=0 tag a b f o kind name
+  local -a specs=() files=() expect=()
   local t p e c h k seen=" "
+  local -A got=()
 
   specs+=("meta:tool=${PROG} ${VERSION}" "meta:run=${J_TS}" "meta:deployment=${J_DEP}" "meta:bigip=${F5_NAME}"
           "meta:new_sha256=${J_FP}" "meta:cert=${J_CERT}")
+  # What the backup must contain is decided HERE, from the plan, and the set that
+  # comes back is checked against it (verify_backup_set).
   for t in ${J_TARGETS[@]+"${J_TARGETS[@]}"}; do
     IFS='|' read -r p e c h k <<<"$t"
-    if [[ "$seen" != *" key:${k} "* ]]; then specs+=("keep-key:${k}"); seen+="key:${k} "; fi
-    if [[ "$seen" != *" cert:${c} "* ]]; then specs+=("keep-cert:${c}"); seen+="cert:${c} "; fi
-    if [[ "$h" != none && "$seen" != *" cert:${h} "* ]]; then specs+=("keep-cert:${h}"); seen+="cert:${h} "; fi
+    if [[ "$seen" != *" key:${k} "* ]]; then specs+=("keep-key:${k}"); expect+=("obj|keep|key|${k}"); seen+="key:${k} "; fi
+    if [[ "$seen" != *" cert:${c} "* ]]; then specs+=("keep-cert:${c}"); expect+=("obj|keep|cert|${c}"); seen+="cert:${c} "; fi
+    if [[ "$h" != none && "$seen" != *" cert:${h} "* ]]; then specs+=("keep-cert:${h}"); expect+=("obj|keep|cert|${h}"); seen+="cert:${h} "; fi
   done
   if [[ "$J_MODE" == objects || "$J_FIXED" == yes ]]; then
-    if [[ -n "${OBJ_OK[key:$(fixed_key_obj)]+x}" ]]; then specs+=("fix-key:$(fixed_key_obj)"); fi
-    for c in "$(fixed_cert_obj)" "$(fixed_chain_obj)" "$(fixed_full_obj)"; do
-      if [[ -n "${OBJ_OK[cert:${c}]+x}" ]]; then specs+=("fix-cert:${c}"); fi
+    for o in "key:$(fixed_key_obj)" "cert:$(fixed_cert_obj)" "cert:$(fixed_chain_obj)" "cert:$(fixed_full_obj)"; do
+      kind="${o%%:*}"; name="${o#*:}"
+      if [[ -n "${OBJ_OK[${kind}:${name}]+x}" ]]; then
+        specs+=("fix-${kind}:${name}"); expect+=("obj|fix|${kind}|${name}")
+      else
+        specs+=("absent-${kind}:${name}"); expect+=("absent|${kind}|${name}")
+      fi
     done
   fi
-  for t in ${J_TARGETS[@]+"${J_TARGETS[@]}"}; do specs+=("bind:${t//|/:}"); done
+  for t in ${J_TARGETS[@]+"${J_TARGETS[@]}"}; do specs+=("bind:${t//|/:}"); expect+=("bind|${t}"); done
 
   info "backing up current state to ${F5_HOST}:${root}/${J_TS}/ and ${J_BDIR_L}/"
-  out="$(f5_sh "${R_LIB}"$'\n'"${R_BACKUP}" "${root}/${J_TS}" "${J_TS}" "${specs[@]}")" || rc=$?
+  mut_begin
+  out="$(f5_mut "${R_LIB}"$'\n'"${R_BACKUP}" "${root}/${J_TS}" "${J_TS}" "${specs[@]}")" || rc=$?
+  mut_end
   J_BDIR_R="${root}/${J_TS}"
   while IFS='|' read -r tag a b; do
     case "$tag" in
       FILE) files+=("$a") ;;
-      NOTE) info "backup: ${a}" ;;
       ERR)  job_fail "${EX_ERR}" "backup failed on the BIG-IP: ${a}"; return 1 ;;
     esac
   done <<<"$out"
-  if (( rc != 0 )); then job_fail "${EX_ERR}" "backup failed on the BIG-IP (rc=${rc}): $(remote_err)"; return 1; fi
-  if (( ${#files[@]} == 0 )); then job_fail "${EX_ERR}" "backup produced no files"; return 1; fi
+  if (( rc != 0 )); then job_fail "${EX_ERR}" "backup failed on the BIG-IP ($(mut_status_text "$rc")): $(remote_err)"; return 1; fi
 
   mkdir -p -- "${J_BDIR_L}" || { job_fail "${EX_ERR}" "cannot create ${J_BDIR_L}"; return 1; }
   chmod 700 -- "${J_BDIR_L}" 2>/dev/null || true
-  for line in "${files[@]}"; do
-    if [[ ! "$line" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then job_fail "${EX_ERR}" "backup returned an unsafe file name"; return 1; fi
-    if ! f5_get "${J_BDIR_R}/${line}" "${J_BDIR_L}/${line}"; then
-      job_fail "${EX_ERR}" "cannot copy ${line} from the BIG-IP: $(remote_err)"; return 1
+  for f in ${files[@]+"${files[@]}"}; do
+    if [[ ! "$f" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || -n "${got[$f]+x}" ]]; then
+      job_fail "${EX_ERR}" "the backup on the BIG-IP returned an unsafe or duplicate file name"; return 1
     fi
-    chmod 600 -- "${J_BDIR_L}/${line}" 2>/dev/null || true
+    got[$f]=1
+    if ! f5_get "${J_BDIR_R}/${f}" "${J_BDIR_L}/${f}"; then
+      job_fail "${EX_ERR}" "cannot copy ${f} from the BIG-IP: $(remote_err)"; return 1
+    fi
+    chmod 600 -- "${J_BDIR_L}/${f}" 2>/dev/null || true
   done
-  if [[ -s "${J_BDIR_L}/SHA256SUMS" ]]; then
-    if ! ( cd "${J_BDIR_L}" && sha256sum -c --quiet SHA256SUMS >/dev/null 2>&1 ); then
-      job_fail "${EX_ERR}" "the local copy of the backup does not match its checksums; nothing was changed on the BIG-IP"; return 1
+  if ! verify_backup_set "${J_BDIR_L}" "${J_TS}" ${expect[@]+"${expect[@]}"}; then
+    job_fail "${EX_ERR}" "the backup is incomplete or does not verify (${VB_ERR}); nothing was changed on the BIG-IP"; return 1
+  fi
+  ok "backup verified: ${#files[@]} file(s), every item present, checksums match, restore script included"
+  return 0
+}
+
+# Read a backup set's INVENTORY into INV_BIND ("p|e|c|h|k"), INV_OBJ
+# ("mode|kind|name|file"), INV_ABSENT ("kind|name") and INV_ITEMS (normalised
+# lines for comparison). A set written by 2.0.0 has no INVENTORY: its contents
+# are then read from the restore script it carries (INV_LEGACY=1).
+declare -a INV_BIND=() INV_OBJ=() INV_ABSENT=() INV_ITEMS=()
+INV_LEGACY=0
+VB_ERR=""
+inv_name_ok() { safe_obj "$1"; }
+parse_inventory() {   # parse_inventory DIR TS
+  local dir="$1" ts="$2" line t1 t2 t3 t4 t5 t6 rx_e rx_b
+  INV_BIND=(); INV_OBJ=(); INV_ABSENT=(); INV_ITEMS=(); INV_LEGACY=0
+  if [[ -f "${dir}/INVENTORY" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -n "$line" ]] || continue
+      IFS='|' read -r t1 t2 t3 t4 t5 t6 <<<"$line"
+      case "$t1" in
+        obj)
+          [[ ( "$t2" == keep || "$t2" == fix ) && ( "$t3" == cert || "$t3" == key ) && -z "$t6" ]] \
+            && inv_name_ok "$t4" && [[ "$t5" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { VB_ERR="bad INVENTORY line"; return 1; }
+          INV_OBJ+=("${t2}|${t3}|${t4}|${t5}"); INV_ITEMS+=("obj|${t2}|${t3}|${t4}") ;;
+        absent)
+          [[ ( "$t2" == cert || "$t2" == key ) && -z "$t4" ]] && inv_name_ok "$t3" || { VB_ERR="bad INVENTORY line"; return 1; }
+          INV_ABSENT+=("${t2}|${t3}"); INV_ITEMS+=("absent|${t2}|${t3}") ;;
+        bind)
+          [[ "$line" =~ ^bind\|[^|]+\|[^|]+\|[^|]+\|[^|]+\|[^|]+$ ]] && inv_name_ok "$t2" && is_name "$t3" \
+            && inv_name_ok "$t4" && { [[ "$t5" == none ]] || inv_name_ok "$t5"; } && inv_name_ok "$t6" \
+            || { VB_ERR="bad INVENTORY line"; return 1; }
+          INV_BIND+=("${t2}|${t3}|${t4}|${t5}|${t6}"); INV_ITEMS+=("bind|${t2}|${t3}|${t4}|${t5}|${t6}") ;;
+        *) VB_ERR="bad INVENTORY line"; return 1 ;;
+      esac
+    done <"${dir}/INVENTORY"
+    return 0
+  fi
+  # 2.0.0 set: read the restore script, accepting only the exact lines 2.0.0 wrote.
+  [[ -f "${dir}/restore-${ts}.sh" ]] || { VB_ERR="no INVENTORY and no restore script"; return 1; }
+  INV_LEGACY=1
+  rx_e="^(ensure|force) (cert|key) '([^']+)' \"\\\$D/([A-Za-z0-9][A-Za-z0-9._-]*)\"\$"
+  rx_b="^echo 'modify ltm profile client-ssl ([^ ]+) cert-key-chain modify \\{ ([^ ]+) \\{ cert ([^ ]+) chain ([^ ]+) key ([^ ]+) \\} \\}'\$"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ $rx_e ]]; then
+      t2="${BASH_REMATCH[1]}"; t3="${BASH_REMATCH[2]}"; t4="${BASH_REMATCH[3]}"; t5="${BASH_REMATCH[4]}"
+      if [[ "$t2" == ensure ]]; then t2=keep; else t2=fix; fi
+      inv_name_ok "$t4" || { VB_ERR="unexpected name in the 2.0.0 restore script"; return 1; }
+      INV_OBJ+=("${t2}|${t3}|${t4}|${t5}"); INV_ITEMS+=("obj|${t2}|${t3}|${t4}")
+    elif [[ "$line" =~ $rx_b ]]; then
+      t2="${BASH_REMATCH[1]}"; t3="${BASH_REMATCH[2]}"; t4="${BASH_REMATCH[3]}"; t5="${BASH_REMATCH[4]}"; t6="${BASH_REMATCH[5]}"
+      inv_name_ok "$t2" && is_name "$t3" && inv_name_ok "$t4" && { [[ "$t5" == none ]] || inv_name_ok "$t5"; } && inv_name_ok "$t6" \
+        || { VB_ERR="unexpected name in the 2.0.0 restore script"; return 1; }
+      INV_BIND+=("${t2}|${t3}|${t4}|${t5}|${t6}"); INV_ITEMS+=("bind|${t2}|${t3}|${t4}|${t5}|${t6}")
+    fi
+  done <"${dir}/restore-${ts}.sh"
+  return 0
+}
+
+# Check a downloaded backup set: every file present, nothing unexpected, the
+# checksum list strictly formed and covering every other file, the checksums
+# matching, every backed-up PEM parsing, and (when EXPECTED items are given) the
+# inventory being exactly what was planned. Sets VB_ERR on failure.
+verify_backup_set() {   # verify_backup_set DIR TS [EXPECTED-ITEM...]
+  local dir="$1" ts="$2"; shift 2
+  local f line name x kind
+  local -A listed=() referenced=()
+  VB_ERR=""
+  for f in SHA256SUMS MANIFEST "restore-${ts}.sh"; do
+    [[ -s "${dir}/${f}" ]] || { VB_ERR="${f} is missing or empty"; return 1; }
+  done
+  parse_inventory "$dir" "$ts" || return 1
+  if (( ! INV_LEGACY )); then [[ -f "${dir}/INVENTORY" ]] || { VB_ERR="INVENTORY is missing"; return 1; }; fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^([0-9a-f]{64})\ \ ([A-Za-z0-9][A-Za-z0-9._-]*)$ ]] || { VB_ERR="SHA256SUMS has a malformed line"; return 1; }
+    name="${BASH_REMATCH[2]}"
+    [[ -z "${listed[$name]+x}" && "$name" != SHA256SUMS ]] || { VB_ERR="SHA256SUMS lists ${name} twice"; return 1; }
+    listed[$name]=1
+  done <"${dir}/SHA256SUMS"
+  while IFS= read -r f; do
+    [[ "$f" == SHA256SUMS ]] && continue
+    if (( INV_LEGACY )) && [[ "$f" == "restore-${ts}.sh" || "$f" == MANIFEST ]]; then continue; fi
+    [[ -n "${listed[$f]+x}" ]] || { VB_ERR="${f} is not covered by SHA256SUMS"; return 1; }
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%f\n')
+  if [[ -n "$(find "$dir" -mindepth 1 -maxdepth 1 ! -type f -printf x)" ]]; then VB_ERR="the set contains something that is not a regular file"; return 1; fi
+  ( cd "$dir" && sha256sum -c --quiet SHA256SUMS ) >/dev/null 2>&1 || { VB_ERR="checksums do not match"; return 1; }
+  for x in ${INV_OBJ[@]+"${INV_OBJ[@]}"}; do
+    IFS='|' read -r _ kind name f <<<"$x"
+    [[ -z "${referenced[$f]+x}" ]] || { VB_ERR="${f} is referenced twice"; return 1; }
+    referenced[$f]=1
+    [[ -s "${dir}/${f}" && -n "${listed[$f]+x}" ]] || { VB_ERR="backup of ${name} (${f}) is missing"; return 1; }
+    if [[ "$kind" == cert ]]; then
+      pem_range "${dir}/${f}" 1 1 | openssl x509 -noout >/dev/null 2>&1 || { VB_ERR="backup of ${name} does not parse"; return 1; }
+    else
+      openssl pkey -in "${dir}/${f}" -noout >/dev/null 2>&1 || { VB_ERR="backup of ${name} does not parse"; return 1; }
+    fi
+  done
+  for f in "${!listed[@]}"; do
+    case "$f" in INVENTORY|MANIFEST|"restore-${ts}.sh") continue ;; esac
+    [[ -n "${referenced[$f]+x}" ]] || { VB_ERR="${f} is in the set but not in its inventory"; return 1; }
+  done
+  if (( $# > 0 )); then
+    if [[ "$(printf '%s\n' "$@" | sort)" != "$(printf '%s\n' ${INV_ITEMS[@]+"${INV_ITEMS[@]}"} | sort)" ]]; then
+      VB_ERR="the inventory does not match what was to be backed up"; return 1
     fi
   fi
-  ok "backup verified: ${#files[@]} file(s), checksums match, restore script included"
   return 0
 }
 
@@ -1566,45 +2049,40 @@ job_stage() {
   return 0
 }
 
-# Parse CREATED|kind|name lines into J_CREATED.
-collect_created() {
-  local tag a b
-  while IFS='|' read -r tag a b; do
-    if [[ "$tag" == CREATED ]]; then J_CREATED+=("${a}:${b}"); fi
-  done <<<"$1"
-}
-
 # Remove objects this run created. Best effort; the BIG-IP refuses to delete any
-# object a profile still references.
+# object a profile still references. Only ever called when the profiles are known
+# not to use them (never switched, or switched back and verified).
 job_remove_created() {
   (( ${#J_CREATED[@]} > 0 )) || return 0
-  local out rc=0
-  out="$(f5_sh "${R_LIB}"$'\n'"${R_DELETE}" "${J_CREATED[@]}")" || rc=$?
-  if (( rc != 0 )); then warn "could not remove the objects created by this run: $(remote_err)"; return 1; fi
-  info "removed ${#J_CREATED[@]} object(s) created by this run"
+  local out rc=0 tag a b n=0
+  mut_begin
+  out="$(f5_mut "${R_LIB}"$'\n'"${R_DELETE}" "${J_CREATED[@]}")" || rc=$?
+  mut_end
+  if (( rc != 0 )); then warn "could not remove the objects created by this run ($(mut_status_text "$rc")); they are pruned by a later run"; return 1; fi
+  while IFS='|' read -r tag a b; do [[ "$tag" == DELETED ]] && n=$((n + 1)); done <<<"$out"
+  info "removed ${n} object(s) created by this run"
   J_CREATED=()
   return 0
 }
 
 job_install_versioned() {
-  local out rc=0 tag a b
+  local out rc=0 tag a b s
   local v_key v_cert v_chain
   v_key="$(qual "${J_PREFIX}-privkey-${J_TS}.pem")"
   v_cert="$(qual "${J_PREFIX}-cert-${J_TS}.pem")"
   v_chain="$(qual "${J_PREFIX}-chain-${J_TS}.pem")"
   local -a specs=("new-key:${v_key}:key.pem" "new-cert:${v_cert}:cert.pem")
   if [[ "${CERT_HAVE_CHAIN[$J_CERT]}" == 1 ]]; then specs+=("new-cert:${v_chain}:chain.pem"); fi
-  out="$(f5_sh "${R_LIB}"$'\n'"${R_INSTALL}" "${STAGE_DIR}" "${specs[@]}")" || rc=$?
-  collect_created "$out"
-  while IFS='|' read -r tag a b; do
-    if [[ "$tag" == FAIL ]]; then
-      job_fail "${EX_ERR}" "installing the new certificate failed: ${a}. The profiles were not touched."
-      job_remove_created || true
-      return 1
-    fi
-  done <<<"$out"
+  # Whatever happens from here, these are the only objects this step can have
+  # created; remembering all of them (not what the reply claims) means a lost or
+  # hostile reply cannot make us delete anything else.
+  for s in "${specs[@]}"; do s="${s#new-}"; J_CREATED+=("${s%:*}"); done
+  mut_begin
+  out="$(f5_mut "${R_LIB}"$'\n'"${R_INSTALL}" "${STAGE_DIR}" "${specs[@]}")" || rc=$?
+  mut_end
   if (( rc != 0 )); then
-    job_fail "${EX_ERR}" "installing the new certificate failed (rc=${rc}): $(remote_err). The profiles were not touched."
+    while IFS='|' read -r tag a b; do [[ "$tag" == FAIL ]] && warn "BIG-IP: ${a}"; done <<<"$out"
+    job_fail "${EX_ERR}" "installing the new certificate failed ($(mut_status_text "$rc")): $(remote_err). The profiles were not touched."
     job_remove_created || true
     return 1
   fi
@@ -1617,13 +2095,27 @@ job_install_fixed() {   # overwrite the fixed-name objects in place
   local -a specs=("set-key:$(fixed_key_obj):key.pem" "set-cert:$(fixed_cert_obj):cert.pem")
   if [[ "${CERT_HAVE_CHAIN[$J_CERT]}" == 1 ]]; then specs+=("set-cert:$(fixed_chain_obj):chain.pem"); fi
   if [[ "${CERT_HAVE_FULL[$J_CERT]}" == 1 ]]; then specs+=("set-cert:$(fixed_full_obj):fullchain.pem"); fi
-  out="$(f5_sh "${R_LIB}"$'\n'"${R_INSTALL}" "${STAGE_DIR}" "${specs[@]}")" || rc=$?
-  while IFS='|' read -r tag a b; do
-    if [[ "$tag" == FAIL ]]; then job_fail "${EX_ERR}" "updating the fixed-name objects failed: ${a}"; return 1; fi
-  done <<<"$out"
-  if (( rc != 0 )); then job_fail "${EX_ERR}" "updating the fixed-name objects failed (rc=${rc}): $(remote_err)"; return 1; fi
+  J_CHANGED=1
+  mut_begin
+  out="$(f5_mut "${R_LIB}"$'\n'"${R_INSTALL}" "${STAGE_DIR}" "${specs[@]}")" || rc=$?
+  mut_end
+  if (( rc == ST_UNKNOWN )); then J_UNKNOWN=1; fi
+  if (( rc != 0 )); then
+    while IFS='|' read -r tag a b; do [[ "$tag" == FAIL ]] && warn "BIG-IP: ${a}"; done <<<"$out"
+    job_fail "${EX_ERR}" "updating the fixed-name objects failed ($(mut_status_text "$rc")): $(remote_err)"
+    return 1
+  fi
   ok "updated ${#specs[@]} fixed-name object(s)"
   return 0
+}
+
+# Read the fixed-name objects back: certificate, chain, fullchain and key must be
+# exactly the new ones (a partial overwrite is caught here).
+job_verify_fixed() {
+  local -a specs=("cert:$(fixed_cert_obj)" "keypub:$(fixed_key_obj)" "cert:$(fixed_full_obj)")
+  if [[ "${CERT_HAVE_CHAIN[$J_CERT]}" == 1 ]]; then specs+=("cert:$(fixed_chain_obj)"); fi
+  objinfo_read "${specs[@]}" || return 1
+  fixed_is_current
 }
 
 # One transaction repointing every target entry to the new objects.
@@ -1640,7 +2132,12 @@ job_switch_profiles() {
     specs+=("bind:${p}:${e}:${v_cert}:${v_chain}:${v_key}")
   done
   info "switching ${#specs[@]} profile entr$( (( ${#specs[@]} == 1 )) && printf 'y' || printf 'ies') in a single transaction"
-  out="$(f5_sh "${R_LIB}"$'\n'"${R_TXN}" "${specs[@]}")" || rc=$?
+  # From the moment the transaction is dispatched the BIG-IP may have changed,
+  # whatever the reply says (or fails to say), until shown otherwise.
+  J_CHANGED=1
+  mut_begin
+  out="$(f5_mut "${R_LIB}"$'\n'"${R_TXN}" "${specs[@]}")" || rc=$?
+  mut_end
   local txn="" txnout=""
   while IFS='|' read -r tag a b; do
     case "$tag" in
@@ -1649,44 +2146,74 @@ job_switch_profiles() {
       SAVE) txn="SAVEFAILED" ;;
     esac
   done <<<"$out"
-  if [[ "$txn" == OK ]]; then
-    J_CHANGED=1
+  if (( rc == 0 )) && [[ "$txn" == OK ]]; then
     ok "profiles switched; configuration saved"
     return 0
   fi
   if [[ "$txn" == SAVEFAILED ]]; then
-    # The running configuration changed but could not be saved.
-    J_CHANGED=1
     job_fail "${EX_ERR}" "the profiles were switched but 'tmsh save sys config' failed, so the change would not survive a restart"
     return 1
   fi
-  job_fail "${EX_ERR}" "the tmsh transaction failed, so no profile was changed (tmsh transactions are all-or-nothing). ${txnout:+BIG-IP said: ${txnout}}"
-  job_remove_created || true
+  if (( rc == ST_NOTRUN || rc == ST_LOCKLOST )); then
+    J_CHANGED=0
+    job_fail "${EX_ERR}" "the profile switch did not run: $(mut_status_text "$rc"). No profile was changed."
+    job_remove_created || true
+    return 1
+  fi
+  if (( rc == ST_UNKNOWN )); then
+    J_UNKNOWN=1
+    job_fail "${EX_ERR}" "the outcome of the profile switch is unknown ($(mut_status_text "$rc")); treating the BIG-IP as changed"
+    return 1
+  fi
+  # The step reported a failure. tmsh transactions are all-or-nothing, but that is
+  # confirmed on the device rather than assumed.
+  if check_bindings ${J_TARGETS[@]+"${J_TARGETS[@]}"}; then
+    J_CHANGED=0
+    job_fail "${EX_ERR}" "the tmsh transaction failed; every profile is confirmed unchanged. ${txnout:+BIG-IP said: ${txnout}}"
+    job_remove_created || true
+    return 1
+  fi
+  job_fail "${EX_ERR}" "the tmsh transaction reported a failure (rc=${rc}) and the profiles are no longer on their previous objects; treating the BIG-IP as changed. ${txnout:+BIG-IP said: ${txnout}}"
   return 1
+}
+
+# check_bindings "PROFILE|ENTRY|CERT|CHAIN|KEY"...
+# Re-reads those profiles. Succeeds only if every profile exists, has exactly one
+# entry of that name, and that entry uses exactly that cert, chain and key.
+check_bindings() {
+  local -a profs=()
+  local x p e c h k ent ep en ec eh ek n bad=0
+  (( $# > 0 )) || return 0
+  for x in "$@"; do p="${x%%|*}"; in_list "$p" ${profs[@]+"${profs[@]}"} || profs+=("$p"); done
+  job_probe_profiles "${profs[@]}" || return 1
+  for x in "$@"; do
+    IFS='|' read -r p e c h k <<<"$x"
+    if [[ "${PR_STATE[$p]:-}" != OK ]]; then warn "profile ${p} does not exist"; bad=1; continue; fi
+    n=0
+    for ent in ${ENT_LIST[@]+"${ENT_LIST[@]}"}; do
+      IFS='|' read -r ep en ec eh ek _ <<<"$ent"
+      [[ "$ep" == "$p" && "$en" == "$e" ]] || continue
+      n=$((n + 1))
+      if [[ "$ec" != "$(norm_name "$c")" || "$eh" != "$(norm_name "$h")" || "$ek" != "$(norm_name "$k")" ]]; then bad=1; fi
+    done
+    if (( n != 1 )); then warn "profile ${p} has ${n} entries named ${e} (expected exactly one)"; bad=1; fi
+  done
+  (( bad == 0 ))
 }
 
 # Re-read the profiles and confirm each target entry uses exactly what we set.
 job_verify_bindings() {
-  local t p e v_key v_cert v_chain ent en c h k ok_all=1 found
-  v_key="$(qual "${J_PREFIX}-privkey-${J_TS}.pem")"
-  v_cert="$(qual "${J_PREFIX}-cert-${J_TS}.pem")"
+  local t p e v_key v_cert v_chain
+  local -a wantb=()
+  v_key="$(norm_name "$(qual "${J_PREFIX}-privkey-${J_TS}.pem")")"
+  v_cert="$(norm_name "$(qual "${J_PREFIX}-cert-${J_TS}.pem")")"
   v_chain="none"
-  if [[ "${CERT_HAVE_CHAIN[$J_CERT]}" == 1 ]]; then v_chain="$(qual "${J_PREFIX}-chain-${J_TS}.pem")"; fi
-  v_key="$(norm_name "$v_key")"; v_cert="$(norm_name "$v_cert")"; v_chain="$(norm_name "$v_chain")"
-  job_probe || return 1
+  if [[ "${CERT_HAVE_CHAIN[$J_CERT]}" == 1 ]]; then v_chain="$(norm_name "$(qual "${J_PREFIX}-chain-${J_TS}.pem")")"; fi
   for t in "${J_TARGETS[@]}"; do
     IFS='|' read -r p e _ _ _ <<<"$t"
-    found=0
-    for ent in ${ENT_LIST[@]+"${ENT_LIST[@]}"}; do
-      IFS='|' read -r ep en c h k _ <<<"$ent"
-      if [[ "$ep" == "$p" && "$en" == "$e" ]]; then
-        found=1
-        if [[ "$c" != "$v_cert" || "$h" != "$v_chain" || "$k" != "$v_key" ]]; then ok_all=0; fi
-      fi
-    done
-    if (( found == 0 )); then ok_all=0; fi
+    wantb+=("${p}|${e}|${v_cert}|${v_chain}|${v_key}")
   done
-  (( ok_all == 1 ))
+  check_bindings "${wantb[@]}"
 }
 
 # Returns 0 when every endpoint serves the new certificate; 1 on a mismatch (or
@@ -1695,6 +2222,7 @@ job_verify_endpoints() {
   local ep hp sni host port attempt fp depth out tag a b rc status=0
   (( ${#J_VERIFY[@]} > 0 )) || return 0
   for ep in "${J_VERIFY[@]}"; do
+    remote_lock_beat || return 1
     hp="${ep%%[[:space:]]*}"; sni=""
     if [[ "$ep" == *[[:space:]]* ]]; then sni="${ep##*[[:space:]]}"; fi
     if [[ -z "$sni" ]]; then sni="${CERT_SNI[$J_CERT]}"; fi
@@ -1742,28 +2270,76 @@ endpoint_local() {   # endpoint_local HOST PORT SNI -> ENDPOINT|fp|depth
 # Restore the state captured before this run. Returns 0 only if the BIG-IP is
 # confirmed to be back on its previous configuration.
 job_rollback() {
-  local reason="$1" out rc=0 ok_all=1 t p e c h k ent ep en ec eh ek
+  local reason="$1"
   warn "ROLLING BACK: ${reason}"
-  if [[ -z "$J_BDIR_R" ]]; then err "no backup exists to roll back to"; return 1; fi
-  out="$(f5_sh "${R_RESTORE}" "${J_BDIR_R}" "${J_TS}")" || rc=$?
-  if (( rc != 0 )); then
-    err "the restore script failed (rc=${rc}): $(remote_err)"
-    printf '%s\n' "$out" | sanitize | head -20 >&2
-    return 1
-  fi
-  job_probe || return 1
-  for t in ${J_TARGETS[@]+"${J_TARGETS[@]}"}; do
-    IFS='|' read -r p e c h k <<<"$t"
-    for ent in ${ENT_LIST[@]+"${ENT_LIST[@]}"}; do
-      IFS='|' read -r ep en ec eh ek _ <<<"$ent"
-      if [[ "$ep" == "$p" && "$en" == "$e" ]]; then
-        if [[ "$ec" != "$c" || "$eh" != "$h" || "$ek" != "$k" ]]; then ok_all=0; fi
-      fi
-    done
-  done
-  if (( ok_all == 0 )); then err "after the restore, the profiles do not match their previous bindings"; return 1; fi
-  ok "rollback complete: profiles are back on their previous certificate"
+  if [[ -z "$J_BDIR_R" || ! -s "${J_BDIR_L}/SHA256SUMS" ]]; then err "no verified backup exists to roll back to"; return 1; fi
+  if ! parse_inventory "${J_BDIR_L}" "${J_TS}"; then err "the local copy of the backup cannot be read (${VB_ERR})"; return 1; fi
+  RV_DIR="${J_BDIR_L}"
+  restore_and_verify || return 1
+  ok "rollback complete: the BIG-IP is back on its previous certificate (verified)"
   J_CHANGED=0
+  return 0
+}
+
+# Run the restore script of backup set J_TS in J_BDIR_R on the BIG-IP, then
+# check the result against the inventory already loaded (parse_inventory):
+#   - every profile entry exists exactly once and uses exactly its old cert, chain, key;
+#   - every backed-up certificate object has the backed-up certificate's fingerprint
+#     and every backed-up key object has the backed-up key (compared by public key);
+#   - every object that did not exist before does not exist now.
+# Returns 0 restored and verified; 10 the backup failed its integrity check on the
+# BIG-IP (nothing was changed); 1 anything else (the state is not confirmed).
+# RV_DIR is the local copy of the set (for the expected fingerprints).
+RV_DIR=""
+restore_and_verify() {
+  local out rc=0 x mode kind name f want specs_ok=1
+  local -a specs=()
+  mut_begin
+  out="$(f5_mut "${R_RESTORE}" "${J_BDIR_R}" "${J_TS}")" || rc=$?
+  mut_end
+  if [[ -n "$out" ]]; then printf '%s\n' "$out" | indent_block; fi
+  if (( rc == 10 )); then err "the backup on the BIG-IP failed its integrity check; the restore changed nothing"; return 10; fi
+  if (( rc == ST_LOCKLOST || rc == ST_NOTRUN )); then err "the restore did not run: $(mut_status_text "$rc")"; return 1; fi
+  if (( rc != 0 )); then warn "the restore script reported a failure ($(mut_status_text "$rc")): $(remote_err)"; fi
+  if (( INV_LEGACY )) && (( rc == 0 )); then
+    # A 2.0.0 restore script ignores a failed save: save again, and check it.
+    local sv=0 so
+    mut_begin
+    so="$(f5_mut "${R_LIB}"$'\n'"${R_SAVE}")" || sv=$?
+    mut_end
+    if (( sv != 0 )); then err "saving the configuration after the restore failed ($(mut_status_text "$sv"))"; rc=1; fi
+  fi
+
+  # Verify, whatever the script said: the device is the authority.
+  if (( ${#INV_BIND[@]} > 0 )) && ! check_bindings "${INV_BIND[@]}"; then
+    err "after the restore, the profiles do not match their previous bindings"; return 1
+  fi
+  for x in ${INV_OBJ[@]+"${INV_OBJ[@]}"}; do
+    IFS='|' read -r mode kind name f <<<"$x"
+    if [[ "$kind" == cert ]]; then specs+=("cert:${name}"); else specs+=("keypub:${name}"); fi
+  done
+  for x in ${INV_ABSENT[@]+"${INV_ABSENT[@]}"}; do
+    IFS='|' read -r kind name <<<"$x"
+    specs+=("${kind}:${name}")
+  done
+  OBJ_FP=(); OBJ_EXP=(); OBJ_OK=(); OBJ_KEYPUB=()
+  if (( ${#specs[@]} > 0 )) && ! objinfo_read "${specs[@]}"; then err "cannot read the certificate objects back after the restore"; return 1; fi
+  for x in ${INV_OBJ[@]+"${INV_OBJ[@]}"}; do
+    IFS='|' read -r mode kind name f <<<"$x"
+    if [[ "$kind" == cert ]]; then
+      want="$(pem_range "${RV_DIR}/${f}" 1 1 | fp_pem)"
+      if [[ -z "$want" || "${OBJ_FP[$name]:-}" != "$want" ]]; then err "after the restore, ${name} does not hold the backed-up certificate"; specs_ok=0; fi
+    else
+      want="$(keypub_of "${RV_DIR}/${f}")"
+      if [[ -z "$want" || "$want" == "${EMPTY_SHA256}" || "${OBJ_KEYPUB[$name]:-}" != "$want" ]]; then err "after the restore, ${name} does not hold the backed-up key"; specs_ok=0; fi
+    fi
+  done
+  for x in ${INV_ABSENT[@]+"${INV_ABSENT[@]}"}; do
+    IFS='|' read -r kind name <<<"$x"
+    if [[ -n "${OBJ_OK[${kind}:${name}]+x}" ]]; then err "after the restore, ${name} still exists (it did not exist before)"; specs_ok=0; fi
+  done
+  (( specs_ok )) || return 1
+  if (( rc != 0 )); then err "the restore script failed even though the state reads back as restored; check the configuration was saved"; return 1; fi
   return 0
 }
 
@@ -1771,7 +2347,7 @@ job_prune() {
   (( J_KEEP > 0 )) || return 0
   local out tag a b n=0 root="${F5_BACKUP_ROOT}/${J_PREFIX}" d
   info "pruning to the newest ${J_KEEP} backup set(s) and certificate version(s)"
-  if out="$(f5_sh "${R_PRUNE_BACKUPS}" "$root" "${J_KEEP}")"; then
+  if out="$(f5_mut "${R_PRUNE_BACKUPS}" "$root" "${J_KEEP}")"; then
     while IFS='|' read -r tag a b; do
       if [[ "$tag" == REMOVED ]]; then n=$((n + 1)); fi
     done <<<"$out"
@@ -1789,14 +2365,13 @@ job_prune() {
   fi
   if [[ "$J_MODE" == atomic ]]; then
     n=0
-    if out="$(f5_sh "${R_LIB}"$'\n'"${R_PRUNE_OBJECTS}" "${F5_PART}" "${J_PREFIX}" "${J_KEEP}")"; then
-      while IFS='|' read -r tag a b; do
-        if [[ "$tag" == DELETED ]]; then n=$((n + 1)); fi
-      done <<<"$out"
-      if (( n > 0 )); then info "removed ${n} old certificate object(s) from the BIG-IP"; fi
-    else
-      warn "pruning old certificate objects failed: $(remote_err)"
-    fi
+    local prc=0
+    out="$(f5_mut "${R_LIB}"$'\n'"${R_PRUNE_OBJECTS}" "${F5_PART}" "${J_PREFIX}" "${J_KEEP}")" || prc=$?
+    while IFS='|' read -r tag a b; do
+      if [[ "$tag" == DELETED ]]; then n=$((n + 1)); fi
+    done <<<"$out"
+    if (( n > 0 )); then info "removed ${n} old certificate object(s) from the BIG-IP"; fi
+    if (( prc != 0 )); then warn "pruning old certificate objects did not complete ($(mut_status_text "$prc")): $(remote_err)"; fi
   fi
   return 0
 }
@@ -1824,22 +2399,39 @@ job_handle_failure() {   # job_handle_failure REASON
   local reason="$1"
   if (( J_CHANGED == 0 )); then
     J_RESULT=FAILED
+    if [[ "${J_RC}" == 0 ]]; then J_RC="${EX_ERR}"; fi
+    if [[ -z "${J_MSG}" ]]; then J_MSG="$reason"; fi
     return 0
   fi
+  local manual="${PROG} --config ${CONFIG_FILE} --deploy ${J_DEP} --f5 ${J_F5} --rollback --set ${J_TS}"
   if [[ "$J_AUTOROLL" == yes ]]; then
     if job_rollback "$reason"; then
       job_remove_created || true
+      if (( J_UNKNOWN )); then
+        # Restored and verified, but an earlier step's outcome was never reported:
+        # it may still have been running and could change the device again.
+        J_RC="${EX_CRITICAL}"; J_RESULT=CRITICAL; REMOTE_LOCK_KEEP=1
+        J_MSG="${reason}; rolled back and verified, but an earlier step never reported its outcome and may still complete. Check the BIG-IP now (--check), and roll back again if needed: ${manual}"
+        err "${J_MSG}"
+        return 0
+      fi
       J_RC="${EX_ROLLED_BACK}"; J_RESULT=ROLLED_BACK
-      J_MSG="${reason}; rolled back to the previous certificate"
+      J_MSG="${reason}; rolled back to the previous certificate (verified)"
       return 0
     fi
-    J_RC="${EX_CRITICAL}"; J_RESULT=CRITICAL
-    J_MSG="${reason}; AND THE ROLLBACK FAILED. Restore by hand: ssh ${F5_USER}@${F5_HOST} bash ${J_BDIR_R}/restore-${J_TS}.sh"
+    J_RC="${EX_CRITICAL}"; J_RESULT=CRITICAL; REMOTE_LOCK_KEEP=1
+    J_MSG="${reason}; AND THE ROLLBACK COULD NOT BE CONFIRMED. The BIG-IP may be on the new certificate, the old one, or a mix. Restore with: ${manual}  (or on the BIG-IP: bash ${J_BDIR_R}/restore-${J_TS}.sh)"
+    err "${J_MSG}"
+    return 0
+  fi
+  if (( J_UNKNOWN )); then
+    J_RC="${EX_CRITICAL}"; J_RESULT=CRITICAL; REMOTE_LOCK_KEEP=1
+    J_MSG="${reason}; the outcome is unknown and auto_rollback is off. Check the BIG-IP (--check); roll back with: ${manual}"
     err "${J_MSG}"
     return 0
   fi
   J_RC="${EX_ERR}"; J_RESULT=FAILED_CHANGED
-  J_MSG="${reason}; auto_rollback is off, so the BIG-IP is still on the new certificate. Roll back with: ${PROG} --config ${CONFIG_FILE} --deploy ${J_DEP} --f5 ${J_F5} --rollback --set ${J_TS}"
+  J_MSG="${reason}; auto_rollback is off, so the BIG-IP is still on the new certificate. Roll back with: ${manual}"
   err "${J_MSG}"
   return 0
 }
@@ -1909,54 +2501,67 @@ run_job() {   # run_job DEPLOY F5NAME   -> sets J_RESULT, J_RC, J_MSG
   fi
 
   # ---- apply --------------------------------------------------------
-  if ! job_backup; then J_RESULT=FAILED; job_unstage; lock_release; return 0; fi
-  if ! job_stage;  then J_RESULT=FAILED; job_unstage; lock_release; return 0; fi
+  # From here a signal is handled by signal_finish (roll back if changed).
+  JOB_ACTIVE=1
+  if ! job_backup; then job_abort "the backup failed"; return 0; fi
+  sig_check
+  if ! job_stage;  then job_abort "staging the files failed"; return 0; fi
+  sig_check
 
   if [[ "$J_MODE" == atomic ]]; then
-    if ! job_install_versioned; then J_RESULT=FAILED; job_unstage; lock_release; return 0; fi
-    if ! job_switch_profiles; then
-      job_handle_failure "switching the profiles failed"
-      job_unstage; lock_release; return 0
-    fi
-    if ! job_verify_bindings; then
-      job_handle_failure "the profiles do not reference the new objects after the switch"
-      job_unstage; lock_release; return 0
-    fi
+    if ! job_install_versioned; then job_abort "installing the new certificate failed"; return 0; fi
+    sig_check
+    if ! job_switch_profiles; then job_abort "switching the profiles failed"; return 0; fi
+    sig_check
+    if ! job_verify_bindings; then job_abort "the profiles do not reference the new objects after the switch"; return 0; fi
     ok "verified: every target entry uses the new certificate, chain and key"
-    if ! job_verify_endpoints; then
-      job_handle_failure "a verification endpoint is not serving the new certificate"
-      job_unstage; lock_release; return 0
-    fi
+    sig_check
+    if ! job_verify_endpoints; then job_abort "a verification endpoint is not serving the new certificate"; return 0; fi
+    sig_check
     if [[ "$J_FIXED" == yes ]]; then
-      job_install_fixed || warn "the fixed-name objects could not be refreshed; the profiles are unaffected"
+      # The fixed-name objects are part of what was asked for: a failure here is a
+      # failed deployment, recovered like any other (the backup holds them).
+      if ! job_install_fixed; then job_abort "refreshing the fixed-name objects failed"; return 0; fi
+      sig_check
+      if ! job_verify_fixed; then job_abort "the fixed-name objects do not hold the new certificate, chain and key after the refresh"; return 0; fi
+      ok "verified: the fixed-name objects hold the new certificate, chain, fullchain and key"
     fi
   else
-    J_CHANGED=1
-    if ! job_install_fixed; then
-      job_handle_failure "overwriting the certificate objects failed"
-      job_unstage; lock_release; return 0
-    fi
-    job_objinfo || true
-    if [[ "${OBJ_FP[$(fixed_cert_obj)]:-}" != "$J_FP" ]]; then
-      job_handle_failure "the installed certificate object does not match"
-      job_unstage; lock_release; return 0
-    fi
-    ok "verified: $(fixed_cert_obj) now holds the new certificate"
-    if ! job_verify_endpoints; then
-      job_handle_failure "a verification endpoint is not serving the new certificate"
-      job_unstage; lock_release; return 0
-    fi
+    if ! job_install_fixed; then job_abort "overwriting the certificate objects failed"; return 0; fi
+    sig_check
+    if ! job_verify_fixed; then job_abort "the certificate objects do not hold the new certificate, chain and key after the overwrite"; return 0; fi
+    ok "verified: $(fixed_cert_obj) and its key, chain and fullchain hold the new certificate"
+    sig_check
+    if ! job_verify_endpoints; then job_abort "a verification endpoint is not serving the new certificate"; return 0; fi
   fi
+  sig_check
 
+  # Deployed and verified. Nothing below can make the deployment fail; a signal
+  # now just ends the run after this job.
+  J_CHANGED=0; JOB_ACTIVE=0
+  J_CREATED=()
+  mut_begin
   job_unstage
   job_prune
+  mut_end
   if [[ "$X_SYNC" != standalone && -n "$X_SYNC" ]]; then
     warn "this BIG-IP is in a sync group (mode ${X_SYNC}); synchronise the configuration to its peers"
   fi
   J_RESULT=UPDATED; J_RC="${EX_OK}"; J_MSG="deployed; expires ${CERT_END[$J_CERT]}"
-  ok "done; rollback with: ssh ${F5_USER}@${F5_HOST} bash ${J_BDIR_R}/restore-${J_TS}.sh"
+  ok "done; rollback with: ${PROG} --config ${CONFIG_FILE} --deploy ${J_DEP} --f5 ${J_F5} --rollback --set ${J_TS}"
   lock_release
   return 0
+}
+
+# A step failed: recover (job_handle_failure), then clean up this job. Signals
+# are deferred throughout: recovery is never interrupted half way.
+job_abort() {   # job_abort REASON
+  mut_begin
+  job_handle_failure "$1"
+  J_CHANGED=0; JOB_ACTIVE=0     # the outcome is decided and reported; nothing more to recover
+  job_unstage
+  lock_release
+  mut_end
 }
 
 #######################################################################
@@ -2033,7 +2638,7 @@ print_summary() {
   echo "==================== SUMMARY ===================="
   printf '  %-34s %-14s %s\n' "DEPLOYMENT@BIG-IP" "RESULT" "DETAIL"
   for i in "${!RES_JOB[@]}"; do
-    printf '  %-34s %-14s %s\n' "${RES_JOB[$i]}" "${RES_RESULT[$i]}" "$(printf '%s' "${RES_MSG[$i]}" | sanitize | cut -c1-110)"
+    printf '  %-34s %-14s %s\n' "${RES_JOB[$i]}" "${RES_RESULT[$i]}" "$(printf '%s' "${RES_MSG[$i]}" | tr '\n\t' '  ' | sanitize | cut -c1-160)"
   done
   echo "================================================="
 }
@@ -2047,6 +2652,10 @@ run_jobs() {   # run a prepared job list through run_job and record the results
     f5_close
     record_result "${dep}@${f5}"
     JOB_TAG=""
+    if [[ -n "$SIGNALLED" ]]; then
+      warn "stopping: interrupted (SIG${SIGNALLED}); the remaining deployments were not run"
+      break
+    fi
     if (( FAIL_FAST )) && [[ "${J_RC}" != 0 && "${J_RC}" != "${EX_OUTDATED}" ]]; then
       warn "stopping after the first failure (--fail-fast)"
       break
@@ -2120,15 +2729,23 @@ action_discover() {
   info "reading client-ssl profiles on ${F5_USER}@${F5_HOST}"
   out="$(f5_sh "${R_DISCOVER}")" || rc=$?
   if (( rc != 0 )); then err "cannot read the BIG-IP: $(remote_err)"; return "${EX_ERR}"; fi
+  local skipped=0 pa ca ha ka
   while IFS='|' read -r tag a b c d e; do
     [[ "$tag" == DP ]] || continue
-    rows+=("$(norm_name "$a")|${b}|$(norm_name "$c")|$(norm_name "$d")|$(norm_name "$e")")
-    cn="$(norm_name "$c")"
+    pa="$(norm_name "$a")"; ca="$(norm_name "$c")"; ha="$(norm_name "$d")"; ka="$(norm_name "$e")"
+    # Names are shown and queried again only if they have the expected form.
+    if ! safe_obj "$pa" || ! is_name "$b" || ! { [[ "$ca" == none ]] || safe_obj "$ca"; } \
+       || ! { [[ "$ha" == none ]] || safe_obj "$ha"; } || ! { [[ "$ka" == none ]] || safe_obj "$ka"; }; then
+      skipped=$((skipped + 1)); continue
+    fi
+    rows+=("${pa}|${b}|${ca}|${ha}|${ka}")
+    cn="$ca"
     if [[ -z "${seen[$cn]+x}" && "$cn" != none ]]; then seen[$cn]=1; specs+=("cert:${cn}"); fi
   done <<<"$out"
+  if (( skipped > 0 )); then warn "skipped ${skipped} profile entr$( (( skipped == 1 )) && printf 'y' || printf 'ies') whose names contain unexpected characters"; fi
   local -A exp=()
   if (( ${#specs[@]} > 0 )); then
-    out="$(f5_sh "${R_OBJINFO}" "${specs[@]}")" || true
+    out="$(f5_sh "${R_LIB}"$'\n'"${R_OBJINFO}" "${specs[@]}")" || true
     while IFS='|' read -r tag a b c d e; do
       if [[ "$tag" == OBJ && "$c" == OK ]]; then exp[$b]="$(hex_to_date "$e")"; fi
     done <<<"$out"
@@ -2147,11 +2764,10 @@ action_discover() {
 }
 
 action_list_backups() {
-  local j dep f5 out tag a b rc
+  local j dep f5 out tag a b rc status=0
   for j in "${JOBS[@]}"; do
     dep="${j%%|*}"; f5="${j##*|}"
     JOB_TAG="${dep}@${f5}"
-    prepare_cert "${CFG[deploy:${dep}|cert]}" >/dev/null 2>&1 || true
     f5_load "$f5"
     local prefix root
     prefix="$(cert_prefix "${CFG[deploy:${dep}|cert]}")"
@@ -2159,46 +2775,98 @@ action_list_backups() {
     info "backup sets on ${F5_HOST}:${root}"
     rc=0
     out="$(f5_sh "${R_LISTB}" "$root")" || rc=$?
-    if (( rc != 0 )); then err "cannot list: $(remote_err)"; continue; fi
+    if (( rc != 0 )); then err "cannot list: $(remote_err)"; status="${EX_ERR}"; f5_close; continue; fi
     while IFS='|' read -r tag a b; do
-      if [[ "$tag" == SET ]]; then info "  ${a}  (${b} files)"; fi
+      if [[ "$tag" == SET && "$a" =~ ^[0-9]{8}-[0-9]{6}$ ]]; then info "  ${a}  (${b} files)"; fi
     done <<<"$out"
     f5_close
     info "local copies in $(eff backup_dir_local)/${f5}/${prefix}:"
     ls -1 "$(eff backup_dir_local)/${f5}/${prefix}" 2>/dev/null | grep -E '^[0-9]{8}-[0-9]{6}$' | sed 's/^/  /' || true
   done
   JOB_TAG=""
+  return "$status"
+}
+
+# Restore needs only the target configuration and the backup set: never the new
+# certificate (which may be missing, expired or the very thing being undone).
+job_init_restore() {   # job_init_restore DEPLOY F5NAME SET
+  local d="$1" f="$2" sd="deploy:$1"
+  J_DEP="$d"; J_F5="$f"
+  J_CERT="${CFG[$sd|cert]}"
+  J_PREFIX="$(cert_prefix "$J_CERT")"
+  J_AUTOROLL=no; J_FIXED=no; J_FP=""; J_MODE=restore
+  J_RC=0; J_MSG=""; J_RESULT=""; J_CHANGED=0; J_UNKNOWN=0
+  J_PROF=(); J_VERIFY=(); J_TARGETS=(); J_CREATED=()
+  f5_load "$f"
+  J_PART="$F5_PART"
+  J_TS="$3"
+  J_BDIR_R="$(eff backup_dir_remote "$sd" "f5:${f}")/${J_PREFIX}/${J_TS}"
+  J_BDIR_L="$(eff backup_dir_local)/${f}/${J_PREFIX}/${J_TS}"
+}
+
+# Copy backup set J_BDIR_R from the BIG-IP into the scratch directory and check it
+# (the copy that will actually be applied is the one on the BIG-IP).
+fetch_backup_set() {   # fetch_backup_set LOCALDIR
+  local dst="$1" out rc=0 tag a f n=0
+  out="$(f5_sh "${R_LISTFILES}" "${J_BDIR_R}")" || rc=$?
+  if (( rc != 0 )); then VB_ERR="cannot list the backup set on the BIG-IP: $(remote_err)"; return 1; fi
+  if [[ "$out" == NODIR ]]; then VB_ERR="there is no backup set ${J_TS} on the BIG-IP (${J_BDIR_R})"; return 1; fi
+  mkdir -m 700 -- "$dst" || { VB_ERR="cannot create ${dst}"; return 1; }
+  local -a names=()
+  while IFS='|' read -r tag a; do
+    case "$tag" in
+      FILE)
+        [[ "$a" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { VB_ERR="the backup set contains an unexpected file name"; return 1; }
+        names+=("$a") ;;
+      OTHER) VB_ERR="the backup set contains something that is not a regular file"; return 1 ;;
+    esac
+  done <<<"$out"
+  (( ${#names[@]} > 0 )) || { VB_ERR="the backup set ${J_TS} is empty"; return 1; }
+  for f in "${names[@]}"; do
+    f5_get "${J_BDIR_R}/${f}" "${dst}/${f}" || { VB_ERR="cannot copy ${f} from the BIG-IP: $(remote_err)"; return 1; }
+    n=$((n + 1))
+  done
   return 0
 }
 
 action_rollback() {
-  local j dep f5 rc prefix root
+  local j dep f5 rc d vrc
   [[ "$ROLLBACK_SET" =~ ^[0-9]{8}-[0-9]{6}$ ]] || usage_die "--set must look like 20260930-162806 (see --list-backups)"
   for j in "${JOBS[@]}"; do
     dep="${j%%|*}"; f5="${j##*|}"
     JOB_TAG="${dep}@${f5}"
-    J_RC=0; J_MSG=""; J_RESULT=""
-    prepare_cert "${CFG[deploy:${dep}|cert]}" >/dev/null 2>&1 || true
-    job_init "$dep" "$f5"
-    J_TS="$ROLLBACK_SET"
-    prefix="$(cert_prefix "${CFG[deploy:${dep}|cert]}")"
-    root="$(eff backup_dir_remote "deploy:${dep}" "f5:${f5}")/${prefix}"
-    J_BDIR_R="${root}/${ROLLBACK_SET}"
+    job_init_restore "$dep" "$f5" "$ROLLBACK_SET"
     job_lock; rc=$?
-    if (( rc != 0 )); then J_RC="${EX_LOCKED}"; J_RESULT=LOCKED; J_MSG="cannot take the lock"; record_result "$JOB_TAG"; continue; fi
-    if ! { job_probe && job_gate; }; then J_RESULT=FAILED; lock_release; record_result "$JOB_TAG"; continue; fi
-    warn "restoring the state captured before run ${ROLLBACK_SET}"
-    local out rc2=0
-    out="$(f5_sh "${R_RESTORE}" "${J_BDIR_R}" "${ROLLBACK_SET}")" || rc2=$?
-    printf '%s\n' "$out" | sanitize
-    if (( rc2 != 0 )); then
-      J_RC="${EX_ERR}"; J_RESULT=FAILED; J_MSG="the restore script failed: $(remote_err)"; err "${J_MSG}"
-    else
-      J_RC=0; J_RESULT=RESTORED; J_MSG="restored the state before ${ROLLBACK_SET}"; ok "${J_MSG}"
+    if (( rc == 2 )); then J_RC="${EX_LOCKED}"; J_RESULT=LOCKED; J_MSG="another run holds the lock for ${F5_HOST}"; record_result "$JOB_TAG"; continue; fi
+    if (( rc != 0 )); then J_RC="${EX_ERR}"; J_RESULT=FAILED; J_MSG="cannot take the lock"; record_result "$JOB_TAG"; continue; fi
+    if ! { job_probe && job_gate; }; then J_RESULT=FAILED; lock_release; f5_close; record_result "$JOB_TAG"; continue; fi
+    d="${WORK}/restore.${f5}.${J_PREFIX}.${J_TS}"
+    if ! fetch_backup_set "$d" || ! verify_backup_set "$d" "$J_TS"; then
+      job_fail "${EX_ERR}" "backup set ${J_TS} cannot be used: ${VB_ERR}. Nothing was changed."
+      J_RESULT=FAILED; lock_release; f5_close; record_result "$JOB_TAG"; continue
     fi
+    if (( INV_LEGACY )); then warn "backup set ${J_TS} was written by version 2.0.0: its restore script is not covered by its checksums; its contents were read from the script itself"; fi
+    warn "restoring the state captured before run ${J_TS} ($(( ${#INV_BIND[@]} )) profile entr$( (( ${#INV_BIND[@]} == 1 )) && printf 'y' || printf 'ies'), $(( ${#INV_OBJ[@]} + ${#INV_ABSENT[@]} )) object(s))"
+    RV_DIR="$d"
+    J_CHANGED=1
+    vrc=0
+    mut_begin
+    restore_and_verify || vrc=$?
+    mut_end
+    if (( vrc == 0 )); then
+      J_CHANGED=0; J_RC=0; J_RESULT=RESTORED; J_MSG="restored the state before ${J_TS} (verified)"; ok "${J_MSG}"
+    elif (( vrc == 10 )); then
+      J_CHANGED=0; J_RC="${EX_ERR}"; J_RESULT=FAILED; J_MSG="the backup on the BIG-IP failed its integrity check; nothing was changed"
+    else
+      J_RC="${EX_CRITICAL}"; J_RESULT=CRITICAL; REMOTE_LOCK_KEEP=1
+      J_MSG="the restore of ${J_TS} could not be confirmed: the BIG-IP may be partly restored. Check it (--check) and retry"
+      err "${J_MSG}"
+    fi
+    J_CHANGED=0     # reported; a later signal must not try to "recover" it
     lock_release
     f5_close
     record_result "$JOB_TAG"
+    if [[ -n "$SIGNALLED" ]]; then warn "stopping: interrupted (SIG${SIGNALLED})"; break; fi
   done
   JOB_TAG=""
 }
@@ -2338,6 +3006,8 @@ main() {
       print_summary
       overall_exit; rc=$? ;;
   esac
+  # Interrupted, and nothing worse to report: say so.
+  if [[ -n "$SIGNALLED" ]] && (( rc == 0 || rc == EX_OUTDATED )); then rc=130; fi
   exit "$rc"
 }
 

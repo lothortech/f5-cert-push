@@ -125,7 +125,7 @@ contain no <code>..</code> and no <code>//</code>.</p>
 <td><code>remote_lock_stale_minutes</code></td>
 <td><code>30</code></td>
 <td>f5</td>
-<td>The tool takes a lock <strong>on the BIG-IP</strong> (<code>/var/run/f5-cert-push.lock</code>) so two hosts cannot push to it at once. A lock older than this many minutes is assumed abandoned (a killed run) and is taken over. A normal run takes a few minutes; keep this comfortably above that.</td>
+<td>The tool takes a lock <strong>on the BIG-IP</strong> (<code>/var/run/f5-cert-push.lock</code>) so two hosts cannot push to it at once. The lock is a lease, renewed at every step; one that has <strong>not been renewed</strong> for this many minutes belongs to a run that died, and is taken over. A run that has lost its lock stops before its next change. Must be at least <code>(2 x remote_timeout + 300)</code> seconds, rounded up to minutes (15 with the default <code>remote_timeout</code>); a shorter value is a configuration error.</td>
 </tr>
 <tr>
 <td><code>min_days_valid</code></td>
@@ -155,7 +155,7 @@ contain no <code>..</code> and no <code>//</code>.</p>
 <td><code>fixed_names</code></td>
 <td><code>no</code></td>
 <td>deploy</td>
-<td>Also maintain the four fixed-name objects <code>&lt;prefix&gt;-cert.pem</code>, <code>-chain.pem</code>, <code>-fullchain.pem</code>, <code>-privkey.pem</code>. See <a href="#object-naming">Object naming</a>.</td>
+<td>Also maintain the four fixed-name objects <code>&lt;prefix&gt;-cert.pem</code>, <code>-chain.pem</code>, <code>-fullchain.pem</code>, <code>-privkey.pem</code>. They are read back after being overwritten; if that fails, the whole deployment fails and is rolled back (profiles included). See <a href="#object-naming">Object naming</a>.</td>
 </tr>
 <tr>
 <td><code>allow_standby</code></td>
@@ -215,7 +215,7 @@ contain no <code>..</code> and no <code>//</code>.</p>
 <td>The BIG-IP partition that holds the certificates and profiles.</td>
 </tr>
 <tr>
-<td><code>known_hosts_file</code>, <code>strict_host_key_checking</code>, <code>connect_timeout</code>, <code>remote_timeout</code>, <code>backup_dir_remote</code>, <code>keep</code>, <code>allow_standby</code></td>
+<td><code>known_hosts_file</code>, <code>strict_host_key_checking</code>, <code>connect_timeout</code>, <code>remote_timeout</code>, <code>remote_lock_stale_minutes</code>, <code>connection_reuse</code>, <code>backup_dir_remote</code>, <code>keep</code>, <code>allow_standby</code>, <code>lock_dir</code></td>
 <td>from <code>[defaults]</code></td>
 <td>Per-BIG-IP overrides.</td>
 </tr>
@@ -252,7 +252,7 @@ itself</strong>, so different machines running the tool against the same BIG-IP 
 </tr>
 <tr>
 <td><code>fullchain</code></td>
-<td>Leaf followed by intermediates. If you give <code>fullchain</code> and <code>key</code> but no <code>cert</code>, the leaf and the chain are split out for you.</td>
+<td>Leaf followed by intermediates. If you give <code>fullchain</code> and <code>key</code> but no <code>cert</code>, the leaf and the chain are split out for you. If you also give <code>cert</code> (or <code>chain</code>), the fullchain must be <strong>exactly</strong> that certificate followed by exactly those intermediates, or the certificate is refused.</td>
 </tr>
 <tr>
 <td><code>object_prefix</code></td>
@@ -272,6 +272,8 @@ one file. You need at minimum a key and one of <code>cert</code> / <code>fullcha
 <li>the key is a single unencrypted PEM private key and <strong>matches the leaf's public key</strong> (RSA and EC);</li>
 <li>the leaf is one certificate, currently valid, not expiring within <code>min_days_valid</code>;</li>
 <li>every chain certificate parses, and (per <code>chain_check</code>) the leaf verifies against the chain;</li>
+<li>a supplied fullchain matches the certificate and chain (every certificate in it parses). The fullchain
+  object uploaded for <code>fixed_names</code> is always built from the validated certificate and chain;</li>
 <li>a key file readable by other users produces a warning.</li>
 </ul>
 <p>The files are copied once into a private scratch directory and <strong>those copies</strong> are validated and uploaded,
@@ -330,8 +332,17 @@ so a renewal landing mid-run cannot make the tool upload something it did not va
 </tbody>
 </table>
 <p>Two enabled deployments may not manage the same profile (or the same profile entry) on the same BIG-IP, and
-may not use the same <code>object_prefix</code> for different certificates on the same BIG-IP. The tool refuses such a
-file at load time.</p>
+may not use the same <code>object_prefix</code> for different certificates on the same BIG-IP (and partition). The tool
+refuses such a file at load time. "The same" is decided by what the names mean on the device, not by how they
+are spelled:</p>
+<ul>
+<li>a BIG-IP is identified by <code>host</code> and <code>port</code>, so two <code>[f5:]</code> sections for one device are one BIG-IP;</li>
+<li>a bare profile name means <code>/&lt;partition&gt;/&lt;name&gt;</code>, so <code>www-clientssl</code> and <code>/Common/www-clientssl</code> are the same;</li>
+<li>a profile given without an entry overlaps <strong>every</strong> entry of that profile; two different named entries
+  (for example <code>site:rsa</code> and <code>site:ecdsa</code>) do not overlap.</li>
+</ul>
+<p>The same overlap within one deployment's own <code>profile</code> lines is refused too. (One deployment that lists two
+<code>[f5:]</code> names for the same device deploys the same certificate twice, which is harmless and allowed.)</p>
 <h2 id="profiles-and-entries">Profiles and entries</h2>
 <p>A client-ssl profile holds one or more <strong>cert-key-chain entries</strong>. Most profiles have exactly one; a
 profile can hold both an RSA and an ECDSA entry (a profile cannot hold two of the same key type).</p>

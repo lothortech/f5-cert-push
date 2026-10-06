@@ -63,7 +63,7 @@ BIG-IP connects back, and the BIG-IP needs no agent or add-on.
 |---|---|---|---|
 | Tool scripts | `/opt/f5-cert-push/f5-cert-push.sh`, `f5-cert-install.sh` | root, 750 | admin |
 | Configuration | `/etc/f5-cert-push.conf` | root, **600** | admin |
-| **Staging: uploads land here** | `/srv/f5-certs/incoming/<cert>/` | root:certupload, 2770 | operators (SFTP) |
+| **Staging: uploads land here** | `/srv/f5-certs/incoming/<cert>/` (in `incoming`, root:certupload 0750) | root:certupload, **3770** (sticky) | operators (SFTP) |
 | **Installed certificates** | `/etc/f5-certs/<cert>/releases/<UTC time>/` and `.../current` | root, 700 / files 600 | installer |
 | Tool's own SSH key | `/root/.ssh/f5_push_ecdsa` (+ `.pub`) | root, 600 | admin |
 | Pinned BIG-IP host keys | `/root/.ssh/known_hosts` | root, 600 | admin |
@@ -105,7 +105,7 @@ Run as root.
 ### 4.1 Install the tools
 
 ```bash
-tar xzf f5-cert-push-2.0.0.tar.gz && cd f5-cert-push
+tar xzf f5-cert-push-2.1.0.tar.gz && cd f5-cert-push
 install -d -m 755 /opt/f5-cert-push
 install -m 750 f5-cert-push.sh f5-cert-install.sh /opt/f5-cert-push/
 sha256sum -c SHA256SUMS 2>/dev/null | grep -E 'f5-cert-(push|install)\.sh'   # optional: verify the copy
@@ -120,18 +120,30 @@ install -d -m 700 /var/backups/f5-cert-push
 
 # Staging: a group for the people who upload, one folder per certificate.
 groupadd certupload
-install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming
+install -d -m 0755 -o root -g root       /srv/f5-certs
+install -d -m 0750 -o root -g certupload /srv/f5-certs/incoming
 for c in www api; do                                   # one per [cert:NAME] in the config
-    install -d -m 2770 -o root -g certupload /srv/f5-certs/incoming/$c
+    install -d -m 3770 -o root -g certupload /srv/f5-certs/incoming/$c
 done
 ```
 
-Mode `2770` with group `certupload` lets members of the group create files in the folders and keeps new files
-in that group. Everyone else has no access.
+- `incoming` (0750, root:certupload): uploaders can enter it but cannot create, rename or remove anything in it.
+- each upload folder (**3770**, root:certupload): members of the group can create files in it (setgid keeps new
+  files in the group), and the **sticky bit** stops them renaming or removing anything they did not create:
+  the folder itself, and the `FAILED` file root writes. Everyone else has no access.
 
-Keep `fs.protected_hardlinks = 1` (the default on current distributions): the installer runs as root over a
-folder other people can write to, and that setting stops hard-link tricks. Check with
+The installer checks this before it does anything: it refuses to run unless every directory from `/` down to
+`incoming` can only be changed by root, and it skips (with a warning) an upload folder that is not owned by
+root or that is group-writable without the sticky bit. These checks are what make it safe for root to work
+in folders other people write to.
+
+Keep `fs.protected_hardlinks = 1` (the default on current distributions): with it, an uploader cannot hard-link
+a file they do not own (the installer also refuses any upload file with more than one link). Check with
 `sysctl fs.protected_hardlinks`.
+
+Uploaded files are deleted after a successful install, not overwritten (overwriting would mean root writing
+through a path the uploader controls). If the uploaded key must not linger on disk, mount `/srv/f5-certs` on
+tmpfs or an encrypted filesystem.
 
 ### 4.3 Create the upload account(s)
 
@@ -382,7 +394,7 @@ drift (a profile changed by hand). Confirm that cron ran it: `grep f5-cert /var/
 
 - [ ] Scripts in `/opt/f5-cert-push/`, mode 750, owned by root
 - [ ] `/etc/f5-cert-push.conf` mode 600, `--list` accepts it
-- [ ] `/srv/f5-certs/incoming/<cert>/` exists for every `[cert:]`, group `certupload`, mode 2770
+- [ ] `/srv/f5-certs/incoming` is root:certupload 0750; `/srv/f5-certs/incoming/<cert>/` exists for every `[cert:]`, owned by root, group `certupload`, mode 3770 (sticky)
 - [ ] `/etc/f5-certs` and `/var/backups/f5-cert-push` exist, mode 700
 - [ ] Upload accounts are SFTP-only, key login, members of `certupload`; they have no access outside staging
 - [ ] `fs.protected_hardlinks = 1`; clock synchronised

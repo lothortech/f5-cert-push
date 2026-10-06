@@ -15,7 +15,9 @@ deployment the tool then:
    (all profiles change together, or none do), then saves the configuration.
 7. **Verifies** the result: the profiles reference the new objects, and (optionally) your virtual
    servers really serve the new certificate.
-8. **Rolls back automatically** if verification fails.
+8. **Rolls back automatically** if verification fails, and **verifies the rollback** on the device; a
+   state it cannot confirm is reported `CRITICAL`, never as success. A dropped connection, a timeout or a
+   Ctrl-C in the middle of a change is recovered the same way.
 9. **Prunes** old backups and old certificate versions down to the number you choose.
 10. **Reports** a summary, and returns an exit code that automation can act on.
 
@@ -127,20 +129,22 @@ Other options: `--force` (redeploy even if current), `--fail-fast` (stop at the 
 | 0 | Success, or nothing to do |
 | 1 | Error. Normally the BIG-IP was **not** changed. The one exception is `auto_rollback = no` after a failed check: the summary then says `FAILED_CHANGED` and prints the rollback command |
 | 2 | Usage or configuration error. Nothing was done |
-| 3 | A deployment failed **after** changing the BIG-IP and was **rolled back** |
+| 3 | A deployment failed **after** changing the BIG-IP and was **rolled back** (verified) |
 | 4 | `--check` found a BIG-IP that is out of date |
-| 5 | **CRITICAL:** a deployment failed and the rollback also failed. The BIG-IP needs attention |
+| 5 | **CRITICAL:** the BIG-IP's state could not be confirmed (the rollback failed or could not be verified, or a step never reported its outcome). The BIG-IP needs attention; its lock is left in place |
 | 6 | Another run (on this host or another) already holds the lock for that BIG-IP |
 
 With several deployments in one run the exit code is the most severe result: 5, then 3, then 1, 6, 4.
+A run stopped by a signal exits 130 unless a deployment had something worse to report.
 
 ## Manually uploaded certificates
 
 If certificates are bought or issued elsewhere and **uploaded by a person** to the server, use
 `f5-cert-install.sh` from cron. Operators drop `cert.pem`, `chain.pem` and `privkey.pem` into
 `incoming/<certname>/` and create `READY` last; the wrapper validates the upload (key matches, chain
-verifies, not expiring, not older than what is installed, no symlinks), installs it atomically and pushes it,
-retrying the push until it succeeds. See [docs/MANUAL-UPLOAD.md](docs/MANUAL-UPLOAD.md) and
+verifies, not expiring, not older than what is installed, no symlinks or hard links), installs it atomically
+and pushes it, retrying the push until it succeeds. The upload folders must be root-owned and sticky (mode
+`3770`); the wrapper checks that, because it runs as root in folders other people write to. See [docs/MANUAL-UPLOAD.md](docs/MANUAL-UPLOAD.md) and
 [`examples/manual-upload/`](examples/manual-upload/).
 
 ## Automating renewals
@@ -162,7 +166,7 @@ exits 4 when anything is out of date. See [docs/OPERATIONS.md](docs/OPERATIONS.m
 | Where | What |
 |---|---|
 | BIG-IP objects | `<prefix>-cert-<time>.pem`, `<prefix>-chain-<time>.pem`, `<prefix>-privkey-<time>.pem` per deploy; the newest `keep` sets are retained |
-| BIG-IP files | `/shared/cert-backups/<prefix>/<time>/` (old PEMs, `restore-<time>.sh`, `SHA256SUMS`, `MANIFEST`) |
+| BIG-IP files | `/shared/cert-backups/<prefix>/<time>/` (old PEMs, `restore-<time>.sh`, `INVENTORY`, `MANIFEST`, and `SHA256SUMS` covering all of them) |
 | Local files | `<backup_dir_local>/<bigip>/<prefix>/<time>/` (a verified copy of the same) |
 | Temporary | a private scratch directory here (tmpfs when available), and `/var/tmp/f5-cert-push.XXXX` on the BIG-IP; both removed on exit, including on Ctrl-C |
 
@@ -178,8 +182,8 @@ exits 4 when anything is out of date. See [docs/OPERATIONS.md](docs/OPERATIONS.m
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every setting, with defaults and examples; how profiles and entries are chosen |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | First-time setup, day-to-day use, rollback, HA pairs, monitoring, troubleshooting |
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model, what the tool protects and does not, hardening checklist |
-| [docs/TESTING.md](docs/TESTING.md) | The offline and BIG-IP test suites, and what they do not cover |
-| [REVIEW.md](REVIEW.md) | Brief for an independent security and correctness review |
+| [docs/TESTING.md](docs/TESTING.md) | The offline, regression and BIG-IP test suites, and what they do not cover |
+| [REVIEW.md](REVIEW.md) | Brief for an independent security and correctness review, and the findings of the first one with their fixes |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
 
 ## Known limitations
