@@ -1,5 +1,42 @@
 # Changelog
 
+## 2.1.1
+
+Fixes for every finding of the second independent review (of 2.1.0; `B1`-`B10`, report summarised in
+`REVIEW.md` section 7b). Each has a regression test in `tests/regress.sh` built from the reviewer's own
+demonstration, inverted to require the safe outcome; the reviewer's demonstrations no longer show any of them.
+
+- **Tracked steps (B1, B2).** A step's reply now ends with `STEPEND|<step id>|<status>`, where the id is random
+  per call and the line must be the last one: a step's own output, or a truncated reply, can no longer pass for
+  it. Every step **claims** its id on the BIG-IP before it runs; when its reply is lost, the tool claims the id
+  itself if the step has not, which cancels it for good. "The step did not run" is now a fact on the device,
+  not an inference from two empty answers.
+- **Lock serialisation (B3).** Every operation on the BIG-IP lock (take, take over, renew, release, the fence
+  check and claim of a step, reading a step's result) runs under one kernel lock on the BIG-IP (`flock` on
+  `/var/run/f5-cert-push.guard`). A take-over can no longer interleave with a renewal, and the lock path is never
+  briefly empty. The rename-and-put-back take-over is gone.
+- **Whole-bundle comparison (B4).** Backups, rollback verification and the fixed-name objects compare **every**
+  certificate in a chain or fullchain, in order (read from the BIG-IP's stored file), not just the first; a
+  backed-up bundle with any certificate that does not parse is refused.
+- **Upload wrapper store (B5).** The store directory must not be writable by anyone else at all (a sticky
+  world-writable store was accepted), and its `.lock` must be a regular file owned by the account running it;
+  otherwise the wrapper refuses to run. (config: see below)
+- **Upload copy (B6).** Each upload is opened once and the **opened** file is checked (through
+  `/proc/self/fd`): same file as checked, regular, exactly one link. A swap for a hard link, a link or a FIFO
+  between the check and the open is refused.
+- **2.0.0 backup sets (B7).** A 2.0.0 restore script is only run if it is byte-for-byte what 2.0.0 generates for
+  the contents it lists; an edited one is refused. (A genuine 2.0.0 set is in `tests/fixtures/` for this.)
+- **Exit code after a signal (B8)** is the most severe result of the whole run, as without a signal; 130 only if
+  nothing worse happened.
+- **Unknown install outcome (B9).** An install step that never reported its outcome is `CRITICAL`, keeps the
+  BIG-IP lock and deletes nothing (it was a plain failure that released the lock and removed objects the
+  still-running install might be creating). Any removal whose outcome is unknown keeps the lock too.
+- **Local lock (B10).** A local lock whose owner cannot be recorded is not taken; locks are only removed by the
+  process recorded in them.
+- New dependency: `cmp` (diffutils) on the host running the tool; `flock` on the BIG-IP (present on BIG-IP 17.1).
+- **(config)** An upload-wrapper store (`--store`, default `/etc/f5-certs`) that is group- or world-writable is
+  now refused. The documented `install -d -m 700` setup is unaffected.
+
 ## 2.1.0
 
 Fixes for every finding of the adversarial review of 2.0.0 (R1-R13 and the additional observations). Each

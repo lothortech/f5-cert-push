@@ -131,7 +131,8 @@ Steps 1 to 7 cannot alter what the BIG-IP serves. The single moment of change is
 **Every step that changes the BIG-IP is tracked on the BIG-IP.** It runs only if this run still holds the
 BIG-IP lock, it keeps going if the SSH connection drops, and its output and exit status are recorded on the
 BIG-IP. If the reply is lost (a dropped connection, a timeout), the tool reads the step's real outcome back
-instead of guessing, waiting up to `remote_timeout` for a step that is still running. If the outcome still
+instead of guessing, waiting up to `remote_timeout` for a step that is still running; a step that had not yet
+started is cancelled on the BIG-IP at that moment, so it can never start later. If the outcome still
 cannot be established, the job is treated as **changed**: it is rolled back, and the result is `CRITICAL`
 even if the rollback is verified (the step might still complete later).
 
@@ -328,7 +329,8 @@ deployment does not stop the others unless you pass `--fail-fast`.
   holds it (a run that has lost its lock stops at once, without changing anything more). A lock that has not
   been renewed for `remote_lock_stale_minutes` (default 30) belongs to a run that died, and may be taken over.
   The configuration is refused if `remote_lock_stale_minutes` is too short for `remote_timeout` (it must be at
-  least `(2 x remote_timeout + 300)` seconds, rounded up to minutes).
+  least `(2 x remote_timeout + 300)` seconds, rounded up to minutes). Every operation on the lock is serialised
+  by a kernel lock on the BIG-IP, `/var/run/f5-cert-push.guard` (an empty file; leave it in place).
 - **After a `CRITICAL` result the BIG-IP lock is deliberately left in place**, so that no other run touches the
   device until someone has looked at it (it expires by itself after `remote_lock_stale_minutes`). Once you
   have checked the device (`--check`, or `tmsh list ltm profile client-ssl NAME cert-key-chain`) and restored it

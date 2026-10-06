@@ -28,6 +28,42 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 @media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
 @media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
 </style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html" class="cur">Changelog</a></nav><main><h1 id="changelog">Changelog</h1>
+<h2 id="211">2.1.1</h2>
+<p>Fixes for every finding of the second independent review (of 2.1.0; <code>B1</code>-<code>B10</code>, report summarised in
+<code>REVIEW.md</code> section 7b). Each has a regression test in <code>tests/regress.sh</code> built from the reviewer's own
+demonstration, inverted to require the safe outcome; the reviewer's demonstrations no longer show any of them.</p>
+<ul>
+<li><strong>Tracked steps (B1, B2).</strong> A step's reply now ends with <code>STEPEND|&lt;step id&gt;|&lt;status&gt;</code>, where the id is random
+  per call and the line must be the last one: a step's own output, or a truncated reply, can no longer pass for
+  it. Every step <strong>claims</strong> its id on the BIG-IP before it runs; when its reply is lost, the tool claims the id
+  itself if the step has not, which cancels it for good. "The step did not run" is now a fact on the device,
+  not an inference from two empty answers.</li>
+<li><strong>Lock serialisation (B3).</strong> Every operation on the BIG-IP lock (take, take over, renew, release, the fence
+  check and claim of a step, reading a step's result) runs under one kernel lock on the BIG-IP (<code>flock</code> on
+  <code>/var/run/f5-cert-push.guard</code>). A take-over can no longer interleave with a renewal, and the lock path is never
+  briefly empty. The rename-and-put-back take-over is gone.</li>
+<li><strong>Whole-bundle comparison (B4).</strong> Backups, rollback verification and the fixed-name objects compare <strong>every</strong>
+  certificate in a chain or fullchain, in order (read from the BIG-IP's stored file), not just the first; a
+  backed-up bundle with any certificate that does not parse is refused.</li>
+<li><strong>Upload wrapper store (B5).</strong> The store directory must not be writable by anyone else at all (a sticky
+  world-writable store was accepted), and its <code>.lock</code> must be a regular file owned by the account running it;
+  otherwise the wrapper refuses to run. (config: see below)</li>
+<li><strong>Upload copy (B6).</strong> Each upload is opened once and the <strong>opened</strong> file is checked (through
+  <code>/proc/self/fd</code>): same file as checked, regular, exactly one link. A swap for a hard link, a link or a FIFO
+  between the check and the open is refused.</li>
+<li><strong>2.0.0 backup sets (B7).</strong> A 2.0.0 restore script is only run if it is byte-for-byte what 2.0.0 generates for
+  the contents it lists; an edited one is refused. (A genuine 2.0.0 set is in <code>tests/fixtures/</code> for this.)</li>
+<li><strong>Exit code after a signal (B8)</strong> is the most severe result of the whole run, as without a signal; 130 only if
+  nothing worse happened.</li>
+<li><strong>Unknown install outcome (B9).</strong> An install step that never reported its outcome is <code>CRITICAL</code>, keeps the
+  BIG-IP lock and deletes nothing (it was a plain failure that released the lock and removed objects the
+  still-running install might be creating). Any removal whose outcome is unknown keeps the lock too.</li>
+<li><strong>Local lock (B10).</strong> A local lock whose owner cannot be recorded is not taken; locks are only removed by the
+  process recorded in them.</li>
+<li>New dependency: <code>cmp</code> (diffutils) on the host running the tool; <code>flock</code> on the BIG-IP (present on BIG-IP 17.1).</li>
+<li><strong>(config)</strong> An upload-wrapper store (<code>--store</code>, default <code>/etc/f5-certs</code>) that is group- or world-writable is
+  now refused. The documented <code>install -d -m 700</code> setup is unaffected.</li>
+</ul>
 <h2 id="210">2.1.0</h2>
 <p>Fixes for every finding of the adversarial review of 2.0.0 (R1-R13 and the additional observations). Each
 finding has a regression test in <code>tests/regress.sh</code>; <code>REVIEW.md</code> section 7 maps findings to fixes and tests.

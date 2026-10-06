@@ -182,7 +182,8 @@ by SHA-256 fingerprint), the deployment is skipped with <code>UPTODATE</code>, n
 <p><strong>Every step that changes the BIG-IP is tracked on the BIG-IP.</strong> It runs only if this run still holds the
 BIG-IP lock, it keeps going if the SSH connection drops, and its output and exit status are recorded on the
 BIG-IP. If the reply is lost (a dropped connection, a timeout), the tool reads the step's real outcome back
-instead of guessing, waiting up to <code>remote_timeout</code> for a step that is still running. If the outcome still
+instead of guessing, waiting up to <code>remote_timeout</code> for a step that is still running; a step that had not yet
+started is cancelled on the BIG-IP at that moment, so it can never start later. If the outcome still
 cannot be established, the job is treated as <strong>changed</strong>: it is rolled back, and the result is <code>CRITICAL</code>
 even if the rollback is verified (the step might still complete later).</p>
 <h3 id="interrupting-a-run-ctrl-c-kill-a-service-stop">Interrupting a run (Ctrl-C, <code>kill</code>, a service stop)</h3>
@@ -410,7 +411,8 @@ deployment does not stop the others unless you pass <code>--fail-fast</code>.</p
   holds it (a run that has lost its lock stops at once, without changing anything more). A lock that has not
   been renewed for <code>remote_lock_stale_minutes</code> (default 30) belongs to a run that died, and may be taken over.
   The configuration is refused if <code>remote_lock_stale_minutes</code> is too short for <code>remote_timeout</code> (it must be at
-  least <code>(2 x remote_timeout + 300)</code> seconds, rounded up to minutes).</li>
+  least <code>(2 x remote_timeout + 300)</code> seconds, rounded up to minutes). Every operation on the lock is serialised
+  by a kernel lock on the BIG-IP, <code>/var/run/f5-cert-push.guard</code> (an empty file; leave it in place).</li>
 <li><strong>After a <code>CRITICAL</code> result the BIG-IP lock is deliberately left in place</strong>, so that no other run touches the
   device until someone has looked at it (it expires by itself after <code>remote_lock_stale_minutes</code>). Once you
   have checked the device (<code>--check</code>, or <code>tmsh list ltm profile client-ssl NAME cert-key-chain</code>) and restored it

@@ -101,13 +101,16 @@ something is checked in addition to its output.
 - After the change the result is **verified and rolled back automatically** on failure, and the rollback is
   itself verified on the device. A state that cannot be confirmed is reported `CRITICAL`, never success.
 - **Lost replies are not guessed at.** Each change runs on the BIG-IP immune to a dropped connection, with its
-  outcome recorded there; a lost reply is answered by reading that record.
+  outcome recorded there; a lost reply is answered by reading that record. A change that had not started when
+  its reply was lost is **cancelled** on the BIG-IP (its id is claimed), so it can never start afterwards. The
+  end of a reply is marked with a random per-call id, so a step's own output cannot pass for it.
 - **Signals** (Ctrl-C, `kill`) are deferred while a change is running on the BIG-IP and then lead to a verified
   rollback if the BIG-IP had changed.
 - **Per-BIG-IP locking**, both on this host and **on the BIG-IP itself**, prevents two runs (even from different
   hosts) from interleaving. The BIG-IP lock is a lease: it records its owner, is renewed at every step, can only
-  be taken over once it has not been renewed for `remote_lock_stale_minutes`, and take-over and release are
-  atomic (rename, then check). **Fencing**: every change first checks, on the BIG-IP, that its run still holds
+  be taken over once it has not been renewed for `remote_lock_stale_minutes`, and every operation on it (take,
+  take-over, renewal, release, the fence check and claim of a step, reading a step's result) is serialised by a
+  kernel lock on the BIG-IP (`flock` on `/var/run/f5-cert-push.guard`). **Fencing**: every change first checks, on the BIG-IP, that its run still holds
   the lock; a run that has lost it stops.
 - The configuration file must not be group- or world-writable.
 - Pruning only ever removes directories and objects matching the tool's own timestamp pattern, and the BIG-IP
@@ -133,10 +136,15 @@ as hostile. The rule it follows: **root never acts through a path an uploader ca
   the sticky bit an uploader can add and change their own files, but cannot rename or replace the folder, nor
   remove or replace anything root created in it. So the only uploader-controlled part of any path root uses is
   the last component.
-- **Reading**: each file is copied into a private directory with `dd iflag=nofollow,nonblock`, at most 1 MiB + 1
-  byte, under a timeout: a symbolic link is refused when it is opened (no check-then-use race), a FIFO cannot
-  make the run hang, and a huge file is never copied in full. A file with more than one link (a hard link) is
-  refused. What is validated and installed is that private copy, so the uploader cannot change it afterwards.
+- **Reading**: each file is checked (not a link, a regular file, one link), then **opened once**, and the
+  **opened** file is checked again through its descriptor (`/proc/self/fd`): it must be the same file, regular,
+  with exactly one link. A name swapped for a link, a hard link or a FIFO between the check and the open is
+  therefore refused; a swap after the open does not matter. At most 1 MiB + 1 byte is copied, under a timeout
+  (so a FIFO cannot make the run hang). What is validated and installed is that private copy, so the uploader
+  cannot change it afterwards.
+- **The store** (installed certificates) must not be writable by anyone but its owner at all, and its `.lock` must
+  be a regular file owned by the account running the wrapper; otherwise the wrapper refuses to run. A store that
+  was ever writable by others is refused rather than "repaired", since what others left in it would remain.
 - **Writing**: root never opens an uploader-controlled path for writing. The `FAILED` report is written to a
   new file created with `mktemp` (exclusive create: a planted name cannot be followed) and then renamed over
   `FAILED`, which replaces the directory entry rather than following it, even if the uploader planted a
@@ -179,7 +187,8 @@ The `tests/regress.sh` suite checks this as an unprivileged uploader against the
 4. **Clock changes** affect the timestamped names and expiry arithmetic; the tool assumes a sane clock.
 5. **A stalled run can lose its lock.** If a run stops renewing the BIG-IP lock for `remote_lock_stale_minutes`
    (a frozen host, a long network outage), another run may take it over. The first run is fenced at its next
-   step, but a step that was already running on the BIG-IP at that moment completes. The configuration check on
+   step, but a step that was already running on the BIG-IP at that moment completes (the fence is checked when a
+   step starts; its body runs outside the guard). The configuration check on
    `remote_lock_stale_minutes` keeps this to a stall far longer than any single step can take.
 6. **A BIG-IP that stops answering mid-change** for longer than `remote_timeout` (twice: the step, then the
    read-back) leaves an outcome the tool cannot know; it is reported `CRITICAL` and the lock is kept.

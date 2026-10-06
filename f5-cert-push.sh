@@ -29,7 +29,7 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.1.0"
+readonly VERSION="2.1.1"
 readonly PROG="f5-cert-push"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
@@ -105,7 +105,8 @@ wipe_dir() {
 release_all_locks() {
   local l
   for l in ${HELD_LOCKS[@]+"${HELD_LOCKS[@]}"}; do
-    rm -rf -- "$l" 2>/dev/null || true
+    # only a lock that still records this process (never one taken over meanwhile)
+    if [[ "$(cat -- "$l/pid" 2>/dev/null)" == "$$" ]]; then rm -rf -- "$l" 2>/dev/null || true; fi
   done
   HELD_LOCKS=()
 }
@@ -154,20 +155,24 @@ signal_finish() {
     job_handle_failure "interrupted by SIG${SIGNALLED} after the BIG-IP was changed"
     J_CHANGED=0; JOB_ACTIVE=0
     record_result "${J_DEP}@${J_F5}"
-    JOB_TAG=""
-    print_summary
-    exit "${J_RC}"
-  fi
-  if (( JOB_ACTIVE )); then
+  elif (( JOB_ACTIVE )); then
     JOB_ACTIVE=0
     job_remove_created || true
     J_RESULT=FAILED; J_RC=130; J_MSG="interrupted by SIG${SIGNALLED}; the profiles were not changed"
     record_result "${J_DEP}@${J_F5}"
-    JOB_TAG=""
-    print_summary
-    exit 130
   fi
-  exit 130
+  JOB_TAG=""
+  print_summary
+  signal_exit
+}
+
+# Exit after a signal with the most severe result of the whole run (as main does),
+# or 130 if nothing worse than an interruption happened.
+signal_exit() {
+  local rc=0
+  overall_exit || rc=$?
+  if (( rc == 0 || rc == EX_OUTDATED )); then rc=130; fi
+  exit "$rc"
 }
 
 sig_check() { if [[ -n "$SIGNALLED" ]] && (( ! IN_MUTATION )); then signal_finish; fi; }
@@ -601,7 +606,7 @@ validate_config() {
 OPENSSL_VERSION="" OPENSSL_OLD=0
 declare -A CERT_STATE=() CERT_DIR=() CERT_FP=() CERT_SUBJ=() CERT_SAN=() CERT_END=()
 declare -A CERT_DAYS=() CERT_HAVE_CHAIN=() CERT_HAVE_FULL=() CERT_SNI=() CERT_ALGO=()
-declare -A CERT_KEYPUB=() CERT_CHAINFP=()
+declare -A CERT_KEYPUB=() CERT_CHAINFP=() CERT_FULLFP=()
 
 # Print PEM CERTIFICATE blocks FROM..TO (1-based, TO=0 means "to the end").
 # Anything that is not a CERTIFICATE block (comments, bag attributes) is dropped.
@@ -630,6 +635,18 @@ pem_fps() {
   n="$(pem_count "$f")"
   for (( i = 1; i <= n; i++ )); do pem_range "$f" "$i" "$i" | fp_pem; done
   if [[ -n "${tmp:-}" ]]; then rm -f -- "$tmp"; fi
+}
+
+# All fingerprints of a PEM file, comma-joined: the R_OBJINFO "certall" form.
+# A certificate that does not parse is INVALID, so it can never match.
+pem_fps_joined() {
+  local f="$1" i n fp out=""
+  n="$(pem_count "$f")"
+  for (( i = 1; i <= n; i++ )); do
+    fp="$(pem_range "$f" "$i" "$i" | fp_pem)"
+    out="${out:+$out,}${fp:-INVALID}"
+  done
+  printf '%s' "$out"
 }
 
 # SHA-256 of a private key's public half (DER), lower-case hex: identifies a key
@@ -819,7 +836,8 @@ prepare_cert() {   # prepare_cert NAME   -> 0 if usable; result cached per cert
   CERT_FP[$name]="$(fp_pem <"$d/cert.pem")"
   CERT_KEYPUB[$name]="$(keypub_of "$d/key.pem")"
   CERT_CHAINFP[$name]=""
-  if [[ -s "$d/chain.pem" ]]; then CERT_CHAINFP[$name]="$(pem_range "$d/chain.pem" 1 1 | fp_pem)"; fi
+  if [[ -s "$d/chain.pem" ]]; then CERT_CHAINFP[$name]="$(pem_fps_joined "$d/chain.pem")"; fi
+  CERT_FULLFP[$name]="$(pem_fps_joined "$d/fullchain.pem")"
   if [[ -z "${CERT_FP[$name]}" || -z "${CERT_KEYPUB[$name]}" || "${CERT_KEYPUB[$name]}" == "${EMPTY_SHA256}" ]]; then
     err "${tag}: cannot compute the certificate fingerprint or the key identity"; return 1
   fi
@@ -931,52 +949,74 @@ define() { IFS= read -r -d '' "$1" || true; }
 
 # Every step that changes the BIG-IP runs through f5_mut. On the BIG-IP the step
 #   1. ignores SIGHUP/SIGPIPE, so a dropped connection cannot stop it half way;
-#   2. checks that this run still holds the BIG-IP lock (fencing) and renews it;
-#      if not, it does nothing and answers FENCE|LOST;
+#   2. under the guard (a kernel flock on /var/run/f5-cert-push.guard, which also
+#      serialises every lock operation: R_LOCK, R_UNLOCK, R_BEAT, R_STEPRESULT):
+#      checks that this run still holds the BIG-IP lock (fencing) and renews it,
+#      then CLAIMS its step id (mkdir: exactly once). A step that cannot claim its
+#      id has been cancelled by a poller (see below) and never runs;
 #   3. runs, with its output and exit status recorded in the lock directory;
-#   4. replies with its output and a final STEPEND|<status> line.
+#   4. ends its reply with STEPEND|<step id>|<status>, the last line.
+# The step id is random per call, so a step's own output cannot imitate that line.
 # If the reply is lost (connection dropped, timeout), the outcome is read back
-# from the BIG-IP (R_STEPRESULT) instead of being guessed.
+# from the BIG-IP (R_STEPRESULT) instead of being guessed. A step that has not
+# claimed its id by then is cancelled atomically by the poller (it claims the id
+# itself and marks it cancelled), so "it never ran" is a fact, not an inference.
 # Returns the step's own exit status, or one of:
-readonly ST_NOTRUN=96     # the step never started on the BIG-IP
+readonly ST_NOTRUN=96     # the step did not run on the BIG-IP, and never will
 readonly ST_LOCKLOST=97   # this run no longer holds the BIG-IP lock; the step did not run
 readonly ST_UNKNOWN=98    # the outcome could not be established
+readonly F5_GUARD=/var/run/f5-cert-push.guard
+
+# Print the payload of a reply and set MUT_RC, if the reply is complete: its last
+# non-empty line is STEPEND|ID|N for this step's ID. Returns 1 otherwise.
+MUT_RC=0
+mut_complete() {   # mut_complete ID REPLY
+  local id="$1" reply="$2" last
+  last="$(printf '%s\n' "$reply" | awk 'NF { l = $0 } END { print l }')"
+  [[ "$last" =~ ^STEPEND\|([A-Za-z0-9.-]+)\|([0-9]{1,3})$ && "${BASH_REMATCH[1]}" == "$id" ]] || return 1
+  (( 10#${BASH_REMATCH[2]} <= 255 )) || return 1
+  MUT_RC=$(( 10#${BASH_REMATCH[2]} ))
+  printf '%s\n' "$reply" | awk -v m="$last" '$0 != m'
+  return 0
+}
+
 f5_mut() {   # f5_mut SCRIPT ARGS...   (stdout: the step's output)
   local script="$1"; shift
-  local id out rc=0 last r none=0 deadline
+  local id out rc=0 r deadline first
   trap '' INT TERM HUP      # (this is a subshell) the parent decides what a signal means
-  id="${J_TS:-0}.$$.${RANDOM}${RANDOM}"
+  id="${J_TS:-0}.$$.${RANDOM}${RANDOM}${RANDOM}"
   out="$(f5_sh "$(printf '%s\n' \
       "trap '' HUP PIPE" \
       "_FL=/var/run/f5-cert-push.lock" \
       "_FT='${REMOTE_LOCK_TOKEN}'" \
+      "_ID='${id}'" \
+      '_FS="$_FL/step.$_ID"' \
+      "exec 8>>${F5_GUARD} && flock -w 60 8 || { echo 'STEP|NOGUARD'; exit 96; }" \
       'if [ -z "$_FT" ] || [ "$(sed -n 1p "$_FL/owner" 2>/dev/null)" != "$_FT" ]; then echo "FENCE|LOST"; exit 97; fi' \
-      "_FS=\"\$_FL/step.${id}\"" \
-      'touch "$_FL/beat" "$_FS.start"' \
+      'if ! mkdir "$_FS.claim" 2>/dev/null; then echo "STEP|CANCELLED"; exit 96; fi' \
+      'if ! touch "$_FL/beat" "$_FS.start"; then touch "$_FS.claim/cancelled" 2>/dev/null; echo "STEP|NORECORD"; exit 96; fi' \
+      'flock -u 8; exec 8>&-' \
       '(' "$script" ') >"$_FS.out" 2>"$_FS.err" </dev/null' \
-      'echo $? >"$_FS.rc.tmp" && mv -f "$_FS.rc.tmp" "$_FS.rc"' \
+      '_RC=$?' \
+      'echo "$_RC" >"$_FS.rc.tmp" && mv -f "$_FS.rc.tmp" "$_FS.rc"' \
       'cat "$_FS.out"; head -c 4000 "$_FS.err" >&2' \
-      'echo "STEPEND|$(cat "$_FS.rc")"')" "$@")" || rc=$?
-  last="$(printf '%s\n' "$out" | grep -E '^STEPEND\|[0-9]+$' | tail -n 1)"
-  if [[ -n "$last" ]]; then
-    printf '%s\n' "$out" | grep -v -E '^STEPEND\|'
-    return "${last#STEPEND|}"
-  fi
-  if printf '%s\n' "$out" | grep -q -x 'FENCE|LOST'; then return "${ST_LOCKLOST}"; fi
+      'echo "STEPEND|$_ID|$_RC"')" "$@")" || rc=$?
+  if mut_complete "$id" "$out"; then return "$MUT_RC"; fi
+  first="$(printf '%s\n' "$out" | awk 'NF { print; exit }')"
+  case "$first" in
+    'FENCE|LOST') return "${ST_LOCKLOST}" ;;
+    'STEP|NOGUARD'|'STEP|CANCELLED'|'STEP|NORECORD') return "${ST_NOTRUN}" ;;
+  esac
   warn "no complete reply from the BIG-IP (rc=${rc}); reading the outcome of the step from the BIG-IP"
   deadline=$(( $(date +%s) + REMOTE_TIMEOUT ))
   while :; do
     sleep 5
     r="$(f5_sh "${R_STEPRESULT}" "${REMOTE_LOCK_TOKEN}" "$id" 2>/dev/null)" || r=""
-    last="$(printf '%s\n' "$r" | grep -E '^STEPEND\|[0-9]+$' | tail -n 1)"
-    if [[ -n "$last" ]]; then
-      printf '%s\n' "$r" | grep -v -E '^STEPEND\|'
-      return "${last#STEPEND|}"
-    fi
-    case "$(printf '%s\n' "$r" | head -n 1)" in
-      'STEP|NONE')    none=$((none + 1)); if (( none >= 2 )); then return "${ST_NOTRUN}"; fi ;;
-      'STEP|NOLOCK')  return "${ST_UNKNOWN}" ;;
-      'STEP|RUNNING') none=0 ;;
+    if mut_complete "$id" "$r"; then return "$MUT_RC"; fi
+    case "$(printf '%s\n' "$r" | awk 'NF { print; exit }')" in
+      'STEP|CANCELLED') return "${ST_NOTRUN}" ;;     # cancelled: it can never start now
+      'STEP|NOLOCK')    return "${ST_UNKNOWN}" ;;
+      *) : ;;                                        # RUNNING, BUSY, no answer: keep reading
     esac
     if (( $(date +%s) >= deadline )); then return "${ST_UNKNOWN}"; fi
   done
@@ -1081,6 +1121,9 @@ define R_OBJINFO <<'REMOTE_EOF'
 #   cert:   OBJ|cert|NAME|OK|FINGERPRINT|EXPIRY      or OBJ|cert|NAME|MISSING
 #   key:    OBJ|key|NAME|OK                          or OBJ|key|NAME|MISSING
 #   keypub: OBJ|keypub|NAME|OK|SHA256-OF-PUBLIC-KEY  or OBJ|keypub|NAME|MISSING
+#   certall: OBJ|certall|NAME|OK|FP1,FP2,...         or OBJ|certall|NAME|MISSING
+#            (the fingerprint of EVERY certificate in the stored file, in order;
+#             INVALID for one that does not parse)
 for spec in "$@"; do
   kind="${spec%%:*}"; name="${spec#*:}"
   case "$kind" in
@@ -1094,6 +1137,21 @@ for spec in "$@"; do
     key)
       o="$(tmsh -q list sys file ssl-key "$name" key-type 2>/dev/null)" || o=""
       if [ -n "$o" ]; then echo "OBJ|key|$name|OK"; else echo "OBJ|key|$name|MISSING"; fi ;;
+    certall)
+      o="$(tmsh -q list sys file ssl-cert "$name" fingerprint 2>/dev/null)" || o=""
+      f=""; fps=""
+      if [ -n "$o" ]; then f="$(find_pem cert "$name")"; fi
+      if [ -n "$f" ] && t="$(mktemp -d /var/tmp/f5-cert-push.objinfo.XXXXXXXX)"; then
+        awk -v d="$t" '/-----BEGIN CERTIFICATE-----/ { n++ } n { print > (d "/c" n) }' "$f"
+        i=1
+        while [ -f "$t/c$i" ]; do
+          fp="$(openssl x509 -in "$t/c$i" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr 'a-f' 'A-F')"
+          fps="${fps:+$fps,}${fp:-INVALID}"
+          i=$((i + 1))
+        done
+        rm -rf "$t"
+      fi
+      if [ -n "$fps" ]; then echo "OBJ|certall|$name|OK|$fps"; else echo "OBJ|certall|$name|MISSING"; fi ;;
     keypub)
       o="$(tmsh -q list sys file ssl-key "$name" key-type 2>/dev/null)" || o=""
       f=""; h=""
@@ -1378,35 +1436,30 @@ REMOTE_EOF
 # The BIG-IP lock is a lease: a directory holding the owner's token, renewed by
 # touching "beat" at every step (f5_mut, R_BEAT, R_STEPRESULT). A lock whose beat
 # is older than remote_lock_stale_minutes is abandoned and may be taken over.
-# Take-over and release are atomic: the lock directory is renamed away first (a
-# rename succeeds for exactly one contender), then the owner is checked; a lock
-# that turns out to have been renewed or replaced meanwhile is put back. A run that
-# loses its lock finds out at its next step (fencing) and stops.
+# Every operation on the lock (take, take over, renew, release, the fence check of
+# a step, reading a step's result) runs under one kernel lock, the guard (flock on
+# /var/run/f5-cert-push.guard), so they are serialised: a take-over cannot
+# interleave with a renewal or a fence check, and the lock path is never briefly
+# empty while someone still holds the lease. A run that loses its lock finds out at
+# its next step (fencing) and stops.
 define R_LOCK <<'REMOTE_EOF'
 # args: STALE_MINUTES TOKEN OWNER-TEXT      -> LOCK|OK|new, LOCK|OK|stale or LOCK|BUSY|<owner>
 stale="$1"; token="$2"; owner="$3"
 L=/var/run/f5-cert-push.lock
+exec 8>>/var/run/f5-cert-push.guard && flock -w 60 8 || { echo "LOCK|BUSY|(the lock guard is busy)"; exit 0; }
 take() {
   printf '%s\n%s\n' "$token" "$owner" > "$L/owner.tmp" && mv -f "$L/owner.tmp" "$L/owner" && touch "$L/beat" \
     && echo "LOCK|OK|$1"
 }
-is_stale() {   # is_stale DIR: no renewal for more than $stale minutes
-  local ref="$1/beat"
-  [ -e "$ref" ] || ref="$1"
+is_stale() {   # no renewal for more than $stale minutes
+  local ref="$L/beat"
+  [ -e "$ref" ] || ref="$L"
   [ -n "$(find "$ref" -maxdepth 0 -mmin +"$stale" 2>/dev/null)" ]
 }
-if mkdir -m 700 "$L" 2>/dev/null; then take new; exit 0; fi
-old="$(sed -n 1p "$L/owner" 2>/dev/null)"
-if is_stale "$L"; then
-  G="$L.stale.$$.$RANDOM"
-  if mv -T "$L" "$G" 2>/dev/null; then
-    if [ "$(sed -n 1p "$G/owner" 2>/dev/null)" = "$old" ] && is_stale "$G"; then
-      rm -rf "$G"
-      if mkdir -m 700 "$L" 2>/dev/null; then take stale; exit 0; fi
-    else
-      mv -T "$G" "$L" 2>/dev/null || rm -rf "$G"
-    fi
-  fi
+if mkdir -m 700 "$L" 2>/dev/null; then take new || { rm -rf "$L"; echo "LOCK|BUSY|(cannot record the owner)"; }; exit 0; fi
+if is_stale; then
+  rm -rf "$L"
+  if mkdir -m 700 "$L" 2>/dev/null; then take stale || { rm -rf "$L"; echo "LOCK|BUSY|(cannot record the owner)"; }; exit 0; fi
 fi
 echo "LOCK|BUSY|$(sed -n 2p "$L/owner" 2>/dev/null | head -c 120 | tr '|' ' ')"
 exit 0
@@ -1415,37 +1468,35 @@ REMOTE_EOF
 define R_UNLOCK <<'REMOTE_EOF'
 # args: TOKEN      (removes the lock only if we still own it)
 L=/var/run/f5-cert-push.lock
-if [ "$(sed -n 1p "$L/owner" 2>/dev/null)" != "$1" ]; then echo "UNLOCK|NOTOURS"; exit 0; fi
-G="$L.release.$$.$RANDOM"
-if ! mv -T "$L" "$G" 2>/dev/null; then echo "UNLOCK|NOTOURS"; exit 0; fi
-if [ "$(sed -n 1p "$G/owner" 2>/dev/null)" = "$1" ]; then
-  rm -rf "$G"; echo "UNLOCK|OK"
-else
-  mv -T "$G" "$L" 2>/dev/null || rm -rf "$G"
-  echo "UNLOCK|NOTOURS"
-fi
+exec 8>>/var/run/f5-cert-push.guard && flock -w 60 8 || { echo "UNLOCK|BUSY"; exit 0; }
+if [ "$(sed -n 1p "$L/owner" 2>/dev/null)" = "$1" ]; then rm -rf "$L"; echo "UNLOCK|OK"; else echo "UNLOCK|NOTOURS"; fi
 REMOTE_EOF
 
 define R_BEAT <<'REMOTE_EOF'
 # args: TOKEN   -> BEAT|OK (lease renewed) or BEAT|LOST
 L=/var/run/f5-cert-push.lock
+exec 8>>/var/run/f5-cert-push.guard && flock -w 60 8 || { echo "BEAT|BUSY"; exit 0; }
 if [ "$(sed -n 1p "$L/owner" 2>/dev/null)" = "$1" ] && touch "$L/beat"; then echo "BEAT|OK"; else echo "BEAT|LOST"; fi
 REMOTE_EOF
 
 define R_STEPRESULT <<'REMOTE_EOF'
-# args: TOKEN ID   -> the step's stored output and STEPEND|rc, or STEP|RUNNING, STEP|NONE, STEP|NOLOCK
+# args: TOKEN ID   -> the step's stored output and STEPEND|ID|rc, or STEP|RUNNING,
+#                     STEP|CANCELLED (it never ran, and now never will), STEP|NOLOCK, STEP|BUSY
 L=/var/run/f5-cert-push.lock
-case "$2" in *[!A-Za-z0-9.-]*|'') echo "STEP|NONE"; exit 0 ;; esac
+case "$2" in *[!A-Za-z0-9.-]*|'') echo "STEP|NOLOCK"; exit 0 ;; esac
 S="$L/step.$2"
+exec 8>>/var/run/f5-cert-push.guard && flock -w 60 8 || { echo "STEP|BUSY"; exit 0; }
 if [ "$(sed -n 1p "$L/owner" 2>/dev/null)" != "$1" ]; then echo "STEP|NOLOCK"; exit 0; fi
 touch "$L/beat"
 if [ -f "$S.rc" ]; then
   cat "$S.out" 2>/dev/null
-  echo "STEPEND|$(cat "$S.rc")"
-elif [ -e "$S.start" ]; then
-  echo "STEP|RUNNING"
+  echo "STEPEND|$2|$(cat "$S.rc")"
+elif [ -d "$S.claim" ]; then
+  if [ -e "$S.claim/cancelled" ]; then echo "STEP|CANCELLED"; else echo "STEP|RUNNING"; fi
+elif mkdir "$S.claim" 2>/dev/null && touch "$S.claim/cancelled"; then
+  echo "STEP|CANCELLED"           # claimed here: the step can no longer start
 else
-  echo "STEP|NONE"
+  echo "STEP|RUNNING"
 fi
 REMOTE_EOF
 
@@ -1505,7 +1556,12 @@ lock_acquire() {
 lock_take() {   # create the lock directory with our pid in it, atomically
   local lk="$1"
   mkdir -m 700 -- "$lk" 2>/dev/null || return 1
-  printf '%s\n' "$$" >"$lk/pid.tmp" && mv -f -- "$lk/pid.tmp" "$lk/pid"
+  if ! { printf '%s\n' "$$" >"$lk/pid.tmp" && mv -f -- "$lk/pid.tmp" "$lk/pid"; }; then
+    # A lock without a recorded owner could never be recognised as stale: do not keep it.
+    rm -rf -- "$lk"
+    err "cannot record the owner of the lock ${lk}"
+    return 1
+  fi
   HELD_LOCKS+=("$lk")
   return 0
 }
@@ -1599,7 +1655,7 @@ J_AUTOROLL=yes J_FIXED=no J_VUNREACH=warn J_VFROM=f5 J_FP="" J_MODE=""
 J_RC=0 J_MSG="" J_RESULT="" J_CHANGED=0 J_UNKNOWN=0 J_BDIR_R="" J_BDIR_L=""
 declare -a J_PROF=() J_VERIFY=() J_TARGETS=() J_CREATED=()
 X_VERSION="" X_PHASE="" X_LASTLOAD="" X_FAILOVER="" X_SYNC="" X_PARTITION=""
-declare -A PR_STATE=() PR_INH=() OBJ_FP=() OBJ_EXP=() OBJ_OK=() OBJ_KEYPUB=()
+declare -A PR_STATE=() PR_INH=() OBJ_FP=() OBJ_EXP=() OBJ_OK=() OBJ_KEYPUB=() OBJ_CERTS=()
 declare -a ENT_LIST=()
 LAST_TS=""
 
@@ -1767,14 +1823,15 @@ fixed_full_obj()  { qual "${J_PREFIX}-fullchain.pem"; }
 job_objinfo() {
   local -a specs=()
   local t c h k out rc=0 tag a b cc d e
-  OBJ_FP=(); OBJ_EXP=(); OBJ_OK=(); OBJ_KEYPUB=()
+  OBJ_FP=(); OBJ_EXP=(); OBJ_OK=(); OBJ_KEYPUB=(); OBJ_CERTS=()
   for t in ${J_TARGETS[@]+"${J_TARGETS[@]}"}; do
     IFS='|' read -r _ _ c h k <<<"$t"
     specs+=("cert:${c}" "key:${k}")
     if [[ "$h" != none ]]; then specs+=("cert:${h}"); fi
   done
   if [[ "$J_MODE" == objects || "$J_FIXED" == yes ]]; then
-    specs+=("cert:$(fixed_cert_obj)" "key:$(fixed_key_obj)" "keypub:$(fixed_key_obj)" "cert:$(fixed_chain_obj)" "cert:$(fixed_full_obj)")
+    specs+=("cert:$(fixed_cert_obj)" "certall:$(fixed_cert_obj)" "key:$(fixed_key_obj)" "keypub:$(fixed_key_obj)"
+            "cert:$(fixed_chain_obj)" "certall:$(fixed_chain_obj)" "cert:$(fixed_full_obj)" "certall:$(fixed_full_obj)")
   fi
   if (( ${#specs[@]} == 0 )); then return 0; fi
   objinfo_read "${specs[@]}" || { job_fail "${EX_ERR}" "cannot read certificate objects on the BIG-IP: $(remote_err)"; return 1; }
@@ -1795,25 +1852,28 @@ objinfo_read() {   # objinfo_read SPEC...
         cert)   OBJ_OK["cert:${b}"]=1; OBJ_FP["$b"]="$d"; OBJ_EXP["$b"]="$e" ;;
         key)    OBJ_OK["key:${b}"]=1 ;;
         keypub) OBJ_KEYPUB["$b"]="$d" ;;
+        certall) [[ "$d" =~ ^[A-Z0-9,]+$ ]] && OBJ_CERTS["$b"]="$d" ;;
       esac
     else
       case "$a" in
         cert)   unset "OBJ_OK[cert:${b}]" "OBJ_FP[$b]" "OBJ_EXP[$b]" ;;
         key)    unset "OBJ_OK[key:${b}]" ;;
         keypub) unset "OBJ_KEYPUB[$b]" ;;
+        certall) unset "OBJ_CERTS[$b]" ;;
       esac
     fi
   done <<<"$out"
   return 0
 }
 
-# The fixed-name objects hold exactly the new certificate, chain, fullchain and key.
+# The fixed-name objects hold exactly the new certificate, chain, fullchain and key
+# (every certificate of the chain and fullchain objects is compared, in order).
 fixed_is_current() {
-  [[ "${OBJ_FP[$(fixed_cert_obj)]:-}" == "$J_FP" ]] || return 1
+  [[ "${OBJ_CERTS[$(fixed_cert_obj)]:-}" == "$J_FP" ]] || return 1
   [[ "${OBJ_KEYPUB[$(fixed_key_obj)]:-}" == "${CERT_KEYPUB[$J_CERT]}" ]] || return 1
-  [[ "${OBJ_FP[$(fixed_full_obj)]:-}" == "$J_FP" ]] || return 1
+  [[ "${OBJ_CERTS[$(fixed_full_obj)]:-}" == "${CERT_FULLFP[$J_CERT]}" ]] || return 1
   if [[ "${CERT_HAVE_CHAIN[$J_CERT]}" == 1 ]]; then
-    [[ "${OBJ_FP[$(fixed_chain_obj)]:-}" == "${CERT_CHAINFP[$J_CERT]}" ]] || return 1
+    [[ "${OBJ_CERTS[$(fixed_chain_obj)]:-}" == "${CERT_CHAINFP[$J_CERT]}" ]] || return 1
   fi
   return 0
 }
@@ -1962,6 +2022,57 @@ parse_inventory() {   # parse_inventory DIR TS
   return 0
 }
 
+# The restore script that version 2.0.0 generated for the contents parsed from a
+# 2.0.0 set (INV_OBJ, INV_BIND, in their order), byte for byte. A 2.0.0 set is
+# only accepted if its script is exactly this: then running it does precisely what
+# its parsed contents say, and the verification afterwards checks exactly that.
+# (Any other line, however harmless it looks, would run unchecked.)
+legacy_script_text() {   # legacy_script_text TS
+  local ts="$1" x mode kind name f p e c h k
+  echo '#!/bin/bash'
+  echo "# Generated by f5-cert-push. Restores the BIG-IP state captured just before run ${ts}."
+  echo "# Run on the BIG-IP as root:   bash restore-${ts}.sh"
+  cat <<'HDR'
+set -u
+D="$(cd "$(dirname "$0")" && pwd)"
+if [ -s "$D/SHA256SUMS" ]; then
+  ( cd "$D" && sha256sum -c --quiet SHA256SUMS ) || { echo "backup integrity check FAILED; nothing was changed" >&2; exit 1; }
+fi
+failed() { printf '%s\n' "$1" | grep -Eq '^[0-9a-fA-F]{8}:[0-3]:|transaction failed|Syntax Error|Unexpected Error'; }
+inst() {
+  out="$(tmsh install sys crypto "$1" "$2" from-local-file "$3" 2>&1)"
+  if failed "$out"; then echo "install of $1 $2 FAILED: $out" >&2; exit 1; fi
+  echo "    reinstalled $1 $2"
+}
+exists() { [ -n "$(tmsh -q list sys file "$1" "$2" 2>/dev/null)" ]; }
+ensure() {
+  if [ "$1" = key ]; then c=ssl-key; else c=ssl-cert; fi
+  if exists "$c" "$2"; then echo "    $1 $2 still present"; else inst "$1" "$2" "$3"; fi
+}
+force() { inst "$1" "$2" "$3"; }
+HDR
+  for x in ${INV_OBJ[@]+"${INV_OBJ[@]}"}; do
+    IFS='|' read -r mode kind name f <<<"$x"
+    if [[ "$mode" == keep ]]; then printf "ensure %s '%s' \"\$D/%s\"\n" "$kind" "$name" "$f"
+    else printf "force %s '%s' \"\$D/%s\"\n" "$kind" "$name" "$f"; fi
+  done
+  if (( ${#INV_BIND[@]} > 0 )); then
+    echo 'OUT="$({'
+    echo 'echo "create cli transaction"'
+    for x in "${INV_BIND[@]}"; do
+      IFS='|' read -r p e c h k <<<"$x"
+      printf "echo '%s'\n" "modify ltm profile client-ssl ${p} cert-key-chain modify { ${e} { cert ${c} chain ${h} key ${k} } }"
+    done
+    echo 'echo "submit cli transaction"'
+    echo '} | tmsh 2>&1)"'
+    echo 'printf "%s\n" "$OUT"'
+    echo 'if failed "$OUT"; then echo "restoring the profiles FAILED" >&2; exit 1; fi'
+    echo 'echo "    profiles repointed"'
+  fi
+  echo 'tmsh save sys config > /dev/null'
+  echo "echo '[+] restored the state captured before run ${ts}'"
+}
+
 # Check a downloaded backup set: every file present, nothing unexpected, the
 # checksum list strictly formed and covering every other file, the checksums
 # matching, every backed-up PEM parsing, and (when EXPECTED items are given) the
@@ -1976,6 +2087,10 @@ verify_backup_set() {   # verify_backup_set DIR TS [EXPECTED-ITEM...]
   done
   parse_inventory "$dir" "$ts" || return 1
   if (( ! INV_LEGACY )); then [[ -f "${dir}/INVENTORY" ]] || { VB_ERR="INVENTORY is missing"; return 1; }; fi
+  if (( INV_LEGACY )) && ! cmp -s -- "${dir}/restore-${ts}.sh" <(legacy_script_text "$ts"); then
+    VB_ERR="the 2.0.0 restore script is not exactly what version 2.0.0 generates for the contents it lists (it has been edited, or was not made by 2.0.0); refusing to run it"
+    return 1
+  fi
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ ^([0-9a-f]{64})\ \ ([A-Za-z0-9][A-Za-z0-9._-]*)$ ]] || { VB_ERR="SHA256SUMS has a malformed line"; return 1; }
     name="${BASH_REMATCH[2]}"
@@ -1995,7 +2110,8 @@ verify_backup_set() {   # verify_backup_set DIR TS [EXPECTED-ITEM...]
     referenced[$f]=1
     [[ -s "${dir}/${f}" && -n "${listed[$f]+x}" ]] || { VB_ERR="backup of ${name} (${f}) is missing"; return 1; }
     if [[ "$kind" == cert ]]; then
-      pem_range "${dir}/${f}" 1 1 | openssl x509 -noout >/dev/null 2>&1 || { VB_ERR="backup of ${name} does not parse"; return 1; }
+      # every certificate in the file, not only the first
+      [[ "$(pem_count "${dir}/${f}")" -ge 1 && "$(pem_fps_joined "${dir}/${f}")" != *INVALID* ]]         || { VB_ERR="backup of ${name} does not parse (every certificate in it must)"; return 1; }
     else
       openssl pkey -in "${dir}/${f}" -noout >/dev/null 2>&1 || { VB_ERR="backup of ${name} does not parse"; return 1; }
     fi
@@ -2058,6 +2174,7 @@ job_remove_created() {
   mut_begin
   out="$(f5_mut "${R_LIB}"$'\n'"${R_DELETE}" "${J_CREATED[@]}")" || rc=$?
   mut_end
+  if (( rc == ST_UNKNOWN )); then REMOTE_LOCK_KEEP=1; fi
   if (( rc != 0 )); then warn "could not remove the objects created by this run ($(mut_status_text "$rc")); they are pruned by a later run"; return 1; fi
   while IFS='|' read -r tag a b; do [[ "$tag" == DELETED ]] && n=$((n + 1)); done <<<"$out"
   info "removed ${n} object(s) created by this run"
@@ -2080,6 +2197,13 @@ job_install_versioned() {
   mut_begin
   out="$(f5_mut "${R_LIB}"$'\n'"${R_INSTALL}" "${STAGE_DIR}" "${specs[@]}")" || rc=$?
   mut_end
+  if (( rc == ST_UNKNOWN )); then
+    # The install may still be running on the BIG-IP: do not delete what it may be
+    # creating, and keep other runs out (job_handle_failure: CRITICAL, lock kept).
+    J_UNKNOWN=1; J_CREATED=()
+    job_fail "${EX_ERR}" "installing the new certificate did not report its outcome ($(mut_status_text "$rc")); the profiles were not switched, but the install may still complete"
+    return 1
+  fi
   if (( rc != 0 )); then
     while IFS='|' read -r tag a b; do [[ "$tag" == FAIL ]] && warn "BIG-IP: ${a}"; done <<<"$out"
     job_fail "${EX_ERR}" "installing the new certificate failed ($(mut_status_text "$rc")): $(remote_err). The profiles were not touched."
@@ -2112,8 +2236,8 @@ job_install_fixed() {   # overwrite the fixed-name objects in place
 # Read the fixed-name objects back: certificate, chain, fullchain and key must be
 # exactly the new ones (a partial overwrite is caught here).
 job_verify_fixed() {
-  local -a specs=("cert:$(fixed_cert_obj)" "keypub:$(fixed_key_obj)" "cert:$(fixed_full_obj)")
-  if [[ "${CERT_HAVE_CHAIN[$J_CERT]}" == 1 ]]; then specs+=("cert:$(fixed_chain_obj)"); fi
+  local -a specs=("certall:$(fixed_cert_obj)" "keypub:$(fixed_key_obj)" "certall:$(fixed_full_obj)")
+  if [[ "${CERT_HAVE_CHAIN[$J_CERT]}" == 1 ]]; then specs+=("certall:$(fixed_chain_obj)"); fi
   objinfo_read "${specs[@]}" || return 1
   fixed_is_current
 }
@@ -2316,19 +2440,19 @@ restore_and_verify() {
   fi
   for x in ${INV_OBJ[@]+"${INV_OBJ[@]}"}; do
     IFS='|' read -r mode kind name f <<<"$x"
-    if [[ "$kind" == cert ]]; then specs+=("cert:${name}"); else specs+=("keypub:${name}"); fi
+    if [[ "$kind" == cert ]]; then specs+=("certall:${name}"); else specs+=("keypub:${name}"); fi
   done
   for x in ${INV_ABSENT[@]+"${INV_ABSENT[@]}"}; do
     IFS='|' read -r kind name <<<"$x"
     specs+=("${kind}:${name}")
   done
-  OBJ_FP=(); OBJ_EXP=(); OBJ_OK=(); OBJ_KEYPUB=()
+  OBJ_FP=(); OBJ_EXP=(); OBJ_OK=(); OBJ_KEYPUB=(); OBJ_CERTS=()
   if (( ${#specs[@]} > 0 )) && ! objinfo_read "${specs[@]}"; then err "cannot read the certificate objects back after the restore"; return 1; fi
   for x in ${INV_OBJ[@]+"${INV_OBJ[@]}"}; do
     IFS='|' read -r mode kind name f <<<"$x"
     if [[ "$kind" == cert ]]; then
-      want="$(pem_range "${RV_DIR}/${f}" 1 1 | fp_pem)"
-      if [[ -z "$want" || "${OBJ_FP[$name]:-}" != "$want" ]]; then err "after the restore, ${name} does not hold the backed-up certificate"; specs_ok=0; fi
+      want="$(pem_fps_joined "${RV_DIR}/${f}")"
+      if [[ -z "$want" || "$want" == *INVALID* || "${OBJ_CERTS[$name]:-}" != "$want" ]]; then err "after the restore, ${name} does not hold the backed-up certificate(s)"; specs_ok=0; fi
     else
       want="$(keypub_of "${RV_DIR}/${f}")"
       if [[ -z "$want" || "$want" == "${EMPTY_SHA256}" || "${OBJ_KEYPUB[$name]:-}" != "$want" ]]; then err "after the restore, ${name} does not hold the backed-up key"; specs_ok=0; fi
@@ -2397,13 +2521,21 @@ remote_remove_stage() {
 # A step failed after the BIG-IP may have been changed: roll back if allowed.
 job_handle_failure() {   # job_handle_failure REASON
   local reason="$1"
-  if (( J_CHANGED == 0 )); then
+  if (( J_CHANGED == 0 && ! J_UNKNOWN )); then
     J_RESULT=FAILED
     if [[ "${J_RC}" == 0 ]]; then J_RC="${EX_ERR}"; fi
     if [[ -z "${J_MSG}" ]]; then J_MSG="$reason"; fi
     return 0
   fi
   local manual="${PROG} --config ${CONFIG_FILE} --deploy ${J_DEP} --f5 ${J_F5} --rollback --set ${J_TS}"
+  if (( J_CHANGED == 0 && J_UNKNOWN )); then
+    # Nothing was switched, but a step never reported its outcome: it may still be
+    # running. Keep other runs out until it is understood.
+    J_RC="${EX_CRITICAL}"; J_RESULT=CRITICAL; REMOTE_LOCK_KEEP=1
+    J_MSG="${reason}; the profiles were not switched, but a step on the BIG-IP never reported its outcome and may still be running. Check the BIG-IP (--check) before running again"
+    err "${J_MSG}"
+    return 0
+  fi
   if [[ "$J_AUTOROLL" == yes ]]; then
     if job_rollback "$reason"; then
       job_remove_created || true
@@ -2617,16 +2749,17 @@ record_result() {   # record_result JOB
 }
 
 overall_exit() {
-  local rc has5=0 has3=0 has1=0 has6=0 has4=0
+  local rc has5=0 has3=0 has1=0 has6=0 has4=0 has130=0
   for rc in ${RES_RC[@]+"${RES_RC[@]}"}; do
     case "$rc" in
-      5) has5=1 ;; 3) has3=1 ;; 1) has1=1 ;; 6) has6=1 ;; 4) has4=1 ;;
+      5) has5=1 ;; 3) has3=1 ;; 1) has1=1 ;; 6) has6=1 ;; 4) has4=1 ;; 130) has130=1 ;;
     esac
   done
   if (( has5 )); then return "${EX_CRITICAL}"; fi
   if (( has3 )); then return "${EX_ROLLED_BACK}"; fi
   if (( has1 )); then return "${EX_ERR}"; fi
   if (( has6 )); then return "${EX_LOCKED}"; fi
+  if (( has130 )); then return 130; fi
   if (( has4 )); then return "${EX_OUTDATED}"; fi
   return 0
 }
@@ -2913,7 +3046,7 @@ parse_args() {
 
 check_dependencies() {
   local t missing=""
-  for t in ssh openssl awk sed grep timeout sha256sum mktemp stat date tr cut sort head find id wc cat; do
+  for t in ssh openssl awk sed grep timeout sha256sum mktemp stat date tr cut sort head find id wc cat cmp; do
     command -v "$t" >/dev/null 2>&1 || missing+=" ${t}"
   done
   if [[ -n "$missing" ]]; then

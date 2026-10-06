@@ -28,9 +28,11 @@ and the **remote scripts** (`define R_*`, bash 4.2 code that runs on the BIG-IP)
 runner** (`run_job`, `job_abort`, `job_handle_failure`); **selection and actions**; **CLI** (`parse_args`, `main`).
 
 Since 2.1.0 every step that changes the BIG-IP goes through **`f5_mut`**: the remote side ignores
-HUP/PIPE, checks that the run still holds the BIG-IP lock (fencing), records the step's output and exit status
-in the lock directory, and ends its reply with `STEPEND|<rc>`; a lost reply is resolved by polling
-`R_STEPRESULT`. Signals are handled by `on_signal` / `signal_finish` / `sig_check`, deferred while
+HUP/PIPE; under the **guard** (a kernel `flock` on `/var/run/f5-cert-push.guard` that serialises every lock
+operation) it checks that the run still holds the BIG-IP lock (fencing) and **claims** its random step id
+(`mkdir`, once); it records the step's output and exit status in the lock directory and ends its reply with
+`STEPEND|<step id>|<rc>` as the last line. A lost reply is resolved by polling `R_STEPRESULT`, which cancels a
+step that has not claimed its id (by claiming it itself). (2.1.1) Signals are handled by `on_signal` / `signal_finish` / `sig_check`, deferred while
 `IN_MUTATION` is non-zero (`mut_begin`/`mut_end`, nestable).
 
 ## 2. What the tool must guarantee (the invariants)
@@ -111,13 +113,13 @@ These are the places the author is least sure about. They are leads, not claims.
     Can they get root to read a file they cannot (via a hard link on a system without
     `fs.protected_hardlinks`), install something that was not validated, delete or overwrite outside their
     folder, or leak content through `FAILED`? Can a crafted folder name or `READY` cause harm?
-15. **Tracked steps (2.1.0).** `f5_mut` decides the outcome from the last `STEPEND|n` line of the reply, then
-    from `R_STEPRESULT`. Can a step's own output, a partial reply, or a slow BIG-IP make it report a wrong
-    outcome? Two consecutive `STEP|NONE` answers are read as "never started": is there a schedule in which the
-    step starts after that?
-16. **The lease (2.1.0).** `R_LOCK` renames a stale lock away, checks it is still the stale owner's, and puts it
-    back otherwise. Is there an interleaving of two contenders and a renewing owner in which two runs both
-    believe they hold the lock *and both pass their fence checks*?
+15. **Tracked steps (2.1.1).** `f5_mut` accepts an outcome only from a final `STEPEND|<id>|n` line with its own
+    random id, then from `R_STEPRESULT`; a step that has not claimed its id is cancelled by the poller claiming
+    it. Can a step's own output, a partial reply, or a slow BIG-IP still make it report a wrong outcome? Is there
+    any path in which a step runs after being reported as not run?
+16. **The lease (2.1.1).** All lock operations, fence checks, claims and result reads are serialised by the
+    guard `flock`. What does it **not** cover (the step body runs outside it, after its fence)? Is there an
+    interleaving in which two runs both pass fence checks while each believes it holds the lock?
 17. **Rollback verification (2.1.0).** `restore_and_verify` compares certificate objects by the fingerprint
     `tmsh` reports, and keys by the SHA-256 of their public key computed on the BIG-IP from the filestore file
     (`find_pem`). Can a restore that did not really restore pass these checks?
@@ -211,6 +213,31 @@ itself matters, `tests/f5.sh` covers it too.
 | obs | `collect_created` / discovery trusted reply names | Only the objects requested are recorded as created; discovery skips names in unexpected forms | regress (created objects) |
 | (found while testing the fixes) | `lock_dir` was documented for `[f5:]` but rejected there | Accepted | regress R13 |
 | (found by the BIG-IP suite while testing the fixes) | The new `--rollback` fetch called `ssh` inside a `while read` loop; `ssh` swallowed the rest of the file list, so only one file was copied (and the set was then, correctly, refused) | `f5_get` reads stdin from `/dev/null`; the list is collected before any transfer | regress R13 (fails without the fix); f5 s5 |
+
+### 7b. Findings of the second review (of 2.1.0), fixed in 2.1.1
+
+The second review (Codex, `gpt-6.1-sol`, sandboxed, no network, no BIG-IP) rated R1, R2, R6, R9, R11, R12 and R13
+fixed and R3, R4, R5, R7, R8, R10 partly fixed, and demonstrated ten remaining defects with eleven tests. All
+were confirmed independently (outside the sandbox) before being fixed. Its tests, run against 2.1.1, no longer
+demonstrate any of them; `tests/regress.sh` holds an inverted version of each.
+
+| # | Finding (severity given) | Fix | Test |
+|---|---|---|---|
+| B1 | A truncated reply could make a step's own `STEPEND\|0` line pass for success (high) | End line carries a random per-call step id and must be the reply's last line | regress B1 |
+| B2 | Two `STEP\|NONE` answers were read as "never started", but a delayed step could still start (high) | Steps claim their id under the guard; the poller cancels an unclaimed step by claiming it; a cancelled step cannot start | regress B2 |
+| B3 | A failed stale take-over (rename, put back) left a gap in which a third run could take the lock while the renewing owner kept going (high) | Every lock operation, fence check, claim and result read runs under one kernel `flock` on the BIG-IP; take-over is a plain remove-and-create inside it | regress B3 |
+| B4 | Backup, rollback and fixed-name checks compared only the first certificate of a bundle (high) | `certall`: the fingerprints of every certificate in the stored file, in order, compared with the backup / expected chain; every certificate in a backed-up file must parse | regress B4 (two cases); f5 s13, s14 |
+| B5 | The wrapper accepted a sticky world-writable store, so a planted `.lock` link was followed (high) | Store must not be writable by anyone else; `.lock` must be a regular file owned by the runner; otherwise refused | regress B5 |
+| B6 | Hard-link / type checks were made on the name before `dd` opened it (medium) | The file is opened once and the opened descriptor is checked via `/proc/self/fd` (same inode, regular, one link) | regress B6 |
+| B7 | A crafted 2.0.0 restore script could run unparsed changes (medium) | A 2.0.0 script must equal, byte for byte, what 2.0.0 generates for its parsed contents | regress B7; R13 (genuine 2.0.0 fixture accepted) |
+| B8 | A signal's exit code ignored earlier results in the run (medium) | `signal_exit` uses the run's most severe result; 130 only if nothing worse | regress B8 |
+| B9 | An install with an unknown outcome released the lock as a plain failure (medium) | `J_UNKNOWN` for the install; `CRITICAL`, lock kept, nothing deleted | regress B9 |
+| B10 | The local lock was "taken" even if its owner could not be recorded (low) | Not taken unless recorded; locks only removed by their recorded owner | regress B10 |
+
+The review also noted, without demonstrating, that the documented residual case of a run whose lease expires
+while one of its steps is still running is real (a step body runs outside the guard, after its fence), and that
+`R_UNLOCK`/`R_BEAT` deserved the same treatment as `R_LOCK` (they now run under the guard). The first is stated in
+SECURITY.md section 6, item 5.
 
 ## 8. How to report
 

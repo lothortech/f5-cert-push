@@ -7,7 +7,7 @@ There are two suites in `tests/`. Together they are the evidence that the tool b
 |---|---|---|---|
 | `tests/offline.sh` | Linux, bash, openssl; **no BIG-IP** | No (works in a temp dir) | Configuration parsing and validation, injection attempts, selection, certificate validation |
 | `tests/install.sh` | Linux, bash, openssl; **no BIG-IP** | No (works in a temp dir) | `f5-cert-install.sh`: READY handling, validation and rejection, symlink refusal, atomic install, retention, push retry, locking |
-| `tests/regress.sh` | Linux, bash, openssl; **no BIG-IP**; root for one case | No (works in a temp dir) | A regression test for every finding of the 2.0.0 adversarial review (R1-R13 and the additional observations), against a local stand-in for the BIG-IP |
+| `tests/regress.sh` | Linux, bash, openssl; **no BIG-IP**; root for one case | No (works in a temp dir) | A regression test for every finding of both independent reviews (R1-R13 and observations of 2.0.0; B1-B10 of 2.1.0), against a local stand-in for the BIG-IP |
 | `tests/f5.sh` | Linux, SSH access to a **lab BIG-IP** | **Yes**: creates and removes `zzz-*` objects | Real deployments, rollback, retention, locking, interruption, partitions, SSH trust |
 
 `tests/lib.sh` holds shared helpers, including a small **test PKI** (root, intermediate, RSA and ECDSA leaves,
@@ -108,6 +108,18 @@ own connections) and pins nothing outside its temporary directory.
 | **s21** lost reply | The reply to the profile switch is dropped **after the BIG-IP committed it** (an `ssh` stand-in discards it): the outcome is read back from the BIG-IP and the deployment completes correctly |
 | **s22** lock taken over | Another "host" takes the BIG-IP lock in the middle of a run: the run is fenced at its next step, changes nothing, fails with exit 1, and does not remove the new owner's lock |
 | **s23** signal during the switch | `SIGTERM` arrives while the profile switch is running on the BIG-IP: the switch finishes, then the run rolls back and verifies (exit 3); both profiles and the virtual server are back on the previous certificate |
+
+## Results for 2.1.1
+
+| Suite | Where | Result |
+|---|---|---|
+| `offline.sh` | webserver-101 (Ubuntu, bash 5.1, OpenSSL 3) | 236 passed |
+| `install.sh` | webserver-101 | 154 passed |
+| `regress.sh` | webserver-101, as root | 51 passed (every case of both reviews, including the real-permission uploader case) |
+| `regress.sh` | the lab BIG-IP itself (bash 4.2.46, OpenSSL 1.0.2za), as root | 51 passed |
+| `offline.sh` with `T_SKIP_CERTS=1` | the lab BIG-IP itself | 193 passed |
+| `f5.sh` s1-s23 | lab BIG-IP 17.1.3.4 | **277 passed, 0 failed** |
+| The second review's own demonstrations (`review-evidence/tests.sh`) | webserver-101 | none of its 11 demonstrations reproduces |
 
 ## Results for 2.1.0
 

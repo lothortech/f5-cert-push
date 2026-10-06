@@ -80,9 +80,11 @@ and the <strong>remote scripts</strong> (<code>define R_*</code>, bash 4.2 code 
 <code>job_switch_profiles</code>, <code>job_verify_*</code>, <code>job_rollback</code>, <code>restore_and_verify</code>, <code>job_prune</code>); the <strong>job
 runner</strong> (<code>run_job</code>, <code>job_abort</code>, <code>job_handle_failure</code>); <strong>selection and actions</strong>; <strong>CLI</strong> (<code>parse_args</code>, <code>main</code>).</p>
 <p>Since 2.1.0 every step that changes the BIG-IP goes through <strong><code>f5_mut</code></strong>: the remote side ignores
-HUP/PIPE, checks that the run still holds the BIG-IP lock (fencing), records the step's output and exit status
-in the lock directory, and ends its reply with <code>STEPEND|&lt;rc&gt;</code>; a lost reply is resolved by polling
-<code>R_STEPRESULT</code>. Signals are handled by <code>on_signal</code> / <code>signal_finish</code> / <code>sig_check</code>, deferred while
+HUP/PIPE; under the <strong>guard</strong> (a kernel <code>flock</code> on <code>/var/run/f5-cert-push.guard</code> that serialises every lock
+operation) it checks that the run still holds the BIG-IP lock (fencing) and <strong>claims</strong> its random step id
+(<code>mkdir</code>, once); it records the step's output and exit status in the lock directory and ends its reply with
+<code>STEPEND|&lt;step id&gt;|&lt;rc&gt;</code> as the last line. A lost reply is resolved by polling <code>R_STEPRESULT</code>, which cancels a
+step that has not claimed its id (by claiming it itself). (2.1.1) Signals are handled by <code>on_signal</code> / <code>signal_finish</code> / <code>sig_check</code>, deferred while
 <code>IN_MUTATION</code> is non-zero (<code>mut_begin</code>/<code>mut_end</code>, nestable).</p>
 <h2 id="2-what-the-tool-must-guarantee-the-invariants">2. What the tool must guarantee (the invariants)</h2>
 <p>Try to violate each. A violation is a bug even if no exploit follows.</p>
@@ -269,13 +271,13 @@ in the lock directory, and ends its reply with <code>STEPEND|&lt;rc&gt;</code>; 
     Can they get root to read a file they cannot (via a hard link on a system without
     <code>fs.protected_hardlinks</code>), install something that was not validated, delete or overwrite outside their
     folder, or leak content through <code>FAILED</code>? Can a crafted folder name or <code>READY</code> cause harm?</li>
-<li><strong>Tracked steps (2.1.0).</strong> <code>f5_mut</code> decides the outcome from the last <code>STEPEND|n</code> line of the reply, then
-    from <code>R_STEPRESULT</code>. Can a step's own output, a partial reply, or a slow BIG-IP make it report a wrong
-    outcome? Two consecutive <code>STEP|NONE</code> answers are read as "never started": is there a schedule in which the
-    step starts after that?</li>
-<li><strong>The lease (2.1.0).</strong> <code>R_LOCK</code> renames a stale lock away, checks it is still the stale owner's, and puts it
-    back otherwise. Is there an interleaving of two contenders and a renewing owner in which two runs both
-    believe they hold the lock <em>and both pass their fence checks</em>?</li>
+<li><strong>Tracked steps (2.1.1).</strong> <code>f5_mut</code> accepts an outcome only from a final <code>STEPEND|&lt;id&gt;|n</code> line with its own
+    random id, then from <code>R_STEPRESULT</code>; a step that has not claimed its id is cancelled by the poller claiming
+    it. Can a step's own output, a partial reply, or a slow BIG-IP still make it report a wrong outcome? Is there
+    any path in which a step runs after being reported as not run?</li>
+<li><strong>The lease (2.1.1).</strong> All lock operations, fence checks, claims and result reads are serialised by the
+    guard <code>flock</code>. What does it <strong>not</strong> cover (the step body runs outside it, after its fence)? Is there an
+    interleaving in which two runs both pass fence checks while each believes it holds the lock?</li>
 <li><strong>Rollback verification (2.1.0).</strong> <code>restore_and_verify</code> compares certificate objects by the fingerprint
     <code>tmsh</code> reports, and keys by the SHA-256 of their public key computed on the BIG-IP from the filestore file
     (<code>find_pem</code>). Can a restore that did not really restore pass these checks?</li>
@@ -530,6 +532,87 @@ itself matters, <code>tests/f5.sh</code> covers it too.</p>
 </tr>
 </tbody>
 </table>
+<h3 id="7b-findings-of-the-second-review-of-210-fixed-in-211">7b. Findings of the second review (of 2.1.0), fixed in 2.1.1</h3>
+<p>The second review (Codex, <code>gpt-6.1-sol</code>, sandboxed, no network, no BIG-IP) rated R1, R2, R6, R9, R11, R12 and R13
+fixed and R3, R4, R5, R7, R8, R10 partly fixed, and demonstrated ten remaining defects with eleven tests. All
+were confirmed independently (outside the sandbox) before being fixed. Its tests, run against 2.1.1, no longer
+demonstrate any of them; <code>tests/regress.sh</code> holds an inverted version of each.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Finding (severity given)</th>
+<th>Fix</th>
+<th>Test</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B1</td>
+<td>A truncated reply could make a step's own <code>STEPEND\|0</code> line pass for success (high)</td>
+<td>End line carries a random per-call step id and must be the reply's last line</td>
+<td>regress B1</td>
+</tr>
+<tr>
+<td>B2</td>
+<td>Two <code>STEP\|NONE</code> answers were read as "never started", but a delayed step could still start (high)</td>
+<td>Steps claim their id under the guard; the poller cancels an unclaimed step by claiming it; a cancelled step cannot start</td>
+<td>regress B2</td>
+</tr>
+<tr>
+<td>B3</td>
+<td>A failed stale take-over (rename, put back) left a gap in which a third run could take the lock while the renewing owner kept going (high)</td>
+<td>Every lock operation, fence check, claim and result read runs under one kernel <code>flock</code> on the BIG-IP; take-over is a plain remove-and-create inside it</td>
+<td>regress B3</td>
+</tr>
+<tr>
+<td>B4</td>
+<td>Backup, rollback and fixed-name checks compared only the first certificate of a bundle (high)</td>
+<td><code>certall</code>: the fingerprints of every certificate in the stored file, in order, compared with the backup / expected chain; every certificate in a backed-up file must parse</td>
+<td>regress B4 (two cases); f5 s13, s14</td>
+</tr>
+<tr>
+<td>B5</td>
+<td>The wrapper accepted a sticky world-writable store, so a planted <code>.lock</code> link was followed (high)</td>
+<td>Store must not be writable by anyone else; <code>.lock</code> must be a regular file owned by the runner; otherwise refused</td>
+<td>regress B5</td>
+</tr>
+<tr>
+<td>B6</td>
+<td>Hard-link / type checks were made on the name before <code>dd</code> opened it (medium)</td>
+<td>The file is opened once and the opened descriptor is checked via <code>/proc/self/fd</code> (same inode, regular, one link)</td>
+<td>regress B6</td>
+</tr>
+<tr>
+<td>B7</td>
+<td>A crafted 2.0.0 restore script could run unparsed changes (medium)</td>
+<td>A 2.0.0 script must equal, byte for byte, what 2.0.0 generates for its parsed contents</td>
+<td>regress B7; R13 (genuine 2.0.0 fixture accepted)</td>
+</tr>
+<tr>
+<td>B8</td>
+<td>A signal's exit code ignored earlier results in the run (medium)</td>
+<td><code>signal_exit</code> uses the run's most severe result; 130 only if nothing worse</td>
+<td>regress B8</td>
+</tr>
+<tr>
+<td>B9</td>
+<td>An install with an unknown outcome released the lock as a plain failure (medium)</td>
+<td><code>J_UNKNOWN</code> for the install; <code>CRITICAL</code>, lock kept, nothing deleted</td>
+<td>regress B9</td>
+</tr>
+<tr>
+<td>B10</td>
+<td>The local lock was "taken" even if its owner could not be recorded (low)</td>
+<td>Not taken unless recorded; locks only removed by their recorded owner</td>
+<td>regress B10</td>
+</tr>
+</tbody>
+</table>
+<p>The review also noted, without demonstrating, that the documented residual case of a run whose lease expires
+while one of its steps is still running is real (a step body runs outside the guard, after its fence), and that
+<code>R_UNLOCK</code>/<code>R_BEAT</code> deserved the same treatment as <code>R_LOCK</code> (they now run under the guard). The first is stated in
+SECURITY.md section 6, item 5.</p>
 <h2 id="8-how-to-report">8. How to report</h2>
 <p>For each finding please give: <strong>title; severity (critical / high / medium / low); the invariant or claim it
 breaks (I1..I12 or a SECURITY.md sentence); a reproducer</strong> (config + command, or canned remote output); the

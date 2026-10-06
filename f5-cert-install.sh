@@ -70,7 +70,7 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.1.0"
+readonly VERSION="2.1.1"
 readonly PROG="f5-cert-install"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
@@ -418,15 +418,31 @@ remove_upload_files() {   # (run inside the upload folder: in_upload_dir)
 # Copy the uploaded files into the private scratch directory STG (run inside the
 # upload folder: in_upload_dir). Prints "REJECT <reason>" and returns 1 on refusal.
 copy_upload_files() {   # copy_upload_files STG
-  local stg="$1" f sz
+  local stg="$1" f sz pre rc
   for f in cert.pem fullchain.pem chain.pem privkey.pem; do
     if [[ -e "./${f}" || -L "./${f}" ]]; then
       if [[ -L "./${f}" ]]; then echo "REJECT ${f} is a symbolic link (symbolic links are refused; upload the file itself)"; return 1; fi
       if [[ ! -f "./${f}" ]]; then echo "REJECT ${f} is not a regular file"; return 1; fi
-      if [[ "$(stat -c '%h' -- "./${f}" 2>/dev/null)" != 1 ]]; then echo "REJECT ${f} is a hard link to another file (upload the file itself)"; return 1; fi
-      if ! timeout 20 dd if="./${f}" of="${stg}/${f}" iflag=nofollow,nonblock bs=1048577 count=1 status=none 2>/dev/null; then
-        echo "REJECT cannot read ${f} (it must be a regular file, not a link)"; return 1
-      fi
+      pre="$(stat -c '%h:%d:%i' -- "./${f}" 2>/dev/null)" || pre=""
+      if [[ "${pre%%:*}" != 1 ]]; then echo "REJECT ${f} is a hard link to another file (upload the file itself)"; return 1; fi
+      # Open the file once, then check what was OPENED (its descriptor, through
+      # /proc/self/fd), not the name: it must be the same file that was checked, a
+      # regular file with exactly one link. Swapping the name for a link, a hard
+      # link or a FIFO between the check and the open is therefore caught; a swap
+      # after the open does not matter, the open file is what is copied. The
+      # timeout covers a FIFO swapped in just before the open (open would block).
+      rc=0
+      timeout 20 bash -c '
+        exec 3<"./$1" || exit 2
+        got="$(stat -L -c "%F:%h:%d:%i" /proc/self/fd/3 2>/dev/null)"
+        [ "$got" = "regular file:$2" ] || [ "$got" = "regular empty file:$2" ] || exit 3
+        exec dd bs=1048577 count=1 status=none of="$3" <&3
+      ' copy "$f" "$pre" "${stg}/${f}" 2>/dev/null || rc=$?
+      case "$rc" in
+        0) ;;
+        3) echo "REJECT ${f} changed while it was being read (it must be a plain file with a single link)"; return 1 ;;
+        *) echo "REJECT cannot read ${f} (it must be a regular file, not a link)"; return 1 ;;
+      esac
       sz="$(wc -c < "${stg}/${f}")"; sz="${sz//[[:space:]]/}"
       if (( sz == 0 || sz > 1048576 )); then echo "REJECT ${f} is empty or larger than 1 MiB"; return 1; fi
     fi
@@ -495,8 +511,20 @@ main() {
   real="$(trusted_tree "$STORE")" \
     || usage_die "refusing to use ${STORE}: ${TRUST_BAD} can be changed by someone other than root"
   STORE="$real"
+  # The store holds private keys and is written by root: unlike an upload folder it
+  # must not be writable by anyone else at all (no sticky-bit allowance). A store
+  # that ever was is refused rather than "repaired" with chmod, because whatever
+  # others left in it would stay.
+  local smode
+  smode="$(stat -c '%a' -- "$STORE" 2>/dev/null)" || usage_die "cannot use the store directory ${STORE}"
+  if (( (8#$smode & 8#022) != 0 )); then
+    usage_die "refusing to use ${STORE}: it is writable by group or others (mode ${smode}). It holds private keys: create it as 'install -d -m 700 ${STORE}' (and check what is already in it)"
+  fi
   chmod 700 -- "$STORE" || usage_die "cannot use the store directory ${STORE}"
-  exec 9>"${STORE}/.lock" || usage_die "cannot open ${STORE}/.lock"
+  if [[ -L "${STORE}/.lock" ]] || { [[ -e "${STORE}/.lock" ]] && { [[ ! -f "${STORE}/.lock" ]] || [[ ! -O "${STORE}/.lock" ]]; }; }; then
+    usage_die "refusing to use ${STORE}/.lock: it is not a regular file owned by you"
+  fi
+  exec 9>>"${STORE}/.lock" || usage_die "cannot open ${STORE}/.lock"
   if ! flock -n 9; then warn "another ${PROG} run is in progress"; exit 6; fi
 
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/${PROG}.XXXXXXXX")" || { err "cannot create a scratch directory"; exit 1; }

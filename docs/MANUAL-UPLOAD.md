@@ -64,7 +64,8 @@ install -d -m 3770 -o root -g certupload /srv/f5-certs/incoming/api
 # The wrapper refuses to run unless every directory from / down to incoming can only
 # be changed by root, and skips an upload folder that is not root-owned and sticky.
 
-# 4. Where certificates are installed: root only.
+# 4. Where certificates are installed: root only. (The wrapper refuses a store that
+#    anyone else can write to.)
 install -d -m 700 /etc/f5-certs
 
 # 5. SSH to the BIG-IPs: a dedicated ECDSA key, authorised on each BIG-IP, host keys pinned.

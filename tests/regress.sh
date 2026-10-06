@@ -61,6 +61,7 @@ EOF
   f5_sh() {
     local s="$1"; shift
     s="${s//\/var\/run\/f5-cert-push.lock/${EMU}/run/f5-cert-push.lock}"
+    s="${s//\/var\/run\/f5-cert-push.guard/${EMU}/run/f5-cert-push.guard}"
     s="${s//\/config\/filestore/${EMU}/fs}"
     printf '%s\n' "$s" | PATH="${EMU}/bin:${PATH}" bash -s -- "$@" 2>>"${WORK}/ssh.err"
   }
@@ -314,6 +315,8 @@ r5_object_contents() {
       case "$s" in
         cert:*) f="${EMU}/fs/files_d/Common_d/certificate_d/:Common:${n}_1001_1"
                 if [[ -f "$f" ]]; then OBJ_OK["cert:$n"]=1; OBJ_FP[$n]="$(fp_pem <"$f")"; fi ;;
+        certall:*) f="${EMU}/fs/files_d/Common_d/certificate_d/:Common:${n}_1001_1"
+                if [[ -f "$f" ]]; then OBJ_CERTS[$n]="$(pem_fps_joined "$f")"; fi ;;
         keypub:*) f="${EMU}/fs/files_d/Common_d/certificate_key_d/:Common:${n}_1001_1"
                 if [[ -f "$f" ]]; then OBJ_KEYPUB[$n]="$(keypub_of "$f")"; fi ;;
       esac
@@ -624,10 +627,12 @@ check "R9: a failed fixed-name refresh rolls back and exits 3 (not UPDATED/0)" r
 
 r9_fixed_verify() {
   load_push
-  J_CERT=c; J_PREFIX=c; J_PART=Common; J_FP=AAA; CERT_KEYPUB[c]=k1; CERT_HAVE_CHAIN[c]=1; CERT_CHAINFP[c]=CCC
-  objinfo_read() { OBJ_FP=([c-cert.pem]=AAA [c-fullchain.pem]=AAA [c-chain.pem]=CCC); OBJ_KEYPUB=([c-privkey.pem]=OLDKEY); }
+  J_CERT=c; J_PREFIX=c; J_PART=Common; J_FP=AAA; CERT_KEYPUB[c]=k1; CERT_HAVE_CHAIN[c]=1; CERT_CHAINFP[c]=CCC; CERT_FULLFP[c]=AAA,CCC
+  objinfo_read() { OBJ_CERTS=([c-cert.pem]=AAA [c-fullchain.pem]=AAA,CCC [c-chain.pem]=CCC); OBJ_KEYPUB=([c-privkey.pem]=OLDKEY); }
   job_verify_fixed && { echo "accepted a key that was not replaced"; return 1; }
-  objinfo_read() { OBJ_FP=([c-cert.pem]=AAA [c-fullchain.pem]=AAA [c-chain.pem]=CCC); OBJ_KEYPUB=([c-privkey.pem]=k1); }
+  objinfo_read() { OBJ_CERTS=([c-cert.pem]=AAA [c-fullchain.pem]=AAA,OLD [c-chain.pem]=CCC); OBJ_KEYPUB=([c-privkey.pem]=k1); }
+  job_verify_fixed && { echo "accepted a fullchain whose intermediate was not replaced"; return 1; }
+  objinfo_read() { OBJ_CERTS=([c-cert.pem]=AAA [c-fullchain.pem]=AAA,CCC [c-chain.pem]=CCC); OBJ_KEYPUB=([c-privkey.pem]=k1); }
   job_verify_fixed
 }
 check "R9: the fixed-name objects are read back (a key left behind is caught)" r9_fixed_verify
@@ -751,18 +756,11 @@ check "R13: --rollback copies every file of the backup set from the BIG-IP" r13_
 
 r13_legacy() {
   load_push
-  local d="${TMP}/legacy"; mkdir -p "$d"
-  cp "$P/a.key" "$d/key.site-privkey.pem"; cp "$P/a.pem" "$d/cert.site-cert.pem"
-  cat > "$d/restore-20260930-162806.sh" <<'EOF'
-#!/bin/bash
-ensure key 'site-privkey.pem' "$D/key.site-privkey.pem"
-ensure cert 'site-cert.pem' "$D/cert.site-cert.pem"
-echo 'modify ltm profile client-ssl site-clientssl cert-key-chain modify { e1 { cert site-cert.pem chain none key site-privkey.pem } }'
-EOF
-  printf 'tool=f5-cert-push 2.0.0\n' > "$d/MANIFEST"
-  ( cd "$d" && sha256sum key.site-privkey.pem cert.site-cert.pem > SHA256SUMS )
-  verify_backup_set "$d" 20260930-162806 || { echo "$VB_ERR"; return 1; }
-  [[ "$INV_LEGACY" == 1 && "${INV_BIND[0]}" == 'site-clientssl|e1|site-cert.pem|none|site-privkey.pem' && ${#INV_OBJ[@]} == 2 ]]
+  local d="${TMP}/legacy" ts=20260930-162806
+  cp -r "${T_DIR}/fixtures/legacy-2.0.0/${ts}" "$d"
+  verify_backup_set "$d" "$ts" || { echo "$VB_ERR"; return 1; }
+  [[ "$INV_LEGACY" == 1 && ${#INV_BIND[@]} == 2 && ${#INV_OBJ[@]} == 3 ]] || { echo "binds=${#INV_BIND[@]} objs=${#INV_OBJ[@]}"; return 1; }
+  [[ "${INV_BIND[1]}" == 'www-clientssl|e1|site-cert-20260901-120000.pem|site-chain-20260901-120000.pem|site-privkey-20260901-120000.pem' ]]
 }
 check "R13: a backup set written by 2.0.0 can still be read and verified" r13_legacy
 
@@ -786,6 +784,164 @@ o_collect() {
   [[ "${J_CREATED[*]}" == 'key:site-privkey-20261005-120000.pem cert:site-cert-20261005-120000.pem' ]] || { echo "${J_CREATED[*]}"; return 1; }
 }
 check "observation: only the objects this run asked for are ever recorded as created" o_collect
+
+#######################################################################
+echo "== Second review (2.1.0, B1-B10)"
+#######################################################################
+b1_marker() {
+  load_push; emu_init; emu_lock A || return 1; J_TS=20261006-120000
+  local real; real="$(declare -f f5_sh)"; eval "emu_sh${real#f5_sh}"
+  # the real wrapper runs, but its last reply line is lost; the step's own output
+  # imitates an end line
+  f5_sh() { if [[ "$1" == *'STEP|NOLOCK'* ]]; then emu_sh "$@"; else emu_sh "$@" | sed '$d'; return 124; fi; }
+  local rc=0
+  f5_mut $'echo "STEPEND|0"\necho "STEPEND|x|0"\nexit 1' >/dev/null || rc=$?
+  echo "returned=$rc"
+  [[ "$rc" == 1 ]]
+}
+check "B1: a step's own output cannot pass for its end line; the recorded status (1) is returned" b1_marker
+
+b2_late_start() {
+  load_push; emu_init; emu_lock A || return 1; J_TS=20261006-120000
+  local real; real="$(declare -f f5_sh)"; eval "emu_sh${real#f5_sh}"
+  # the step is dispatched but held back until after the outcome has been read
+  f5_sh() { if [[ "$1" == *'STEP|NOLOCK'* ]]; then emu_sh "$@"; else printf '%s' "$1" > "${EMU}/queued.sh"; return 124; fi; }
+  local rc=0
+  f5_mut 'touch "${EMU}/late-change"' >/dev/null || rc=$?
+  [[ "$rc" == "${ST_NOTRUN}" ]] || { echo "rc=$rc"; return 1; }
+  emu_sh "$(cat "${EMU}/queued.sh")" >/dev/null 2>&1      # ... and now it arrives
+  [[ ! -e "${EMU}/late-change" ]] || { echo "the cancelled step still ran"; return 1; }
+}
+check "B2: a step reported as not run is cancelled on the BIG-IP and can never start later" b2_late_start
+
+b3_guard() {
+  load_push; emu_init; emu_lock A || return 1
+  local L="${EMU}/run/f5-cert-push.lock" out
+  touch -d '31 minutes ago' "$L/beat"
+  # A is in the middle of a fence check (holds the guard) and renews; C, which saw
+  # the expired beat, must wait for the guard and then find the lease renewed.
+  ( exec 8>>"${EMU}/run/f5-cert-push.guard"; flock 8; command sleep 2; touch "$L/beat" ) &
+  command sleep 0.5
+  out="$(f5_sh "${R_LOCK}" 30 C 'C')"
+  wait
+  echo "C: $out"
+  [[ "$out" == LOCK\|BUSY* && "$(sed -n 1p "$L/owner")" == A ]]
+}
+check "B3: lock take-over is serialised with renewal: a lease renewed during the attempt is not taken" b3_guard
+
+b4_bundle() {
+  load_push; emu_init
+  RV_DIR="${TMP}/b4"; mkdir -p "$RV_DIR"
+  cat "$P/a.pem" "$P/a.chain.pem" > "$RV_DIR/bundle.pem"
+  emu_obj cert bundle.pem /dev/null
+  cat "$P/a.pem" "$P/b.pem" > "${EMU}/fs/files_d/Common_d/certificate_d/:Common:bundle.pem_1001_1"
+  INV_OBJ=('fix|cert|bundle.pem|bundle.pem'); INV_BIND=(); INV_ABSENT=(); INV_LEGACY=0
+  f5_mut() { return 0; }
+  cat > "${EMU}/bin/tmsh" <<'STUB'
+#!/usr/bin/env bash
+echo "sys file ssl-cert bundle.pem {"; echo "    fingerprint SHA256/00"; echo "}"
+STUB
+  restore_and_verify >/dev/null 2>&1 && { echo "accepted a bundle whose second certificate differs"; return 1; }
+  cat "$P/a.pem" "$P/a.chain.pem" > "${EMU}/fs/files_d/Common_d/certificate_d/:Common:bundle.pem_1001_1"
+  restore_and_verify >/dev/null 2>&1 || { echo "refused an identical bundle"; return 1; }
+}
+check "B4: rollback verification compares every certificate in a bundle" b4_bundle
+
+b4_backup_parse() {
+  load_push
+  local d="${TMP}/b4b" ts=20261006-120000
+  mkdir -p "$d"; cp "$P/a.pem" "$d/bundle.pem"
+  printf '%s\n' '-----BEGIN CERTIFICATE-----' 'bm90LWEtY2VydGlmaWNhdGU=' '-----END CERTIFICATE-----' >> "$d/bundle.pem"
+  printf 'obj|fix|cert|bundle.pem|bundle.pem\n' > "$d/INVENTORY"
+  echo metadata > "$d/MANIFEST"; echo 'exit 0' > "$d/restore-$ts.sh"
+  ( cd "$d" && sha256sum bundle.pem INVENTORY MANIFEST "restore-$ts.sh" > SHA256SUMS )
+  verify_backup_set "$d" "$ts" 'obj|fix|cert|bundle.pem' && return 1
+  return 0
+}
+check "B4: a backup whose second certificate does not parse is refused" b4_backup_parse
+
+b5_store() {
+  local base="${TMP}/b5" rc=0
+  mkdir -p "$base/in" "$base/store"; chmod 1777 "$base/store"
+  printf 'KEEP ME\n' > "$base/victim"; ln -s "$base/victim" "$base/store/.lock"
+  "$INSTALL" --config "${TMP}/none.conf" --incoming "$base/in" --store "$base/store" --push-bin "$PUSH" --no-push >/dev/null 2>&1 || rc=$?
+  echo "rc=$rc"
+  [[ "$rc" == 2 && "$(cat "$base/victim")" == 'KEEP ME' ]] || return 1
+  # a private store with a planted .lock link is refused too
+  rm -f "$base/store/.lock"; chmod 700 "$base/store"; ln -s "$base/victim" "$base/store/.lock"; rc=0
+  "$INSTALL" --config "${TMP}/none.conf" --incoming "$base/in" --store "$base/store" --push-bin "$PUSH" --no-push >/dev/null 2>&1 || rc=$?
+  [[ "$rc" == 2 && "$(cat "$base/victim")" == 'KEEP ME' ]]
+}
+check "B5: a store others can write to, or a .lock that is a link, is refused; nothing is written" b5_store
+
+b6_hardlink() {
+  load_install
+  local d="${TMP}/b6" stg="${TMP}/b6-copy"
+  mkdir -p "$d" "$stg"; chmod 3770 "$d"
+  printf 'upload\n' > "$d/cert.pem"; printf 'PRIVATE SENTINEL\n' > "${TMP}/b6-victim"
+  cd "$d" || return 1
+  timeout() { command rm -f cert.pem; command ln "${TMP}/b6-victim" cert.pem; command timeout "$@"; }
+  local rc=0 out
+  out="$(copy_upload_files "$stg")" || rc=$?
+  echo "rc=$rc $out"
+  [[ "$rc" == 1 && "$out" == REJECT* ]] || return 1
+  ! cmp -s "${TMP}/b6-victim" "$stg/cert.pem"
+}
+check "B6: a file swapped for a hard link between the check and the open is refused, not copied" b6_hardlink
+
+b7_legacy_edited() {
+  load_push
+  local d="${TMP}/b7" ts=20260930-162806
+  cp -r "${T_DIR}/fixtures/legacy-2.0.0/${ts}" "$d"
+  # a profile change spelled differently from 2.0.0's own lines
+  printf '%s\n' "printf '%s\\n' 'modify ltm profile client-ssl victim cert-key-chain modify { e { cert new.pem chain none key new.key } }' | tmsh" >> "$d/restore-${ts}.sh"
+  verify_backup_set "$d" "$ts" && { echo "an edited 2.0.0 restore script was accepted"; return 1; }
+  echo "$VB_ERR"; [[ "$VB_ERR" == *'not exactly what version 2.0.0 generates'* ]]
+}
+check "B7: a 2.0.0 restore script that is not exactly what 2.0.0 generated is refused" b7_legacy_edited
+
+b8_signal() {
+  local rc=0
+  bash -c '
+    source <(sed "\$ d" "$PUSH")
+    WORK="$(mktemp -d)"
+    RES_JOB=(previous); RES_RESULT=(CRITICAL); RES_RC=(5); RES_MSG=(uncertain)
+    J_CHANGED=1; JOB_ACTIVE=1; J_AUTOROLL=yes; J_DEP=d; J_F5=f
+    job_rollback() { J_CHANGED=0; return 0; }
+    job_remove_created() { return 0; }
+    remote_lock_release() { return 0; }
+    kill -TERM "$$"; sleep 1; exit 99
+  ' >/dev/null 2>&1 || rc=$?
+  echo "rc=$rc"
+  [[ "$rc" == 5 ]]
+}
+check "B8: after a signal the exit code is the worst of the whole run (an earlier CRITICAL stays 5)" b8_signal
+
+b9_unknown_install() {
+  load_push
+  J_PREFIX=site; J_TS=20261006-120000; J_PART=Common; J_CERT=c
+  CERT_HAVE_CHAIN[c]=0; J_CREATED=(); STAGE_DIR=/var/tmp/f5-cert-push.abcdef
+  J_CHANGED=0; J_UNKNOWN=0; J_AUTOROLL=yes; J_DEP=d; J_F5=f; REMOTE_LOCK_KEEP=0
+  f5_mut() { return "$ST_UNKNOWN"; }
+  job_remove_created() { touch "${TMP}/b9-removed"; return 0; }
+  job_unstage() { return 0; }
+  lock_release() { echo "keep=$REMOTE_LOCK_KEEP" > "${TMP}/b9-release"; }
+  job_install_versioned >/dev/null 2>&1 && return 1
+  job_abort 'install failed' >/dev/null 2>&1
+  echo "result=$J_RESULT rc=$J_RC $(cat "${TMP}/b9-release")"
+  [[ "$J_RESULT" == CRITICAL && "$J_RC" == 5 && "$(cat "${TMP}/b9-release")" == keep=1 && ! -e "${TMP}/b9-removed" ]]
+}
+check "B9: an install that never reported is CRITICAL, keeps the BIG-IP lock and deletes nothing" b9_unknown_install
+
+b10_local_owner_write() {
+  load_push
+  local l="${TMP}/b10-lock" rc=0
+  mv() { return 1; }
+  lock_take "$l" 2>/dev/null || rc=$?
+  echo "rc=$rc"
+  [[ "$rc" == 1 && ! -e "$l" && ${#HELD_LOCKS[@]} == 0 ]]
+}
+check "B10: a local lock whose owner cannot be recorded is not taken" b10_local_owner_write
 
 echo
 t_summary
