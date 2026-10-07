@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.1.2
+
+Fixes for every finding of the third independent review (of 2.1.1; `F1`-`F5`, report summarised in `REVIEW.md`
+section 7c). Each has a regression test in `tests/regress.sh` that fails against 2.1.1 and passes now.
+
+- **Upload wrapper store (F2).** The `.push-pending` marker is now written like `FAILED`: a new private file
+  renamed into place, so a link planted at that name is replaced, never followed (2.1.1 checked `.lock` but
+  still wrote through `.push-pending`). And before using the store, the wrapper now checks **everything already
+  in it**: each entry must be owned by root, not writable by group or others, a directory, a regular file with a
+  single link, or a `NAME/current` link into `releases/`. Anything else (what another account could have left
+  while the store was writable) makes the wrapper refuse to run and name the entry. **(config)** see below.
+- **Unknown install outcome (F1).** When an install step never reports its outcome, its staging directory on the
+  BIG-IP is now left in place (the install may still be reading it); 2.1.1 kept the lock but deleted the stage.
+  The next run that stages on that BIG-IP removes staging directories older than two hours, as before.
+- **Unknown pruning outcome (F3).** If pruning old backups or old certificate objects on the BIG-IP never reports
+  its outcome, the deployment (already verified) is reported `CRITICAL` (exit 5) and the BIG-IP lock is kept,
+  because the pruning may still be running; the object pruning is not started after an unknown backup pruning.
+  In 2.1.1 this was only a warning, the run reported `UPDATED` and released the lock.
+- **Reading the certificate files (F4).** Each configured file is opened once: the type check, the 1 MiB limit
+  and the copy all apply to that one open file (2.1.1 measured the path, then opened it again to copy).
+- **Refusal messages (F5)** from the upload wrapper's directory checks name the directory that is unsafe again
+  (the name was lost in a subshell and printed blank).
+- Tests: the regression suite's BIG-IP stand-in now also moves the tool's `/var/tmp` scratch paths, so the B4 case
+  no longer depends on `/var/tmp` being writable.
+- **(config)** An existing store that holds anything the wrapper did not make (for example files owned by
+  another account, a group-writable directory, or an extra symlink) is now refused with the name of the entry.
+  Stores set up as documented and only written by the wrapper are unaffected; so is repointing `NAME/current`
+  by hand (`ln -sfn releases/TS NAME/current`, as root).
+
 ## 2.1.1
 
 Fixes for every finding of the second independent review (of 2.1.0; `B1`-`B10`, report summarised in

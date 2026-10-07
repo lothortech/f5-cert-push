@@ -29,7 +29,7 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.1.1"
+readonly VERSION="2.1.2"
 readonly PROG="f5-cert-push"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
@@ -115,9 +115,7 @@ cleanup() {
   local rc=$?
   trap - EXIT
   trap '' INT TERM HUP
-  if [[ -n "${STAGE_DIR}" ]]; then
-    remote_remove_stage || warn "could not remove remote staging directory ${STAGE_DIR}; remove it by hand"
-  fi
+  job_unstage
   remote_lock_release || warn "could not release the lock on the BIG-IP; it expires by itself"
   f5_close
   release_all_locks
@@ -655,14 +653,21 @@ keypub_of() { openssl pkey -in "$1" -pubout -outform DER 2>/dev/null | sha256sum
 readonly EMPTY_SHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 
 # Copy a source file into the private work dir, refusing empty or absurdly
-# large files, so validation and upload operate on the same bytes.
+# large files, so validation and upload operate on the same bytes. The file is
+# opened once: the type check, the size limit and the copy all apply to that one
+# file even if the path is changed meanwhile (timeout: in case a FIFO is swapped in).
 copy_src() {   # copy_src SRC DST
   local src="$1" dst="$2" sz
   [[ -f "$src" && -r "$src" ]] || return 1
-  sz="$(wc -c <"$src" 2>/dev/null)" || return 1
+  # shellcheck disable=SC2016
+  if ! timeout 20 bash -c 'exec 3<"$1" || exit 1
+      [[ "$(stat -L -c %F /proc/self/fd/3 2>/dev/null)" == "regular file" ]] || exit 1
+      exec head -c 1048577 <&3' copy_src "$src" >"$dst" 2>/dev/null; then
+    rm -f -- "$dst"; return 1
+  fi
+  sz="$(wc -c <"$dst" 2>/dev/null)" || { rm -f -- "$dst"; return 1; }
   sz="${sz//[[:space:]]/}"
-  (( sz > 0 && sz <= 1048576 )) || return 1
-  cat -- "$src" >"$dst"
+  (( sz > 0 && sz <= 1048576 )) || { rm -f -- "$dst"; return 1; }
 }
 
 epoch_of() { date -d "$1" +%s 2>/dev/null; }
@@ -2467,17 +2472,24 @@ restore_and_verify() {
   return 0
 }
 
+# Returns 1 only if a pruning step on the BIG-IP never reported its outcome (it
+# may still be running): the caller then keeps the BIG-IP lock and reports it.
+# Ordinary pruning failures are only warnings; a later run prunes again.
 job_prune() {
   (( J_KEEP > 0 )) || return 0
-  local out tag a b n=0 root="${F5_BACKUP_ROOT}/${J_PREFIX}" d
+  local out tag a b n=0 root="${F5_BACKUP_ROOT}/${J_PREFIX}" d brc=0
   info "pruning to the newest ${J_KEEP} backup set(s) and certificate version(s)"
-  if out="$(f5_mut "${R_PRUNE_BACKUPS}" "$root" "${J_KEEP}")"; then
+  out="$(f5_mut "${R_PRUNE_BACKUPS}" "$root" "${J_KEEP}")" || brc=$?
+  if (( brc == 0 )); then
     while IFS='|' read -r tag a b; do
       if [[ "$tag" == REMOVED ]]; then n=$((n + 1)); fi
     done <<<"$out"
     if (( n > 0 )); then info "removed ${n} old backup set(s) from the BIG-IP"; fi
+  elif (( brc == ST_UNKNOWN )); then
+    warn "pruning backups on the BIG-IP did not report its outcome ($(mut_status_text "$brc")); it may still be running"
+    return 1
   else
-    warn "pruning backups on the BIG-IP failed: $(remote_err)"
+    warn "pruning backups on the BIG-IP failed ($(mut_status_text "$brc")): $(remote_err)"
   fi
   n=0
   if [[ -d "${F5_BACKUP_LOCAL}" ]]; then
@@ -2495,6 +2507,10 @@ job_prune() {
       if [[ "$tag" == DELETED ]]; then n=$((n + 1)); fi
     done <<<"$out"
     if (( n > 0 )); then info "removed ${n} old certificate object(s) from the BIG-IP"; fi
+    if (( prc == ST_UNKNOWN )); then
+      warn "pruning old certificate objects did not report its outcome ($(mut_status_text "$prc")); it may still be running"
+      return 1
+    fi
     if (( prc != 0 )); then warn "pruning old certificate objects did not complete ($(mut_status_text "$prc")): $(remote_err)"; fi
   fi
   return 0
@@ -2504,9 +2520,16 @@ job_prune() {
 # Running one deployment on one BIG-IP
 #######################################################################
 job_unstage() {
-  if [[ -n "${STAGE_DIR}" ]]; then
-    remote_remove_stage || warn "could not remove the staging directory ${STAGE_DIR} on the BIG-IP; remove it by hand"
+  [[ -n "${STAGE_DIR}" ]] || return 0
+  if (( J_UNKNOWN || REMOTE_LOCK_KEEP )); then
+    # A step whose outcome is unknown may still be running, and may still be reading
+    # the staged files (an install reads them one by one): leave them. The next run
+    # that stages on this BIG-IP removes staging directories older than two hours.
+    warn "the staging directory ${STAGE_DIR} on the BIG-IP is left in place, because a step that may still be running could be using it; a later run removes it once it is two hours old"
+    STAGE_DIR=""
+    return 0
   fi
+  remote_remove_stage || warn "could not remove the staging directory ${STAGE_DIR} on the BIG-IP; remove it by hand"
 }
 
 remote_remove_stage() {
@@ -2672,14 +2695,23 @@ run_job() {   # run_job DEPLOY F5NAME   -> sets J_RESULT, J_RC, J_MSG
   # now just ends the run after this job.
   J_CHANGED=0; JOB_ACTIVE=0
   J_CREATED=()
+  local pruned=1
   mut_begin
   job_unstage
-  job_prune
+  job_prune || pruned=0
   mut_end
   if [[ "$X_SYNC" != standalone && -n "$X_SYNC" ]]; then
     warn "this BIG-IP is in a sync group (mode ${X_SYNC}); synchronise the configuration to its peers"
   fi
-  J_RESULT=UPDATED; J_RC="${EX_OK}"; J_MSG="deployed; expires ${CERT_END[$J_CERT]}"
+  if (( pruned )); then
+    J_RESULT=UPDATED; J_RC="${EX_OK}"; J_MSG="deployed; expires ${CERT_END[$J_CERT]}"
+  else
+    # The deployment itself is verified, but a pruning step may still be deleting
+    # old objects or backups: keep other runs out until it is understood.
+    J_RESULT=CRITICAL; J_RC="${EX_CRITICAL}"; REMOTE_LOCK_KEEP=1
+    J_MSG="deployed and verified (expires ${CERT_END[$J_CERT]}), but pruning old backups or objects on the BIG-IP never reported its outcome and may still be running. Check the BIG-IP (--check) before running again"
+    err "${J_MSG}"
+  fi
   ok "done; rollback with: ${PROG} --config ${CONFIG_FILE} --deploy ${J_DEP} --f5 ${J_F5} --rollback --set ${J_TS}"
   lock_release
   return 0

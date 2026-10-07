@@ -498,6 +498,14 @@ a record of its own.</p>
 <td>The BIG-IP's state is not confirmed. 1) Look: <code>f5-cert-push.sh --deploy NAME --check</code>, or <code>tmsh list ltm profile client-ssl &lt;name&gt; cert-key-chain</code> on the BIG-IP. 2) Restore if needed with the printed <code>--rollback --set TS</code> command (or <code>bash restore-&lt;TS&gt;.sh</code> on the BIG-IP; every old PEM is in the backup directory). 3) Remove the BIG-IP lock the run left in place: <code>rm -rf /var/run/f5-cert-push.lock</code>.</td>
 </tr>
 <tr>
+<td><code>pruning ... did not report its outcome</code> (summary <code>CRITICAL</code>, "deployed and verified")</td>
+<td>The new certificate is live and verified, but removing old backups or old certificate objects was interrupted and may still be running. Nothing needs restoring: check that nothing still runs (<code>ps -ef \| grep f5-cert-push</code> on the BIG-IP), then remove the lock: <code>rm -rf /var/run/f5-cert-push.lock</code>. A later run prunes again.</td>
+</tr>
+<tr>
+<td><code>the staging directory ... is left in place</code></td>
+<td>Shown with a <code>CRITICAL</code> result: a step that may still be running could be using it. A later run removes it after two hours, or remove it yourself once the device is checked: <code>rm -rf /var/tmp/f5-cert-push.*</code>.</td>
+</tr>
+<tr>
 <td><code>an earlier step never reported its outcome</code></td>
 <td>The BIG-IP stopped answering in the middle of a change for longer than <code>remote_timeout</code>. The tool rolled back and verified, but the stalled step might still complete. Check the device as for <code>CRITICAL</code>.</td>
 </tr>

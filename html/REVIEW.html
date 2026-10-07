@@ -613,6 +613,58 @@ demonstrate any of them; <code>tests/regress.sh</code> holds an inverted version
 while one of its steps is still running is real (a step body runs outside the guard, after its fence), and that
 <code>R_UNLOCK</code>/<code>R_BEAT</code> deserved the same treatment as <code>R_LOCK</code> (they now run under the guard). The first is stated in
 SECURITY.md section 6, item 5.</p>
+<h3 id="7c-findings-of-the-third-review-of-211-fixed-in-212">7c. Findings of the third review (of 2.1.1), fixed in 2.1.2</h3>
+<p>The third review (Codex, <code>gpt-daybreak-blue-latest</code>, medium effort, sandboxed, no network, no BIG-IP) rated
+R1-R7, R9-R13, B1-B4, B6-B8 and B10 fixed, R8, B5 and B9 partly fixed (each because of one of the findings below),
+and none of the second review's eleven demonstrations reproduced. It demonstrated five defects; all were
+confirmed independently before being fixed. <code>tests/regress.sh</code> holds a case for each that fails against 2.1.1.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Finding (severity given)</th>
+<th>Fix</th>
+<th>Test</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>F1</td>
+<td>An install with an unknown outcome kept the lock but its staging files were still deleted, though the install might still be reading them (medium)</td>
+<td>No staging removal while a step's outcome is unknown (also on exit); the next run's two-hour sweep removes it</td>
+<td>regress F1</td>
+</tr>
+<tr>
+<td>F2</td>
+<td>The wrapper still wrote <code>.push-pending</code> through whatever was at that name, so a link planted while the store was writable could truncate another file (high)</td>
+<td><code>.push-pending</code> is written with <code>mktemp</code> + rename; every entry already in the store is checked (owner, mode, type, link count, only <code>NAME/current</code> links) and the wrapper refuses otherwise, naming the entry</td>
+<td>regress F2</td>
+</tr>
+<tr>
+<td>F3</td>
+<td>A pruning step with an unknown outcome was only a warning: <code>UPDATED</code>, exit 0 and the lock released while it might still run (medium)</td>
+<td><code>CRITICAL</code> (deployment verified), lock kept; object pruning not started after an unknown backup pruning</td>
+<td>regress F3</td>
+</tr>
+<tr>
+<td>F4</td>
+<td><code>copy_src</code> measured the file, then opened the path again to copy it: a swap in between got past the 1 MiB limit (low)</td>
+<td>One open; type checked through <code>/proc/self/fd</code>, at most 1 MiB + 1 byte read, size checked on the copy</td>
+<td>regress F4</td>
+</tr>
+<tr>
+<td>F5</td>
+<td>Wrapper refusals printed a blank instead of the unsafe directory (<code>trusted_tree</code> ran in <code>$(...)</code>) (low)</td>
+<td><code>trusted_tree</code> sets globals and is called directly</td>
+<td>regress F5</td>
+</tr>
+</tbody>
+</table>
+<p>Also from this review: the regression stand-in did not move <code>/var/tmp</code>, so the B4 case failed where <code>/var/tmp</code>
+is read-only (fixed). Noted without a demonstration, and left as they are: releasing the lock after a lost
+<code>R_UNLOCK</code> reply leaves the lease to expire (availability only); the wrapper's <code>exec 3&lt;path</code> can still open a
+swapped-in special file before refusing it (refused, nothing copied); the in-flight-step residual of item 5 in
+SECURITY.md section 6.</p>
 <h2 id="8-how-to-report">8. How to report</h2>
 <p>For each finding please give: <strong>title; severity (critical / high / medium / low); the invariant or claim it
 breaks (I1..I12 or a SECURITY.md sentence); a reproducer</strong> (config + command, or canned remote output); the

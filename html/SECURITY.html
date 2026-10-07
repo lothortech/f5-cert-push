@@ -185,7 +185,13 @@ as hostile. The rule it follows: <strong>root never acts through a path an uploa
   cannot change it afterwards.</li>
 <li><strong>The store</strong> (installed certificates) must not be writable by anyone but its owner at all, and its <code>.lock</code> must
   be a regular file owned by the account running the wrapper; otherwise the wrapper refuses to run. A store that
-  was ever writable by others is refused rather than "repaired", since what others left in it would remain.</li>
+  is writable by others is refused rather than "repaired", since what others left in it would remain. Because
+  the current mode says nothing about the past, the wrapper also checks <strong>everything already in the store</strong>:
+  every entry must be owned by root, not writable by group or others, and be a directory, a regular file with a
+  single link, or a <code>NAME/current</code> link into <code>releases/</code>. Whatever another account left there while it could
+  write (a symlink, a hard link to a system file, its own files) fails that check, and the wrapper refuses to
+  run and names it. The wrapper's own markers (<code>.push-pending</code>) are written to a new file and renamed into
+  place, never through an existing name.</li>
 <li><strong>Writing</strong>: root never opens an uploader-controlled path for writing. The <code>FAILED</code> report is written to a
   new file created with <code>mktemp</code> (exclusive create: a planted name cannot be followed) and then renamed over
   <code>FAILED</code>, which replaces the directory entry rather than following it, even if the uploader planted a
@@ -248,7 +254,9 @@ as hostile. The rule it follows: <strong>root never acts through a path an uploa
 <li><strong>Backups of private keys exist indefinitely up to <code>keep</code> runs</strong>, on the BIG-IP and locally. Lower <code>keep</code>
    if that is unacceptable, at the cost of a shorter rollback window.</li>
 <li><strong><code>kill -9</code> or power loss</strong> cannot run cleanup. A staging directory holding a key can remain on the BIG-IP
-   (swept by the next run after two hours; you can remove it by hand: <code>rm -rf /var/tmp/f5-cert-push.*</code>), and
+   (swept by the next run after two hours; you can remove it by hand: <code>rm -rf /var/tmp/f5-cert-push.*</code>). It is
+   also left in place on purpose when a step's outcome is unknown (<code>CRITICAL</code>), since that step may still be
+   using it. And
    a scratch directory can remain locally if tmpfs is not used (it is removed on reboot when it is).</li>
 <li><strong>The BIG-IP's own copy of a key</strong> (the installed object, and the filestore) is, of course, on the BIG-IP.</li>
 <li><strong>Clock changes</strong> affect the timestamped names and expiry arithmetic; the tool assumes a sane clock.</li>

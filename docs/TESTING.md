@@ -7,7 +7,7 @@ There are two suites in `tests/`. Together they are the evidence that the tool b
 |---|---|---|---|
 | `tests/offline.sh` | Linux, bash, openssl; **no BIG-IP** | No (works in a temp dir) | Configuration parsing and validation, injection attempts, selection, certificate validation |
 | `tests/install.sh` | Linux, bash, openssl; **no BIG-IP** | No (works in a temp dir) | `f5-cert-install.sh`: READY handling, validation and rejection, symlink refusal, atomic install, retention, push retry, locking |
-| `tests/regress.sh` | Linux, bash, openssl; **no BIG-IP**; root for one case | No (works in a temp dir) | A regression test for every finding of both independent reviews (R1-R13 and observations of 2.0.0; B1-B10 of 2.1.0), against a local stand-in for the BIG-IP |
+| `tests/regress.sh` | Linux, bash, openssl; **no BIG-IP**; root for one case | No (works in a temp dir) | A regression test for every finding of the three independent reviews (R1-R13 and observations of 2.0.0; B1-B10 of 2.1.0; F1-F5 of 2.1.1), against a local stand-in for the BIG-IP |
 | `tests/f5.sh` | Linux, SSH access to a **lab BIG-IP** | **Yes**: creates and removes `zzz-*` objects | Real deployments, rollback, retention, locking, interruption, partitions, SSH trust |
 
 `tests/lib.sh` holds shared helpers, including a small **test PKI** (root, intermediate, RSA and ECDSA leaves,
@@ -50,8 +50,8 @@ tests/regress.sh                 # as root, to include the real-permission uploa
 ```
 
 It loads the scripts' own functions (without running them) and replaces the BIG-IP with a **local stand-in**:
-the remote scripts run under `bash` with the BIG-IP's paths (`/var/run/f5-cert-push.lock`,
-`/config/filestore`) moved into a temporary directory and `tmsh` replaced by a stub whose exit status the case
+the remote scripts run under `bash` with the BIG-IP's paths (`/var/run/f5-cert-push.lock` and `.guard`,
+`/config/filestore`, the tool's `/var/tmp/f5-cert-push.*` scratch paths) moved into a temporary directory and `tmsh` replaced by a stub whose exit status the case
 chooses. That lets each case set up the exact failure the review described (a lost reply after a commit, a
 `tmsh` that fails silently, a backup reply missing its checksums, a lock that expires while its owner lives, a
 signal at a chosen moment) and require the safe outcome. One case per finding at least; see
@@ -108,6 +108,19 @@ own connections) and pins nothing outside its temporary directory.
 | **s21** lost reply | The reply to the profile switch is dropped **after the BIG-IP committed it** (an `ssh` stand-in discards it): the outcome is read back from the BIG-IP and the deployment completes correctly |
 | **s22** lock taken over | Another "host" takes the BIG-IP lock in the middle of a run: the run is fenced at its next step, changes nothing, fails with exit 1, and does not remove the new owner's lock |
 | **s23** signal during the switch | `SIGTERM` arrives while the profile switch is running on the BIG-IP: the switch finishes, then the run rolls back and verifies (exit 3); both profiles and the virtual server are back on the previous certificate |
+
+## Results for 2.1.2
+
+| Suite | Where | Result |
+|---|---|---|
+| `offline.sh` | webserver-101 (Ubuntu, bash 5.1, OpenSSL 3) | 236 passed |
+| `install.sh` | webserver-101 | 154 passed |
+| `regress.sh` | webserver-101, as root | 56 passed (every case of the three reviews, including the real-permission uploader case) |
+| `regress.sh` | the lab BIG-IP itself (bash 4.2.46, OpenSSL 1.0.2za), as root | 56 passed (F2's clean-install step is skipped there: the wrapper's chain check needs OpenSSL 1.1) |
+| `offline.sh` with `T_SKIP_CERTS=1` | the lab BIG-IP itself | 193 passed |
+| `f5.sh` s1-s23 | lab BIG-IP 17.1.3.4 | **277 passed, 0 failed** |
+| The third review's own demonstrations (`review-evidence/tests.sh`) | webserver-101 | 4 of its 5 demonstrations no longer reproduce; its F5 test still "passes" only because it calls `trusted_tree` inside `$(...)`, which the wrapper no longer does (regress F5 checks the real message) |
+| The new F1-F5 cases against the 2.1.1 scripts | webserver-101 | all five fail, as they should |
 
 ## Results for 2.1.1
 
@@ -183,7 +196,9 @@ Stated plainly so you can decide how much to trust them:
 two production scripts it reports 10 warnings, all reviewed by hand and none a defect: variables that are set
 but not used later, `ls | grep` over directory names already restricted to `YYYYMMDD-HHMMSS`, and a one-item
 loop kept for readability. Its notes are of the same kind, plus `a && b || die` patterns where the right-hand
-side is the error exit, and functions that are only called from traps or through the remote scripts. Run it
+side is the error exit, and functions that are only called from traps or through the remote scripts. For 2.1.2,
+`shellcheck` 0.8.0 on webserver-101 again reports no errors, and exactly the same findings as for 2.1.1: the
+2.1.2 changes add none. Run it
 yourself: `pip install shellcheck-py` (or your package manager), then
 `shellcheck f5-cert-push.sh f5-cert-install.sh tests/*.sh`. The remote scripts are embedded as text; to check
 them, extract them (`define R_... <<'REMOTE_EOF'` blocks) and run `bash -n` and shellcheck on each.

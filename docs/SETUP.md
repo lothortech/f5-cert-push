@@ -105,7 +105,7 @@ Run as root.
 ### 4.1 Install the tools
 
 ```bash
-tar xzf f5-cert-push-2.1.0.tar.gz && cd f5-cert-push
+tar xzf f5-cert-push-2.1.2.tar.gz && cd f5-cert-push
 install -d -m 755 /opt/f5-cert-push
 install -m 750 f5-cert-push.sh f5-cert-install.sh /opt/f5-cert-push/
 sha256sum -c SHA256SUMS 2>/dev/null | grep -E 'f5-cert-(push|install)\.sh'   # optional: verify the copy

@@ -70,7 +70,7 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.1.1"
+readonly VERSION="2.1.2"
 readonly PROG="f5-cert-install"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
@@ -193,9 +193,12 @@ dir_safe() {   # dir_safe PATH
   return 0
 }
 # A path, its real location and every directory above it are dir_safe: nobody
-# else can change where it leads. Prints the real path.
+# else can change where it leads. Sets TRUST_REAL to the real path, or TRUST_BAD
+# to the offending directory. (Do not call it in $(...): the globals would be lost.)
+TRUST_REAL=""
 trusted_tree() {   # trusted_tree PATH
   local real p="" c
+  TRUST_REAL=""; TRUST_BAD=""
   real="$(readlink -f -- "$1" 2>/dev/null)" || { TRUST_BAD="$1"; return 1; }
   [[ "$real" == /* ]] || { TRUST_BAD="$1"; return 1; }
   dir_safe / || { TRUST_BAD=/; return 1; }
@@ -204,7 +207,33 @@ trusted_tree() {   # trusted_tree PATH
     p="${p}/${c}"
     dir_safe "$p" || { TRUST_BAD="$p"; return 1; }
   done
-  printf '%s' "$real"
+  TRUST_REAL="$real"
+}
+# Everything already inside the store must look like what this wrapper makes:
+# owned by root (or us), not writable by group or others, and only directories,
+# regular files with a single link, and NAME/current links into releases/.
+# Sets TRUST_BAD to the first offending entry. This is what catches a store that
+# once was writable by others: whatever they left in it (a planted symlink, a
+# hard link to a system file) is owned by them, writable, has a second link, or
+# is a link the wrapper never makes.
+store_tree_ok() {   # store_tree_ok DIR
+  local bad
+  TRUST_BAD=""
+  bad="$(cd -- "$1" && find . -mindepth 1 \( \( ! -uid 0 ! -uid "$ME_UID" \) \
+           -o \( ! -type l -perm /022 \) -o \( -type f -links +1 \) \
+           -o \( -type l ! \( -path './*/current' ! -path './*/*/*' -lname 'releases/*' ! -lname '*..*' \) \) \
+           -o \( ! -type f ! -type d ! -type l \) \) -print -quit 2>/dev/null)" \
+    || { TRUST_BAD="$1"; return 1; }
+  [[ -z "$bad" ]] || { TRUST_BAD="$1/${bad#./}"; return 1; }
+}
+# Set the "push pending" marker without following whatever is at its name: a new
+# private file renamed over it (rename replaces a link, never the link's target).
+mark_pending() {
+  local tmp
+  tmp="$(mktemp "${STORE}/.push-pending.XXXXXXXX" 2>/dev/null)" || return 1
+  if ! chmod 600 -- "$tmp" || ! mv -fT -- "$tmp" "${STORE}/.push-pending"; then
+    rm -f -- "$tmp"; return 1
+  fi
 }
 # An upload folder: a real directory directly in INCOMING, owned by root (or us),
 # and, if uploaders can write to it, with the sticky bit set.
@@ -500,27 +529,28 @@ main() {
   done
   [[ -x "$PUSH_BIN" ]] || usage_die "f5-cert-push not found or not executable: ${PUSH_BIN}"
   [[ -d "$INCOMING" ]] || usage_die "incoming directory does not exist: ${INCOMING}"
-  local real
-  real="$(trusted_tree "$INCOMING")" \
+  trusted_tree "$INCOMING" \
     || usage_die "refusing to use ${INCOMING}: ${TRUST_BAD} can be changed by someone other than root. Every directory from / down to the upload directory must be owned by root and not writable by group or others (the upload folders inside it: owned by root, mode 3770). See docs/MANUAL-UPLOAD.md."
-  INCOMING="$real"
+  INCOMING="$TRUST_REAL"
 
   if (( STATUS )); then show_status; exit 0; fi
 
   if [[ ! -d "$STORE" ]]; then mkdir -p -- "$STORE" || usage_die "cannot create the store directory ${STORE}"; fi
-  real="$(trusted_tree "$STORE")" \
+  trusted_tree "$STORE" \
     || usage_die "refusing to use ${STORE}: ${TRUST_BAD} can be changed by someone other than root"
-  STORE="$real"
+  STORE="$TRUST_REAL"
   # The store holds private keys and is written by root: unlike an upload folder it
-  # must not be writable by anyone else at all (no sticky-bit allowance). A store
-  # that ever was is refused rather than "repaired" with chmod, because whatever
-  # others left in it would stay.
+  # must not be writable by anyone else at all (no sticky-bit allowance). Such a
+  # store is refused rather than "repaired" with chmod, because whatever others
+  # left in it would stay; and everything already in it must be ours (store_tree_ok).
   local smode
   smode="$(stat -c '%a' -- "$STORE" 2>/dev/null)" || usage_die "cannot use the store directory ${STORE}"
   if (( (8#$smode & 8#022) != 0 )); then
     usage_die "refusing to use ${STORE}: it is writable by group or others (mode ${smode}). It holds private keys: create it as 'install -d -m 700 ${STORE}' (and check what is already in it)"
   fi
   chmod 700 -- "$STORE" || usage_die "cannot use the store directory ${STORE}"
+  store_tree_ok "$STORE" \
+    || usage_die "refusing to use ${STORE}: ${TRUST_BAD} was not made by this wrapper (it is not owned by root, is writable by group or others, is a hard link or is a special file). Someone else may have had write access to the store: check everything in it before using it"
   if [[ -L "${STORE}/.lock" ]] || { [[ -e "${STORE}/.lock" ]] && { [[ ! -f "${STORE}/.lock" ]] || [[ ! -O "${STORE}/.lock" ]]; }; }; then
     usage_die "refusing to use ${STORE}/.lock: it is not a regular file owned by you"
   fi
@@ -554,7 +584,9 @@ main() {
   fi
 
   local push_rc=0 do_it=0
-  if (( ${#INSTALLED[@]} > 0 )); then : > "${STORE}/.push-pending"; fi
+  if (( ${#INSTALLED[@]} > 0 )); then
+    mark_pending || warn "could not write ${STORE}/.push-pending: if this run's push fails, it is retried only by a run with --push-when always"
+  fi
   if (( DO_PUSH )); then
     if [[ "$PUSH_WHEN" == always || -f "${STORE}/.push-pending" ]]; then do_it=1; fi
   fi
@@ -568,7 +600,7 @@ main() {
       rm -f -- "${STORE}/.push-pending"
     else
       warn "the push did not fully succeed (exit ${push_rc}); it will be retried on the next run"
-      : > "${STORE}/.push-pending"
+      mark_pending || warn "could not write ${STORE}/.push-pending: the push is retried only by a run with --push-when always"
     fi
   fi
 

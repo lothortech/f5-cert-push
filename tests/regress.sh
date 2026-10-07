@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Regression tests for the findings of the adversarial review of 2.0.0
-# (R1-R13 and the additional observations; see REVIEW.md, "Fixed issues").
+# Regression tests for the findings of the reviews: the adversarial review of
+# 2.0.0 (R1-R13 and the additional observations), and the code reviews of 2.1.0
+# (B1-B10) and 2.1.1 (F1-F5); see REVIEW.md, "Fixed issues".
 # Each case reproduces the reported failure and requires the safe outcome.
 # Needs no BIG-IP: the script's own functions are loaded and the BIG-IP is
 # replaced by a local stand-in that runs the remote scripts with bash, with the
@@ -48,7 +49,7 @@ load_install() {
 # A local stand-in for the BIG-IP (see the header).
 emu_init() {
   EMU="$(mktemp -d "${TMP}/emu.XXXXXX")"
-  mkdir -p "$EMU/run" "$EMU/fs/files_d/Common_d/certificate_d" "$EMU/fs/files_d/Common_d/certificate_key_d" "$EMU/bin" "$EMU/shared"
+  mkdir -p "$EMU/run" "$EMU/fs/files_d/Common_d/certificate_d" "$EMU/fs/files_d/Common_d/certificate_key_d" "$EMU/bin" "$EMU/shared" "$EMU/vartmp"
   cat > "$EMU/bin/tmsh" <<'EOF'
 #!/usr/bin/env bash
 # tmsh stub: logs its arguments (and stdin when used as a batch), exits TMSH_RC.
@@ -63,6 +64,7 @@ EOF
     s="${s//\/var\/run\/f5-cert-push.lock/${EMU}/run/f5-cert-push.lock}"
     s="${s//\/var\/run\/f5-cert-push.guard/${EMU}/run/f5-cert-push.guard}"
     s="${s//\/config\/filestore/${EMU}/fs}"
+    s="${s//\/var\/tmp\/f5-cert-push./${EMU}/vartmp/f5-cert-push.}"
     printf '%s\n' "$s" | PATH="${EMU}/bin:${PATH}" bash -s -- "$@" 2>>"${WORK}/ssh.err"
   }
   f5_get() { cp -- "$1" "$2"; }
@@ -942,6 +944,139 @@ b10_local_owner_write() {
   [[ "$rc" == 1 && ! -e "$l" && ${#HELD_LOCKS[@]} == 0 ]]
 }
 check "B10: a local lock whose owner cannot be recorded is not taken" b10_local_owner_write
+
+# ---- third review (of 2.1.1): F1-F5 ------------------------------------
+
+f1_unknown_install_keeps_stage() {
+  load_push
+  local stage=/var/tmp/f5-cert-push.abcdef
+  J_PREFIX=site; J_TS=20261006-120000; J_PART=Common; J_CERT=c
+  CERT_HAVE_CHAIN[c]=0; J_CREATED=(); STAGE_DIR="$stage"
+  J_CHANGED=0; J_UNKNOWN=0; J_AUTOROLL=yes; J_DEP=d; J_F5=f; REMOTE_LOCK_KEEP=0
+  f5_mut() { return "$ST_UNKNOWN"; }
+  f5_sh() { echo "$*" >> "${TMP}/f1-f5sh"; }       # any removal would come through here
+  remote_remove_stage() { touch "${TMP}/f1-removed"; STAGE_DIR=""; }
+  lock_release() { echo "keep=$REMOTE_LOCK_KEEP" > "${TMP}/f1-release"; }
+  job_install_versioned >/dev/null 2>&1 && return 1
+  job_abort 'install failed' >/dev/null 2>&1
+  echo "result=$J_RESULT rc=$J_RC $(cat "${TMP}/f1-release") removed=$([[ -e "${TMP}/f1-removed" ]] && echo yes || echo no) STAGE_DIR=${STAGE_DIR}"
+  [[ "$J_RESULT" == CRITICAL && "$J_RC" == 5 && "$(cat "${TMP}/f1-release")" == keep=1 \
+     && ! -e "${TMP}/f1-removed" && ! -e "${TMP}/f1-f5sh" && -z "$STAGE_DIR" ]] || return 1
+  # and an ordinary failure still removes the stage
+  STAGE_DIR="$stage"; J_UNKNOWN=0; REMOTE_LOCK_KEEP=0
+  job_unstage >/dev/null 2>&1
+  [[ -e "${TMP}/f1-removed" && -z "$STAGE_DIR" ]]
+}
+check "F1: an install that never reported keeps its staging files (it may still be reading them)" f1_unknown_install_keeps_stage
+
+f2_store_planted() {
+  local base="${TMP}/f2" rc=0
+  mkdir -p "$base/in/site" "$base/store"
+  chmod 755 "$base/in"; chmod 700 "$base/store"; chmod 3770 "$base/in/site"
+  cp -- "$P/a.pem" "$base/in/site/cert.pem"; cp -- "$P/a.chain.pem" "$base/in/site/chain.pem"
+  cp -- "$P/a.key" "$base/in/site/privkey.pem"; : > "$base/in/site/READY"
+  printf 'PRESERVE ME\n' > "$base/victim"
+  local -a args=(--incoming "$base/in" --store "$base/store" --push-bin "$PUSH" --no-push --allow-older --min-days 0)
+  # a .push-pending link left in a (now private) store: refused, nothing written
+  ln -s "$base/victim" "$base/store/.push-pending"
+  "$INSTALL" "${args[@]}" >"${TMP}/f2.out" 2>&1 || rc=$?
+  echo "symlink: rc=$rc $(grep -o 'refusing[^:]*' "${TMP}/f2.out" | head -1)"
+  [[ "$rc" == 2 && "$(cat "$base/victim")" == 'PRESERVE ME' && -e "$base/in/site/READY" ]] || return 1
+  grep -q -- "$base/store/.push-pending" "${TMP}/f2.out" || return 1
+  # a hard link to an outside file: refused
+  rm -f "$base/store/.push-pending"; ln "$base/victim" "$base/store/.push-pending"; rc=0
+  "$INSTALL" "${args[@]}" >/dev/null 2>&1 || rc=$?
+  echo "hard link: rc=$rc"
+  [[ "$rc" == 2 && "$(cat "$base/victim")" == 'PRESERVE ME' ]] || return 1
+  # a group/other-writable entry deeper in the store: refused
+  rm -f "$base/store/.push-pending"; mkdir -p "$base/store/site/releases"; chmod 777 "$base/store/site/releases"; rc=0
+  "$INSTALL" "${args[@]}" >/dev/null 2>&1 || rc=$?
+  echo "writable entry: rc=$rc"
+  [[ "$rc" == 2 ]] || return 1
+  # a clean store: installed, and .push-pending is a private regular file
+  # (the wrapper's chain check needs OpenSSL 1.1.0+, so not on the BIG-IP itself)
+  if [[ "$(openssl version 2>/dev/null)" == *" 1.0."* ]]; then echo "clean install not checked: OpenSSL 1.0"; return 0; fi
+  rm -rf "$base/store/site"; rc=0
+  "$INSTALL" "${args[@]}" >/dev/null 2>&1 || rc=$?
+  echo "clean: rc=$rc pending=$(stat -c '%F %a' "$base/store/.push-pending" 2>&1)"
+  [[ "$rc" == 0 && -f "$base/store/.push-pending" && ! -L "$base/store/.push-pending" \
+     && "$(stat -c %a "$base/store/.push-pending")" == 600 && -L "$base/store/site/current" ]] || return 1
+  # and the store the wrapper made itself passes its own check on the next run
+  rc=0; "$INSTALL" "${args[@]}" >/dev/null 2>&1 || rc=$?
+  echo "rerun: rc=$rc"; [[ "$rc" == 0 ]]
+}
+check "F2: anything in the store not made by the wrapper (.push-pending link, hard link, writable entry) is refused" f2_store_planted
+
+f3_unknown_prune() {
+  load_push
+  J_KEEP=1; J_MODE=atomic; J_PREFIX=site; F5_PART=Common
+  F5_BACKUP_ROOT="${TMP}/f3-remote"; F5_BACKUP_LOCAL="${TMP}/f3-none"
+  local calls="${TMP}/f3-calls" rc=0
+  # the backup prune never reports: the object prune must not be dispatched
+  f5_mut() { echo x >> "$calls"; return "$ST_UNKNOWN"; }
+  job_prune >/dev/null 2>&1 || rc=$?
+  echo "backups: rc=$rc calls=$(wc -l < "$calls")"
+  [[ "$rc" == 1 && "$(wc -l < "$calls")" == 1 ]] || return 1
+  # the object prune never reports
+  rm -f "$calls"; rc=0
+  f5_mut() { echo x >> "$calls"; [[ "$(wc -l < "$calls")" == 1 ]] && return 0; return "$ST_UNKNOWN"; }
+  job_prune >/dev/null 2>&1 || rc=$?
+  echo "objects: rc=$rc"; [[ "$rc" == 1 ]] || return 1
+  # an ordinary failure is only a warning
+  f5_mut() { return 1; }; rc=0
+  job_prune >/dev/null 2>&1 || rc=$?
+  [[ "$rc" == 0 ]] || return 1
+  # in a deployment: CRITICAL, exit 5, the BIG-IP lock kept
+  job_prune() { return 1; }
+  job_unstage() { :; }
+  lock_release() { echo "keep=$REMOTE_LOCK_KEEP" > "${TMP}/f3-release"; }
+  # the end of run_job (after the deployment is verified), as a function of its own
+  { echo 'f3_tail() {'; sed -n '/^  J_CHANGED=0; JOB_ACTIVE=0$/,/^  lock_release$/p' "$PUSH"; echo '}'; } > "${TMP}/f3-tail.sh"
+  grep -q 'job_prune' "${TMP}/f3-tail.sh" || { echo "could not find the end of run_job"; return 1; }
+  J_CERT=c; CERT_END[c]="Dec 1 00:00:00 2026 GMT"; X_SYNC=standalone; J_DEP=d; J_F5=f; J_TS=t; CONFIG_FILE=x
+  # shellcheck disable=SC1090
+  source "${TMP}/f3-tail.sh"; f3_tail >/dev/null 2>&1
+  echo "result=$J_RESULT rc=$J_RC $(cat "${TMP}/f3-release")"
+  [[ "$J_RESULT" == CRITICAL && "$J_RC" == 5 && "$(cat "${TMP}/f3-release")" == keep=1 ]]
+}
+check "F3: a pruning step that never reported keeps the BIG-IP lock and makes the run CRITICAL" f3_unknown_prune
+
+f4_copy_src_one_open() {
+  load_push
+  local src="${TMP}/f4-src" small="${TMP}/f4-small" big="${TMP}/f4-big" dst="${TMP}/f4-dst" rc=0
+  printf 'small\n' > "$small"; head -c 1048577 /dev/zero > "$big"
+  ln -s "$small" "$src"
+  # swap the link after the first look at the file (the old code then opened it again)
+  wc() { command wc "$@"; command rm -f -- "$src"; command ln -s "$big" "$src"; }
+  copy_src "$src" "$dst" || rc=$?
+  local size; size="$(command wc -c < "$dst" 2>/dev/null || echo none)"
+  echo "rc=$rc size=$size"
+  # either the small file was copied, or the copy was refused; never more than 1 MiB
+  [[ ( "$rc" == 0 && "$size" == 6 ) || ( "$rc" == 1 && ! -e "$dst" ) ]] || return 1
+  # a file over 1 MiB opened directly is refused and leaves nothing behind
+  unset -f wc; rc=0
+  copy_src "$big" "$dst" || rc=$?
+  [[ "$rc" == 1 && ! -e "$dst" ]] || return 1
+  # and an ordinary file is copied as it is
+  rc=0; copy_src "$small" "$dst" || rc=$?
+  [[ "$rc" == 0 && "$(cat "$dst")" == small ]]
+}
+check "F4: copy_src opens the source once: a file swapped after the size check cannot get past the 1 MiB limit" f4_copy_src_one_open
+
+f5_trust_path_named() {
+  load_install
+  local base="${TMP}/f5-open" rc=0
+  mkdir -p "$base/incoming"; chmod 777 "$base"
+  trusted_tree "$base/incoming" || rc=$?
+  echo "rc=$rc TRUST_BAD=$TRUST_BAD"
+  [[ "$rc" == 1 && "$TRUST_BAD" == "$base" ]] || return 1
+  # and the wrapper's refusal names it
+  local out; rc=0
+  out="$("$INSTALL" --incoming "$base/incoming" --store "${TMP}/f5-store" --push-bin "$PUSH" --no-push 2>&1)" || rc=$?
+  echo "$out" | head -2
+  [[ "$rc" == 2 && "$out" == *"${base} can be changed"* ]]
+}
+check "F5: a refused upload or store directory names the directory that is unsafe" f5_trust_path_named
 
 echo
 t_summary

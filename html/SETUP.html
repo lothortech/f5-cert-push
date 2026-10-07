@@ -229,7 +229,7 @@ installer then never has to copy a key across devices.</p>
 <h2 id="4-linux-server-setup">4. Linux server setup</h2>
 <p>Run as root.</p>
 <h3 id="41-install-the-tools">4.1 Install the tools</h3>
-<pre><code class="language-bash">tar xzf f5-cert-push-2.1.0.tar.gz &amp;&amp; cd f5-cert-push
+<pre><code class="language-bash">tar xzf f5-cert-push-2.1.2.tar.gz &amp;&amp; cd f5-cert-push
 install -d -m 755 /opt/f5-cert-push
 install -m 750 f5-cert-push.sh f5-cert-install.sh /opt/f5-cert-push/
 sha256sum -c SHA256SUMS 2&gt;/dev/null | grep -E 'f5-cert-(push|install)\.sh'   # optional: verify the copy

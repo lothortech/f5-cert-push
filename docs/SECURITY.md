@@ -144,7 +144,13 @@ as hostile. The rule it follows: **root never acts through a path an uploader ca
   cannot change it afterwards.
 - **The store** (installed certificates) must not be writable by anyone but its owner at all, and its `.lock` must
   be a regular file owned by the account running the wrapper; otherwise the wrapper refuses to run. A store that
-  was ever writable by others is refused rather than "repaired", since what others left in it would remain.
+  is writable by others is refused rather than "repaired", since what others left in it would remain. Because
+  the current mode says nothing about the past, the wrapper also checks **everything already in the store**:
+  every entry must be owned by root, not writable by group or others, and be a directory, a regular file with a
+  single link, or a `NAME/current` link into `releases/`. Whatever another account left there while it could
+  write (a symlink, a hard link to a system file, its own files) fails that check, and the wrapper refuses to
+  run and names it. The wrapper's own markers (`.push-pending`) are written to a new file and renamed into
+  place, never through an existing name.
 - **Writing**: root never opens an uploader-controlled path for writing. The `FAILED` report is written to a
   new file created with `mktemp` (exclusive create: a planted name cannot be followed) and then renamed over
   `FAILED`, which replaces the directory entry rather than following it, even if the uploader planted a
@@ -181,7 +187,9 @@ The `tests/regress.sh` suite checks this as an unprivileged uploader against the
 1. **Backups of private keys exist indefinitely up to `keep` runs**, on the BIG-IP and locally. Lower `keep`
    if that is unacceptable, at the cost of a shorter rollback window.
 2. **`kill -9` or power loss** cannot run cleanup. A staging directory holding a key can remain on the BIG-IP
-   (swept by the next run after two hours; you can remove it by hand: `rm -rf /var/tmp/f5-cert-push.*`), and
+   (swept by the next run after two hours; you can remove it by hand: `rm -rf /var/tmp/f5-cert-push.*`). It is
+   also left in place on purpose when a step's outcome is unknown (`CRITICAL`), since that step may still be
+   using it. And
    a scratch directory can remain locally if tmpfs is not used (it is removed on reboot when it is).
 3. **The BIG-IP's own copy of a key** (the installed object, and the filestore) is, of course, on the BIG-IP.
 4. **Clock changes** affect the timestamped names and expiry arithmetic; the tool assumes a sane clock.

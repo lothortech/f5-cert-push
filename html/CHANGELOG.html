@@ -28,6 +28,34 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 @media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
 @media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
 </style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html" class="cur">Changelog</a></nav><main><h1 id="changelog">Changelog</h1>
+<h2 id="212">2.1.2</h2>
+<p>Fixes for every finding of the third independent review (of 2.1.1; <code>F1</code>-<code>F5</code>, report summarised in <code>REVIEW.md</code>
+section 7c). Each has a regression test in <code>tests/regress.sh</code> that fails against 2.1.1 and passes now.</p>
+<ul>
+<li><strong>Upload wrapper store (F2).</strong> The <code>.push-pending</code> marker is now written like <code>FAILED</code>: a new private file
+  renamed into place, so a link planted at that name is replaced, never followed (2.1.1 checked <code>.lock</code> but
+  still wrote through <code>.push-pending</code>). And before using the store, the wrapper now checks <strong>everything already
+  in it</strong>: each entry must be owned by root, not writable by group or others, a directory, a regular file with a
+  single link, or a <code>NAME/current</code> link into <code>releases/</code>. Anything else (what another account could have left
+  while the store was writable) makes the wrapper refuse to run and name the entry. <strong>(config)</strong> see below.</li>
+<li><strong>Unknown install outcome (F1).</strong> When an install step never reports its outcome, its staging directory on the
+  BIG-IP is now left in place (the install may still be reading it); 2.1.1 kept the lock but deleted the stage.
+  The next run that stages on that BIG-IP removes staging directories older than two hours, as before.</li>
+<li><strong>Unknown pruning outcome (F3).</strong> If pruning old backups or old certificate objects on the BIG-IP never reports
+  its outcome, the deployment (already verified) is reported <code>CRITICAL</code> (exit 5) and the BIG-IP lock is kept,
+  because the pruning may still be running; the object pruning is not started after an unknown backup pruning.
+  In 2.1.1 this was only a warning, the run reported <code>UPDATED</code> and released the lock.</li>
+<li><strong>Reading the certificate files (F4).</strong> Each configured file is opened once: the type check, the 1 MiB limit
+  and the copy all apply to that one open file (2.1.1 measured the path, then opened it again to copy).</li>
+<li><strong>Refusal messages (F5)</strong> from the upload wrapper's directory checks name the directory that is unsafe again
+  (the name was lost in a subshell and printed blank).</li>
+<li>Tests: the regression suite's BIG-IP stand-in now also moves the tool's <code>/var/tmp</code> scratch paths, so the B4 case
+  no longer depends on <code>/var/tmp</code> being writable.</li>
+<li><strong>(config)</strong> An existing store that holds anything the wrapper did not make (for example files owned by
+  another account, a group-writable directory, or an extra symlink) is now refused with the name of the entry.
+  Stores set up as documented and only written by the wrapper are unaffected; so is repointing <code>NAME/current</code>
+  by hand (<code>ln -sfn releases/TS NAME/current</code>, as root).</li>
+</ul>
 <h2 id="211">2.1.1</h2>
 <p>Fixes for every finding of the second independent review (of 2.1.0; <code>B1</code>-<code>B10</code>, report summarised in
 <code>REVIEW.md</code> section 7b). Each has a regression test in <code>tests/regress.sh</code> built from the reviewer's own

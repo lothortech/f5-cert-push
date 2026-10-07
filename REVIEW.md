@@ -239,6 +239,27 @@ while one of its steps is still running is real (a step body runs outside the gu
 `R_UNLOCK`/`R_BEAT` deserved the same treatment as `R_LOCK` (they now run under the guard). The first is stated in
 SECURITY.md section 6, item 5.
 
+### 7c. Findings of the third review (of 2.1.1), fixed in 2.1.2
+
+The third review (Codex, `gpt-daybreak-blue-latest`, medium effort, sandboxed, no network, no BIG-IP) rated
+R1-R7, R9-R13, B1-B4, B6-B8 and B10 fixed, R8, B5 and B9 partly fixed (each because of one of the findings below),
+and none of the second review's eleven demonstrations reproduced. It demonstrated five defects; all were
+confirmed independently before being fixed. `tests/regress.sh` holds a case for each that fails against 2.1.1.
+
+| # | Finding (severity given) | Fix | Test |
+|---|---|---|---|
+| F1 | An install with an unknown outcome kept the lock but its staging files were still deleted, though the install might still be reading them (medium) | No staging removal while a step's outcome is unknown (also on exit); the next run's two-hour sweep removes it | regress F1 |
+| F2 | The wrapper still wrote `.push-pending` through whatever was at that name, so a link planted while the store was writable could truncate another file (high) | `.push-pending` is written with `mktemp` + rename; every entry already in the store is checked (owner, mode, type, link count, only `NAME/current` links) and the wrapper refuses otherwise, naming the entry | regress F2 |
+| F3 | A pruning step with an unknown outcome was only a warning: `UPDATED`, exit 0 and the lock released while it might still run (medium) | `CRITICAL` (deployment verified), lock kept; object pruning not started after an unknown backup pruning | regress F3 |
+| F4 | `copy_src` measured the file, then opened the path again to copy it: a swap in between got past the 1 MiB limit (low) | One open; type checked through `/proc/self/fd`, at most 1 MiB + 1 byte read, size checked on the copy | regress F4 |
+| F5 | Wrapper refusals printed a blank instead of the unsafe directory (`trusted_tree` ran in `$(...)`) (low) | `trusted_tree` sets globals and is called directly | regress F5 |
+
+Also from this review: the regression stand-in did not move `/var/tmp`, so the B4 case failed where `/var/tmp`
+is read-only (fixed). Noted without a demonstration, and left as they are: releasing the lock after a lost
+`R_UNLOCK` reply leaves the lease to expire (availability only); the wrapper's `exec 3<path` can still open a
+swapped-in special file before refusing it (refused, nothing copied); the in-flight-step residual of item 5 in
+SECURITY.md section 6.
+
 ## 8. How to report
 
 For each finding please give: **title; severity (critical / high / medium / low); the invariant or claim it
