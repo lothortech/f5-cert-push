@@ -29,7 +29,7 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.2.0"
+readonly VERSION="2.2.1"
 readonly PROG="f5-cert-push"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
@@ -171,8 +171,19 @@ signal_finish() {
 # job_abort does (objects may have been created and removed). Not after CRITICAL.
 signal_resync() {
   if [[ -n "${J_SYNC_G:-}" ]] && (( J_SYNC_PRE && ! REMOTE_LOCK_KEEP )) && [[ "$J_RESULT" != CRITICAL ]]; then
-    job_sync ifneeded || J_MSG+="; and device group ${J_SYNC_G} could not be synchronised afterwards (${SYNC_ERR})"
+    local src=0
+    job_sync ifneeded || src=$?
+    if (( src == 2 )); then sync_unknown_after_recovery
+    elif (( src != 0 )); then J_MSG+="; and device group ${J_SYNC_G} could not be synchronised afterwards (${SYNC_ERR})"; fi
   fi
+}
+
+# A recovery's config-sync did not report its outcome: it may still be copying this
+# unit's configuration. CRITICAL, and the BIG-IP lock is kept.
+sync_unknown_after_recovery() {
+  J_RESULT=CRITICAL; J_RC="${EX_CRITICAL}"; REMOTE_LOCK_KEEP=1; J_UNKNOWN=1
+  J_MSG+="; and the config-sync of device group ${J_SYNC_G} afterwards did not report its outcome (${SYNC_ERR}). The BIG-IP lock is left in place; check 'tmsh show cm sync-status'"
+  err "${J_MSG}"
 }
 
 # Exit after a signal with the most severe result of the whole run (as main does),
@@ -1747,7 +1758,7 @@ declare -A DG_TYPE=() DG_AUTO=() DG_MEM=() DG_STAT=() DG_CID=()
 # Config-sync: the device group this job synchronises (empty: none), whether it was
 # In Sync before this run changed anything, and what each active unit's job left
 # for its peers: PEER_DONE["DEPLOY|DEVICE"] = "synced|F5" "uptodate|F5" "failed|F5".
-J_SYNC_G="" J_SYNC_PRE=0 SYNC_ERR="" PEER_PASS=0
+J_SYNC_G="" J_SYNC_PRE=0 J_SYNC_BASE="" SYNC_ERR="" PEER_PASS=0
 declare -A PEER_DONE=()
 declare -A PR_STATE=() PR_INH=() OBJ_FP=() OBJ_EXP=() OBJ_OK=() OBJ_KEYPUB=() OBJ_CERTS=()
 declare -a ENT_LIST=()
@@ -1786,7 +1797,7 @@ job_init() {   # job_init DEPLOY F5NAME
   J_VFROM="$(eff verify_from "$sd")"
   J_RC=0; J_MSG=""; J_RESULT=""; J_CHANGED=0; J_UNKNOWN=0; J_BDIR_R=""; J_BDIR_L=""
   J_PROF=(); J_VERIFY=(); J_TARGETS=(); J_CREATED=()
-  J_SYNC_G=""; J_SYNC_PRE=0; SYNC_ERR=""
+  J_SYNC_G=""; J_SYNC_PRE=0; J_SYNC_BASE=""; SYNC_ERR=""
   while IFS= read -r line; do [[ -n "$line" ]] && J_PROF+=("$line"); done <<<"${CFG[$sd|profile]-}"
   while IFS= read -r line; do [[ -n "$line" ]] && J_VERIFY+=("$line"); done <<<"${CFG[$sd|verify]-}"
   if (( ${#J_PROF[@]} > 0 )); then J_MODE=atomic; else J_MODE=objects; fi
@@ -1911,8 +1922,9 @@ sync_select() {
 sync_precheck() {
   local st
   [[ -n "$J_SYNC_G" ]] || return 0
-  st="${DG_STAT[$J_SYNC_G]:-unknown}"
-  if [[ "$st" != "In Sync" ]]; then
+  if ! sync_baseline; then
+    st="${SS_STATUS:-unknown}"
+    if [[ "$st" == "In Sync" ]]; then st="In Sync, but its members report different last commits"; fi
     job_fail "${EX_ERR}" "device group ${J_SYNC_G} is '${st}', not In Sync. Synchronising after this deployment would also copy whatever else is pending to $(sync_peers). Resolve the group first (check what differs, then sync from the unit whose configuration is right: tmsh run cm config-sync to-group ${J_SYNC_G}), or set sync = no for this deployment"
     return 1
   fi
@@ -1920,14 +1932,26 @@ sync_precheck() {
   return 0
 }
 
+# Read the group now; succeed only if it is In Sync with the same last commit on
+# every member, and remember this unit's commit (J_SYNC_BASE): the sync after a
+# change must show a NEWER commit everywhere, never this one.
+sync_baseline() {
+  J_SYNC_BASE=""
+  sync_state "$J_SYNC_G" || return 1
+  [[ "$SS_STATUS" == "In Sync" && "$SS_SAME" == 1 && -n "$SS_SELF" ]] || return 1
+  J_SYNC_BASE="$SS_SELF"
+  return 0
+}
+
 # Read the group's state now: SS_STATUS, and SS_SAME=1 when every member reports
 # the same last commit (the peers have loaded exactly this unit's configuration).
-sync_state() {   # sync_state GROUP
+sync_state() {   # sync_state GROUP   -> SS_STATUS, SS_SAME, SS_SELF (this unit's last commit)
   local g="$1" out k m first="" same=1 n=0
-  SS_STATUS=""; SS_SAME=0
+  SS_STATUS=""; SS_SAME=0; SS_SELF=""
   out="$(f5_sh "${R_SYNCSTATE}" 2>/dev/null)" || return 1
   parse_sync_lines "$out" state
   SS_STATUS="${DG_STAT[$g]:-}"
+  SS_SELF="${DG_CID[${g}:${X_SELF}]:-}"
   for m in ${DG_MEM[$g]//,/ }; do
     k="${DG_CID[${g}:${m}]:-}"
     [[ -n "$k" ]] || { same=0; continue; }
@@ -1939,11 +1963,20 @@ sync_state() {   # sync_state GROUP
 }
 
 # Synchronise the job's device group and wait until every member has this unit's
-# configuration. "always" after a change; "ifneeded" only when it is not In Sync.
-job_sync() {   # job_sync always|ifneeded   -> 0 in sync, 1 not (SYNC_ERR says why)
+# configuration: In Sync, every member on the same last commit, and that commit is
+# NEWER than the one recorded before the change (J_SYNC_BASE), so an old snapshot
+# can never pass. "always" after a deployment; "ifneeded" after a recovery (sync only
+# if the members differ now).
+# Returns 0 synchronised, 1 not (SYNC_ERR says why), 2 the config-sync step did not
+# report its outcome and the group never showed the new commit: it may still be
+# running, so the caller reports CRITICAL and keeps the BIG-IP lock.
+job_sync() {   # job_sync always|ifneeded
   local g="$J_SYNC_G" out rc=0 limit deadline
   SYNC_ERR=""
   [[ -n "$g" ]] || return 0
+  # Without the commit recorded before the change there is nothing to prove the sync
+  # against: never claim success then (callers always record it first).
+  if [[ -z "$J_SYNC_BASE" ]]; then SYNC_ERR="no commit was recorded for device group ${g} before the change; not synchronising it"; return 1; fi
   limit=$(( 10#$(eff sync_timeout "f5:${J_F5}") ))
   if [[ "$1" == ifneeded ]] && sync_state "$g" && [[ "$SS_STATUS" == "In Sync" && "$SS_SAME" == 1 ]]; then
     return 0
@@ -1963,14 +1996,18 @@ job_sync() {   # job_sync always|ifneeded   -> 0 in sync, 1 not (SYNC_ERR says w
   fi
   deadline=$(( SECONDS + limit ))
   while :; do
-    if sync_state "$g" && [[ "$SS_STATUS" == "In Sync" && "$SS_SAME" == 1 ]]; then
-      ok "device group ${g} is In Sync: $(sync_peers) loaded this unit's configuration"
+    if sync_state "$g" && [[ "$SS_STATUS" == "In Sync" && "$SS_SAME" == 1 && -n "$SS_SELF" && "$SS_SELF" != "$J_SYNC_BASE" ]]; then
+      ok "device group ${g} is In Sync: $(sync_peers) loaded this unit's new configuration"
       return 0
     fi
     (( SECONDS < deadline )) || break
     sleep 3
   done
-  SYNC_ERR="device group ${g} did not report In Sync with matching commits within ${limit}s (last status: ${SS_STATUS:-unknown})"
+  if (( rc == ST_UNKNOWN )); then
+    SYNC_ERR="the config-sync to ${g} did not report its outcome, and the group did not show the new configuration on every member within ${limit}s (last status: ${SS_STATUS:-unknown}); the sync may still be running"
+    return 2
+  fi
+  SYNC_ERR="device group ${g} did not report In Sync with this unit's new commit on every member within ${limit}s (last status: ${SS_STATUS:-unknown})"
   return 1
 }
 
@@ -2989,9 +3026,17 @@ run_job() {   # run_job DEPLOY F5NAME   -> sets J_RESULT, J_RC, J_MSG
   if (( pruned )); then
     J_RESULT=UPDATED; J_RC="${EX_OK}"; J_MSG="deployed; expires ${CERT_END[$J_CERT]}"
     if [[ -n "$J_SYNC_G" ]]; then
-      if job_sync always; then
+      local src=0
+      job_sync always || src=$?
+      if (( src == 0 )); then
         J_MSG+="; synchronised to $(sync_peers)"
         peer_mark synced
+      elif (( src == 2 )); then
+        # The sync may still be running: keep other runs out, like any unresolved step.
+        J_RESULT=CRITICAL; J_RC="${EX_CRITICAL}"; REMOTE_LOCK_KEEP=1; J_UNKNOWN=1
+        J_MSG="deployed and verified on this unit (expires ${CERT_END[$J_CERT]}), but the device group was not confirmed synchronised: ${SYNC_ERR}. The BIG-IP lock is left in place. Check 'tmsh show cm sync-status' on this unit"
+        err "${J_MSG}"
+        peer_mark failed
       else
         # Live and verified here; the peers still have the previous certificate.
         J_RESULT=SYNC_FAILED; J_RC="${EX_ERR}"
@@ -3025,7 +3070,10 @@ job_abort() {   # job_abort REASON
   # and removed: synchronise so the group is In Sync again for the next run. Not after
   # CRITICAL: the state is not known, and must not be copied to the peers.
   if [[ -n "$J_SYNC_G" ]] && (( J_SYNC_PRE && ! REMOTE_LOCK_KEEP )) && [[ "$J_RESULT" != CRITICAL ]]; then
-    if ! job_sync ifneeded; then
+    local src=0
+    job_sync ifneeded || src=$?
+    if (( src == 2 )); then sync_unknown_after_recovery
+    elif (( src != 0 )); then
       J_MSG+="; and device group ${J_SYNC_G} could not be synchronised afterwards (${SYNC_ERR}): check 'tmsh show cm sync-status'"
       warn "device group ${J_SYNC_G} could not be synchronised after the recovery: ${SYNC_ERR}"
     fi
@@ -3235,14 +3283,20 @@ discover_one() {   # discover_one F5NAME   -> prints the report; appends to D_RO
   echo "== ${f5n} (${F5_HOST}): ${X_SELF:-unknown device}, BIG-IP ${D_VER[$f5n]:-?}, ${D_FO[$f5n]:-unknown}" | sanitize
   # The sync-failover group this unit shares with others (what a deployment syncs).
   key="standalone|${f5n}"
+  local nsf=0
   for g in $(printf '%s\n' "${!DG_TYPE[@]}" | sort); do
     csv_has "$X_SELF" "${DG_MEM[$g]}" || continue
     printf '   device group %-22s %-14s auto-sync %-9s %-16s members: %s\n' "$g" "${DG_TYPE[$g]}" "${DG_AUTO[$g]:-disabled}" "${DG_STAT[$g]:-(status unknown)}" "${DG_MEM[$g]//,/, }" | sanitize
     if [[ "${DG_TYPE[$g]}" == sync-failover && "${DG_MEM[$g]}" == *,* ]]; then
+      nsf=$((nsf + 1))
       # shellcheck disable=SC2086   # the member list is split on purpose
       key="${g}|$(printf '%s\n' ${DG_MEM[$g]//,/ } | sort | paste -sd, -)"
     fi
   done
+  if (( nsf > 1 )); then
+    warn "${f5n} is in ${nsf} sync-failover device groups: set sync_group in its [f5:] section; the draft treats it on its own"
+    key="standalone|${f5n}"
+  fi
   D_PAIR[$f5n]="$key"
 
   out="$(f5_sh "${R_DISCOVER}")" || rc=$?
@@ -3362,8 +3416,11 @@ write_draft_config() {   # write_draft_config FILE F5NAME...
         local u
         for u in $(deploy_f5s "$d"); do
           [[ ", ${pair_units[$pairkey]}," == *", ${u},"* ]] || continue
+          # a bare profile covers all its entries; PROFILE:ENTRY covers that entry only
           while IFS= read -r line; do
-            [[ "$(profile_fq "${line%%:*}")" == "$(profile_fq "$p")" ]] && covered=1
+            [[ -n "$line" ]] || continue
+            [[ "$(profile_fq "${line%%:*}")" == "$(profile_fq "$p")" ]] || continue
+            if [[ "$line" != *:* || "${line#*:}" == "$en" ]]; then covered=1; fi
           done <<<"${CFG[deploy:$d|profile]-}"
         done
       done
@@ -3421,7 +3478,7 @@ write_draft_config() {   # write_draft_config FILE F5NAME...
         for r in ${D_VS[@]+"${D_VS[@]}"}; do
           IFS='|' read -r f5n d _ hp <<<"$r"
           [[ "$f5n" == "$src" && "$d" == "$pl" && -n "$hp" ]] || continue
-          sni=""; [[ -n "$cnv" && "$cnv" != \** ]] && sni=" ${cnv}"
+          sni=""; [[ "$cnv" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] && sni=" ${cnv}"
           [[ -n "${vlines[$hp]:-}" ]] && continue
           vlines[$hp]=1
           body+=("verify  = ${hp}${sni}")
@@ -3434,8 +3491,13 @@ write_draft_config() {   # write_draft_config FILE F5NAME...
     info "every profile entry found is already covered by a deployment; not writing ${file}"
     return 0
   fi
-  ( umask 077
-    {
+  # Written to a new private file beside the target, then hard-linked to the
+  # target name: link(2) fails if ANYTHING is there (a file or a symlink planted
+  # meanwhile) and never follows it.
+  local dir tmp
+  dir="$(dirname -- "$file")"
+  tmp="$(umask 077; mktemp "${dir}/.f5-cert-push-draft.XXXXXXXX" 2>/dev/null)" || { err "cannot create a file in ${dir}"; return 1; }
+  if ! {
       cat -- "$CONFIG_FILE"
       echo
       echo "############################################################################"
@@ -3443,8 +3505,13 @@ write_draft_config() {   # write_draft_config FILE F5NAME...
       echo "# for every client-ssl profile entry that no deployment covered yet."
       echo "############################################################################"
       printf '%s\n' "${body[@]}"
-    } > "$file"
-  ) || { err "cannot write ${file}"; return 1; }
+    } > "$tmp"; then
+    rm -f -- "$tmp"; err "cannot write ${file}"; return 1
+  fi
+  if ! ln -- "$tmp" "$file" 2>/dev/null; then
+    rm -f -- "$tmp"; err "not writing ${file}: something already exists at that name"; return 1
+  fi
+  rm -f -- "$tmp"
   ok "wrote ${file}: your configuration plus the suggested sections. Edit the certificate paths, review each deployment, set enabled = yes, then: ${PROG} --config ${file} --validate"
   return 0
 }
@@ -3531,7 +3598,8 @@ action_rollback() {
       info "${J_MSG}"; lock_release; f5_close; record_result "$JOB_TAG"; continue
     fi
     if ! { job_gate && sync_select; }; then J_RESULT=FAILED; lock_release; f5_close; record_result "$JOB_TAG"; continue; fi
-    local pre_sync="${DG_STAT[$J_SYNC_G]:-}"
+    local pre_ok=0
+    if [[ -n "$J_SYNC_G" ]] && sync_baseline; then pre_ok=1; fi
     d="${WORK}/restore.${f5}.${J_PREFIX}.${J_TS}"
     if ! fetch_backup_set "$d" || ! verify_backup_set "$d" "$J_TS"; then
       job_fail "${EX_ERR}" "backup set ${J_TS} cannot be used: ${VB_ERR}. Nothing was changed."
@@ -3548,15 +3616,23 @@ action_rollback() {
     if (( vrc == 0 )); then
       J_CHANGED=0; J_RC=0; J_RESULT=RESTORED; J_MSG="restored the state before ${J_TS} (verified)"; ok "${J_MSG}"
       if [[ -n "$J_SYNC_G" ]]; then
-        if [[ "$pre_sync" != "In Sync" ]]; then
-          J_MSG+="; NOT synchronised: device group ${J_SYNC_G} was '${pre_sync:-unknown}' before the rollback, so syncing could copy other changes. Check it and sync it yourself"
+        local src=0
+        if (( ! pre_ok )); then
+          J_MSG+="; NOT synchronised: device group ${J_SYNC_G} was not In Sync (with the same commit on every member) before the rollback, so syncing could copy other changes. Check it and sync it yourself"
           warn "device group ${J_SYNC_G} was not In Sync before the rollback; not synchronising it"
-        elif job_sync always; then
-          J_MSG+="; synchronised to $(sync_peers)"
         else
-          J_RC="${EX_ERR}"; J_RESULT=NOT_SYNCED
-          J_MSG+="; but NOT synchronised: ${SYNC_ERR}. On this unit run 'tmsh run cm config-sync to-group ${J_SYNC_G}'"
-          err "${J_MSG}"
+          job_sync ifneeded || src=$?
+          if (( src == 0 )); then
+            J_MSG+="; synchronised to $(sync_peers)"
+          elif (( src == 2 )); then
+            J_RC="${EX_CRITICAL}"; J_RESULT=CRITICAL; REMOTE_LOCK_KEEP=1
+            J_MSG+="; but the config-sync did not report its outcome (${SYNC_ERR}). The BIG-IP lock is left in place; check 'tmsh show cm sync-status'"
+            err "${J_MSG}"
+          else
+            J_RC="${EX_ERR}"; J_RESULT=NOT_SYNCED
+            J_MSG+="; but NOT synchronised: ${SYNC_ERR}. On this unit run 'tmsh run cm config-sync to-group ${J_SYNC_G}'"
+            err "${J_MSG}"
+          fi
         fi
       fi
     elif (( vrc == 10 )); then

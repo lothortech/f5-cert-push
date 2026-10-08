@@ -28,6 +28,28 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 @media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
 @media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
 </style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html" class="cur">Changelog</a></nav><main><h1 id="changelog">Changelog</h1>
+<h2 id="221">2.2.1</h2>
+<p>Fixes for every finding of the fourth independent review (of 2.2.0; <code>G1</code>-<code>G7</code>, summarised in <code>REVIEW.md</code>
+section 7d). Each has a regression test in <code>tests/regress.sh</code> that fails against 2.2.0 and passes now.</p>
+<ul>
+<li><strong>Pre-change check (G1).</strong> The device group is read afresh just before the backup, and must be In Sync
+  <strong>and</strong> show the same last commit on every member; "In Sync" with differing commits is refused.</li>
+<li><strong>Proof of the sync (G2).</strong> The tool records its own unit's last commit before changing anything. After the
+  sync it accepts only a <strong>newer</strong> commit, identical on every member; the unchanged pre-change state can no
+  longer pass as proof. With no recorded commit it never claims success.</li>
+<li><strong>Unknown sync outcome (G3).</strong> If the config-sync step does not report its outcome and the group never shows
+  the new commit, the run is <code>CRITICAL</code> (exit 5) and keeps the BIG-IP lock, as for any unresolved step (it was
+  <code>SYNC_FAILED</code> and released the lock). The same applies to the re-sync after a recovery and after <code>--rollback</code>.</li>
+<li><strong><code>--write-config</code> (G4)</strong> writes to a new private file and hard-links it to the requested name, which fails if
+  anything (a file or a symlink planted while discovery ran) is there; it never writes through a link.</li>
+<li><strong>Draft coverage (G5).</strong> A deployment for one entry of a profile (<code>profile = site:rsa</code>) no longer hides the
+  profile's other entries from the draft.</li>
+<li><strong>Draft verify lines (G6)</strong> use the certificate's CN as the SNI name only when it is a host name; a CN with
+  spaces no longer makes the draft invalid.</li>
+<li><strong>Documentation (G7):</strong> the README and OPERATIONS limitations no longer say HA sync is manual.</li>
+<li><code>--discover</code>: a unit in several sync-failover groups is no longer paired by guesswork; it is flagged (set
+  <code>sync_group</code>) and drafted on its own. <code>--rollback</code> re-syncs only if the group's members differ.</li>
+</ul>
 <h2 id="220">2.2.0</h2>
 <h3 id="ha-pairs-config-sync-with-verification">HA pairs: config-sync, with verification</h3>
 <ul>

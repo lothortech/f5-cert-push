@@ -107,8 +107,21 @@ own connections) and pins nothing outside its temporary directory.
 | **s19** local verification | `verify_from = local` against a local TLS server: match passes, mismatch rolls back |
 | **s21** lost reply | The reply to the profile switch is dropped **after the BIG-IP committed it** (an `ssh` stand-in discards it): the outcome is read back from the BIG-IP and the deployment completes correctly |
 | **s22** lock taken over | Another "host" takes the BIG-IP lock in the middle of a run: the run is fenced at its next step, changes nothing, fails with exit 1, and does not remove the new owner's lock |
-| **p1-p8** HA pair (only with `F5_TEST_PEER_HOST`) | p1 `--discover` of both units shows the device group, sync status and virtual servers, and `--write-config` writes a valid draft (both units in one deployment, entries named, verify lines); p2 deploy to the active unit (standby listed first): synced, confirmed, standby `IN_SYNC` with the same objects, saved on the standby, no locks left; re-run is `UPTODATE` + `IN_SYNC`; p3 a pending unsynchronised change refuses the deploy with nothing changed and no backup; p4 a failed verification rolls back and leaves the pair In Sync on the old certificate; p5 `--rollback` restores and synchronises; p6 `sync = no` leaves the standby alone and says so; p7 after a **failover** the same file deploys to the new active unit; p8 `SIGTERM` during the switch: rolled back and the pair left In Sync |
+| **p1-p9** HA pair (only with `F5_TEST_PEER_HOST`) | p1 `--discover` of both units shows the device group, sync status and virtual servers, and `--write-config` writes a valid draft (both units in one deployment, entries named, verify lines); p2 deploy to the active unit (standby listed first): synced, confirmed, standby `IN_SYNC` with the same objects, saved on the standby, no locks left; re-run is `UPTODATE` + `IN_SYNC`; p3 a pending unsynchronised change refuses the deploy with nothing changed and no backup; p4 a failed verification rolls back and leaves the pair In Sync on the old certificate; p5 `--rollback` restores and synchronises; p6 `sync = no` leaves the standby alone and says so; p7 after a **failover** the same file deploys to the new active unit; p8 `SIGTERM` during the switch: rolled back and the pair left In Sync; p9 nine bad certificates (expired, not yet valid, within `min_days_valid`, key from another certificate, chain from another CA, passphrase-protected key, truncated file, certificate and chain in `cert`, empty key) are each refused with the reason, nothing changed on either unit, no backup, pair still In Sync; then a good certificate deploys, syncs (`IN_SYNC`) and is served |
 | **s23** signal during the switch | `SIGTERM` arrives while the profile switch is running on the BIG-IP: the switch finishes, then the run rolls back and verifies (exit 3); both profiles and the virtual server are back on the previous certificate |
+
+## Results for 2.2.1
+
+| Suite | Where | Result |
+|---|---|---|
+| `offline.sh` | webserver-101 (Ubuntu, bash 5.1, OpenSSL 3) | 236 passed |
+| `install.sh` | webserver-101 | 154 passed |
+| `regress.sh` | webserver-101, as root | 69 passed (every case of the four reviews, the sync/discovery cases, and the real-permission uploader case) |
+| `regress.sh` | the lab BIG-IP itself (bash 4.2.46, OpenSSL 1.0.2za), as root | 69 passed |
+| `offline.sh` with `T_SKIP_CERTS=1` | the lab BIG-IP itself | 193 passed |
+| `f5.sh` s1-s23 + p1-p9 | lab HA pair of BIG-IP 17.1.3.4 VE (f5a active, f5b standby) | **403 passed, 0 failed** (including the p7 failover and back, and p9: nine bad certificates refused with the pair untouched, then a good one deployed, synced and served) |
+| The new G1-G7 cases against the 2.2.0 scripts | webserver-101 | all seven fail, as they should |
+| The fourth review's demonstrations | webserver-101 | none reproduces (its unknown-sync case now stops earlier, at the missing baseline commit, which its harness does not set; regress G3 covers the real flow) |
 
 ## Results for 2.2.0
 

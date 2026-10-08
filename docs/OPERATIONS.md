@@ -406,7 +406,9 @@ Run with `--dry-run` first; it reads everything a deploy would and prints the pl
 - **client-ssl profiles only.** `server-ssl` profiles, APM, iRules that reference certificates by name, and
   other consumers are not updated. The optional fixed-name objects exist for those.
 - **Private keys must be unencrypted.** Encrypted keys are refused.
-- **HA synchronisation is manual** (section 5).
+- **HA pairs** (section 5): config-sync is run only for a sync-failover device group that was In Sync before
+  the run, and confirmed by the members' commits. Other HA designs (sync-only groups, several sync-failover
+  groups without `sync_group`, pairs synchronised by other means) need `sync = no` and a manual sync.
 - **"Up to date" is decided by the leaf certificate's fingerprint** for profiles. If only the chain
   (intermediates) changes while the leaf stays the same, the tool sees nothing to do; use `--force` to
   redeploy. The fixed-name objects (`fixed_names = yes`, or no profile configured) are compared completely:

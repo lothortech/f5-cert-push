@@ -670,6 +670,66 @@ is read-only (fixed). Noted without a demonstration, and left as they are: relea
 <code>R_UNLOCK</code> reply leaves the lease to expire (availability only); the wrapper's <code>exec 3&lt;path</code> can still open a
 swapped-in special file before refusing it (refused, nothing copied); the in-flight-step residual of item 5 in
 SECURITY.md section 6.</p>
+<h3 id="7d-findings-of-the-fourth-review-of-220-fixed-in-221">7d. Findings of the fourth review (of 2.2.0), fixed in 2.2.1</h3>
+<p>The fourth review (Codex, <code>gpt-daybreak-blue-latest</code>, medium, sandboxed, no network, no BIG-IP) concentrated on
+the new config-sync and discovery code, found the earlier fixes intact, and demonstrated seven defects. All were
+confirmed before being fixed; each has a regression case that fails against 2.2.0.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Finding (severity given)</th>
+<th>Fix</th>
+<th>Test</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G1</td>
+<td>The pre-change check trusted the status word "In Sync" without the members' commits (high)</td>
+<td>Fresh read just before the backup; In Sync <strong>and</strong> the same commit on every member</td>
+<td>regress G1</td>
+</tr>
+<tr>
+<td>G2</td>
+<td>After the sync, the unchanged pre-change snapshot (In Sync, equal commits) was accepted as proof (high)</td>
+<td>The unit's commit is recorded before the change; only a newer commit, equal on every member, proves the sync; no recorded commit, no success</td>
+<td>regress G2</td>
+</tr>
+<tr>
+<td>G3</td>
+<td>A config-sync step with an unknown outcome released the lock as <code>SYNC_FAILED</code> (high)</td>
+<td><code>CRITICAL</code>, lock kept (also for the re-sync after a recovery or <code>--rollback</code>)</td>
+<td>regress G3</td>
+</tr>
+<tr>
+<td>G4</td>
+<td><code>--write-config</code> checked for an existing file first and later wrote through whatever was there (high)</td>
+<td>Private temporary file, then <code>link(2)</code> to the name: fails if anything exists, never follows it</td>
+<td>regress G4</td>
+</tr>
+<tr>
+<td>G5</td>
+<td>Draft coverage compared profiles, not entries (medium)</td>
+<td>A bare profile covers all entries; <code>PROFILE:ENTRY</code> only that entry</td>
+<td>regress G5</td>
+</tr>
+<tr>
+<td>G6</td>
+<td>A CN with spaces became an invalid SNI name in the draft (low)</td>
+<td>SNI only for a host-name CN</td>
+<td>regress G6</td>
+</tr>
+<tr>
+<td>G7</td>
+<td>README/OPERATIONS still said HA sync was manual (low)</td>
+<td>Rewritten</td>
+<td>regress G7</td>
+</tr>
+</tbody>
+</table>
+<p>Noted as lab-dependent risks, not defects: the exact <code>field-fmt</code> spelling of the device-group commit lines (the
+live pair suite exercises them on 17.1.3.4) and units in several sync-failover groups (now flagged by discovery).</p>
 <h2 id="8-how-to-report">8. How to report</h2>
 <p>For each finding please give: <strong>title; severity (critical / high / medium / low); the invariant or claim it
 breaks (I1..I12 or a SECURITY.md sentence); a reproducer</strong> (config + command, or canned remote output); the

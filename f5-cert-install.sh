@@ -70,7 +70,7 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.2.0"
+readonly VERSION="2.2.1"
 readonly PROG="f5-cert-install"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then

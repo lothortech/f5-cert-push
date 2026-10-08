@@ -172,11 +172,14 @@ With `sync = auto` (the default), for each deployment:
 3. The deployment runs as usual (backup, install, one-transaction switch, verify, prune).
 4. The tool runs `tmsh run cm config-sync to-group <group>` (or, if the group has auto-sync, just waits) and
    then waits, up to `sync_timeout`, until the group reports **In Sync and every member shows the same last
-   commit**, which proves the peers loaded this unit's configuration.
+   commit, newer than the one recorded before the change**, which proves the peers loaded this unit's new
+   configuration. (Step 2 records that commit, from a fresh read of the group just before the backup.)
 5. The standby's job then reads its profiles: it must now have the new certificate (`IN_SYNC`).
 
 If the sync does not complete, the active unit keeps the new (verified) certificate and the run reports
-`SYNC_FAILED` (exit 1) with the command to finish it. If the deployment fails and is rolled back, the group is
+`SYNC_FAILED` (exit 1) with the command to finish it. If the sync step itself did not report its outcome and
+the new commit never appeared, the sync may still be running: the run is `CRITICAL` (exit 5) and the BIG-IP
+lock is kept. If the deployment fails and is rolled back, the group is
 synchronised again so it is left In Sync. A failover between runs needs no change to the file.
 
 Units that are not in a sync-failover group with another device (standalone) are deployed to directly, as

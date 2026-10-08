@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.2.1
+
+Fixes for every finding of the fourth independent review (of 2.2.0; `G1`-`G7`, summarised in `REVIEW.md`
+section 7d). Each has a regression test in `tests/regress.sh` that fails against 2.2.0 and passes now.
+
+- **Pre-change check (G1).** The device group is read afresh just before the backup, and must be In Sync
+  **and** show the same last commit on every member; "In Sync" with differing commits is refused.
+- **Proof of the sync (G2).** The tool records its own unit's last commit before changing anything. After the
+  sync it accepts only a **newer** commit, identical on every member; the unchanged pre-change state can no
+  longer pass as proof. With no recorded commit it never claims success.
+- **Unknown sync outcome (G3).** If the config-sync step does not report its outcome and the group never shows
+  the new commit, the run is `CRITICAL` (exit 5) and keeps the BIG-IP lock, as for any unresolved step (it was
+  `SYNC_FAILED` and released the lock). The same applies to the re-sync after a recovery and after `--rollback`.
+- **`--write-config` (G4)** writes to a new private file and hard-links it to the requested name, which fails if
+  anything (a file or a symlink planted while discovery ran) is there; it never writes through a link.
+- **Draft coverage (G5).** A deployment for one entry of a profile (`profile = site:rsa`) no longer hides the
+  profile's other entries from the draft.
+- **Draft verify lines (G6)** use the certificate's CN as the SNI name only when it is a host name; a CN with
+  spaces no longer makes the draft invalid.
+- **Documentation (G7):** the README and OPERATIONS limitations no longer say HA sync is manual.
+- `--discover`: a unit in several sync-failover groups is no longer paired by guesswork; it is flagged (set
+  `sync_group`) and drafted on its own. `--rollback` re-syncs only if the group's members differ.
+
 ## 2.2.0
 
 ### HA pairs: config-sync, with verification

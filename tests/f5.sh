@@ -16,7 +16,7 @@
 #        two UNUSED addresses in a subnet the BIG-IP has a self IP in, used as
 #        test virtual-server addresses (port 443). Probed from the BIG-IP itself.
 #   F5_TEST_PEER_HOST=10.0.0.2   the other unit of an HA pair (same key): adds the
-#        config-sync scenarios p1-p8. The two units must be in one sync-failover
+#        config-sync scenarios p1-p9. The two units must be in one sync-failover
 #        device group with manual sync, F5_TEST_HOST active. p7 FAILS OVER the pair
 #        (and back): only on a lab pair.
 #   F5_TEST_ONLY="s2 s9"         run only the named scenarios
@@ -1114,6 +1114,67 @@ expect_rc 3 "the run rolls back and exits 3"
 expect_eq "$(bound_cert zzz-t1 e1)" "$PREV" "the active unit is back on its previous certificate"
 expect_eq "$(group_status "$G")" "In Sync" "the pair is In Sync after the interrupted run"
 expect_eq "$(peer_cert zzz-t1 e1)" "$PREV" "the standby has the previous certificate"
+fi
+
+if [[ -n "$PEER" ]] && want p9; then
+echo "== p9: bad certificates are refused before the pair is touched; a good one deploys and syncs"
+# Bad material, made from the test PKI (and a second, unrelated CA).
+BADS="${TMP}/bad"; mkdir -p "$BADS"
+PKI2="${TMP}/pki2"; pki_init "$PKI2" >/dev/null 2>&1; pki_leaf "$PKI2" other "zzz.test" "DNS:zzz.test" >/dev/null 2>&1
+pki_leaf "$PKI" future "zzz.test" "DNS:zzz.test" rsa "$(date -u -d '+30 days' +%Y%m%d%H%M%SZ)" "$(date -u -d '+120 days' +%Y%m%d%H%M%SZ)" >/dev/null 2>&1
+pki_leaf "$PKI" short "zzz.test" "DNS:zzz.test" rsa "$(date -u -d '-1 day' +%Y%m%d%H%M%SZ)" "$(date -u -d '+2 days' +%Y%m%d%H%M%SZ)" >/dev/null 2>&1
+openssl pkey -in "$PKI/c.key" -aes256 -passout pass:zzz-secret -out "$PKI/c.enc.key" 2>/dev/null
+# bad_case NAME CERT KEY CHAIN EXPECTED-MESSAGE
+bad_case() {
+  local name="$1" c="$2" k="$3" h="$4" msg="$5"
+  cp "$c" "$BADS/cert.pem"; cp "$k" "$BADS/key.pem"; cp "$h" "$BADS/chain.pem"
+  conf "[cert:bad]
+cert = ${BADS}/cert.pem
+key = ${BADS}/key.pem
+chain = ${BADS}/chain.pem
+object_prefix = zzz-bad
+min_days_valid = 7
+chain_check = fail
+
+[deploy:pairbad]
+sync = auto
+f5 = t, peer
+cert = bad
+profile = zzz-t1
+verify = ${VSA}:443 zzz.test
+"
+  tool --deploy pairbad
+  expect_rc 1 "${name}: refused (exit 1)"
+  expect_has "$msg" "${name}: the reason is given"
+  expect_eq "$(snapshot)" "$S0" "${name}: nothing changed on the active unit"
+  expect_eq "$(peer_cert zzz-t1 e1)" "$P0" "${name}: nothing changed on the standby"
+  expect_eq "$(remote_backups zzz-bad)" "0" "${name}: no backup was made"
+  expect_eq "$(group_status "$G")" "In Sync" "${name}: the pair is still In Sync"
+}
+group_sync
+S0="$(snapshot)"; P0="$(peer_cert zzz-t1 e1)"
+head -c 300 "$PKI/c.pem" > "${TMP}/truncated.pem"
+: > "${TMP}/empty.key"
+bad_case "expired certificate"          "$PKI/old.pem"    "$PKI/old.key"    "$PKI/old.chain.pem"   "already expired"
+bad_case "not yet valid"                "$PKI/future.pem" "$PKI/future.key" "$PKI/future.chain.pem" "not valid yet"
+bad_case "expires within min_days_valid" "$PKI/short.pem" "$PKI/short.key"  "$PKI/short.chain.pem" "min_days_valid is 7"
+bad_case "key from another certificate" "$PKI/c.pem"      "$PKI/d.key"      "$PKI/c.chain.pem"     "does not match the certificate"
+bad_case "chain from another CA"        "$PKI2/other.pem" "$PKI2/other.key" "$PKI/c.chain.pem"     "does not verify against the supplied chain"
+bad_case "passphrase-protected key"     "$PKI/c.pem"      "$PKI/c.enc.key"  "$PKI/c.chain.pem"     "passphrase-protected"
+bad_case "truncated certificate file"   "${TMP}/truncated.pem" "$PKI/c.key" "$PKI/c.chain.pem"     "does not parse"
+bad_case "certificate and chain in 'cert'" "$PKI/c.full.pem" "$PKI/c.key"   "$PKI/c.chain.pem"     "must contain exactly one certificate"
+bad_case "empty key file"               "$PKI/c.pem"      "${TMP}/empty.key" "$PKI/c.chain.pem"    "cannot read the private key"
+# ... and then a good certificate goes through, everywhere
+use_cert b
+conf "$PAIR_DEPLOY"
+tool --deploy pair --force
+expect_rc 0 "the good certificate deploys (exit 0)"
+expect_true "the active unit reports UPDATED" grep -Eq 'pair@t +UPDATED' <<<"$OUT"
+expect_true "the standby reports IN_SYNC" grep -Eq 'pair@peer +IN_SYNC' <<<"$OUT"
+expect_eq "$(bound_fp zzz-t1 e1)" "$CUR_FP" "the active unit has the good certificate"
+expect_eq "$(peer_cert zzz-t1 e1)" "$(bound_cert zzz-t1 e1)" "the standby has the same object"
+expect_eq "$(served_fp "$VSA")" "$CUR_FP" "the virtual server serves the good certificate"
+expect_eq "$(group_status "$G")" "In Sync" "the pair is In Sync"
 fi
 
 t_summary

@@ -37,7 +37,7 @@ home folder (`~`), not under `/mnt/c`, so file permissions work.
 ```bash
 mkdir -p ~/f5-cert-push/certs ~/f5-cert-push/backups
 cd ~/f5-cert-push
-tar xzf /path/to/f5-cert-push-2.2.0.tar.gz --strip-components=1     # puts f5-cert-push.sh here
+tar xzf /path/to/f5-cert-push-2.2.1.tar.gz --strip-components=1     # puts f5-cert-push.sh here
 chmod 700 ~/f5-cert-push
 chmod 750 f5-cert-push.sh
 ./f5-cert-push.sh --version

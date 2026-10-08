@@ -265,6 +265,25 @@ is read-only (fixed). Noted without a demonstration, and left as they are: relea
 swapped-in special file before refusing it (refused, nothing copied); the in-flight-step residual of item 5 in
 SECURITY.md section 6.
 
+### 7d. Findings of the fourth review (of 2.2.0), fixed in 2.2.1
+
+The fourth review (Codex, `gpt-daybreak-blue-latest`, medium, sandboxed, no network, no BIG-IP) concentrated on
+the new config-sync and discovery code, found the earlier fixes intact, and demonstrated seven defects. All were
+confirmed before being fixed; each has a regression case that fails against 2.2.0.
+
+| # | Finding (severity given) | Fix | Test |
+|---|---|---|---|
+| G1 | The pre-change check trusted the status word "In Sync" without the members' commits (high) | Fresh read just before the backup; In Sync **and** the same commit on every member | regress G1 |
+| G2 | After the sync, the unchanged pre-change snapshot (In Sync, equal commits) was accepted as proof (high) | The unit's commit is recorded before the change; only a newer commit, equal on every member, proves the sync; no recorded commit, no success | regress G2 |
+| G3 | A config-sync step with an unknown outcome released the lock as `SYNC_FAILED` (high) | `CRITICAL`, lock kept (also for the re-sync after a recovery or `--rollback`) | regress G3 |
+| G4 | `--write-config` checked for an existing file first and later wrote through whatever was there (high) | Private temporary file, then `link(2)` to the name: fails if anything exists, never follows it | regress G4 |
+| G5 | Draft coverage compared profiles, not entries (medium) | A bare profile covers all entries; `PROFILE:ENTRY` only that entry | regress G5 |
+| G6 | A CN with spaces became an invalid SNI name in the draft (low) | SNI only for a host-name CN | regress G6 |
+| G7 | README/OPERATIONS still said HA sync was manual (low) | Rewritten | regress G7 |
+
+Noted as lab-dependent risks, not defects: the exact `field-fmt` spelling of the device-group commit lines (the
+live pair suite exercises them on 17.1.3.4) and units in several sync-failover groups (now flagged by discovery).
+
 ## 8. How to report
 
 For each finding please give: **title; severity (critical / high / medium / low); the invariant or claim it

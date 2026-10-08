@@ -195,10 +195,12 @@ Short list; the full one is in [docs/OPERATIONS.md](docs/OPERATIONS.md#known-lim
 
 - **client-ssl profiles only.** server-ssl profiles and other consumers of certificates are not updated.
 - **Passphrase-protected private keys are not supported** (the tool refuses them with an explanation).
-- **It does not synchronise an HA pair.** Deploy to the active unit, then sync. It refuses a standby unit.
+- **HA pairs: sync-failover device groups only.** The tool runs config-sync for the group it deploys to and
+  confirms it, but only for a group that was In Sync before the run; it never changes a standby directly.
 - Profiles that **inherit** their certificate from a parent (`inherit-certkeychain true`) are refused; update the parent.
-- Developed and tested on BIG-IP **17.1.3.4**, standalone. Standby/HA behaviour, and the "configuration not
-  loaded" safety gate, are implemented but could not be exercised on the test device.
+- Developed and tested on BIG-IP **17.1.3.4** VE: standalone, and an active/standby pair with manual
+  config-sync (including a failover). The "configuration not loaded" safety gate is implemented but could not
+  be exercised on the test devices.
 
 ## Reading the documentation in a browser
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regression tests for the findings of the reviews: the adversarial review of
 # 2.0.0 (R1-R13 and the additional observations), and the code reviews of 2.1.0
-# (B1-B10) and 2.1.1 (F1-F5); see REVIEW.md, "Fixed issues".
+# (B1-B10), 2.1.1 (F1-F5) and 2.2.0 (G1-G7); see REVIEW.md, "Fixed issues".
 # Each case reproduces the reported failure and requires the safe outcome.
 # Needs no BIG-IP: the script's own functions are loaded and the BIG-IP is
 # replaced by a local stand-in that runs the remote scripts with bash, with the
@@ -1113,12 +1113,17 @@ check "sync: the device group is the one sync-failover group shared with another
 y2_precheck() {
   load_push
   J_DEP=d; J_F5=f
-  parse_sync_lines "${PROBE_PAIR/DGSTATUS|Sync-Failover|In Sync/DGSTATUS|Sync-Failover|Changes Pending}"
+  parse_sync_lines "$PROBE_PAIR"
   sync_select || return 1
+  # the check reads the group afresh (R_SYNCSTATE), not the probe's earlier answer
+  f5_sh() { printf '%s
+' "${PROBE_PAIR/DGSTATUS|Sync-Failover|In Sync/DGSTATUS|Sync-Failover|Changes Pending}" | grep -E '^DG(STATUS|CID)'; }
   sync_precheck >/dev/null 2>&1 && return 1
   echo "$J_MSG"
   [[ "$J_MSG" == *"'Changes Pending', not In Sync"* && "$J_SYNC_PRE" == 0 ]] || return 1
-  parse_sync_lines "$PROBE_PAIR"; sync_precheck && [[ "$J_SYNC_PRE" == 1 ]]
+  f5_sh() { printf '%s
+' "$PROBE_PAIR" | grep -E '^DG(STATUS|CID)'; }
+  sync_precheck && [[ "$J_SYNC_PRE" == 1 ]]
 }
 check "sync: a device group that is not In Sync is refused before any change" y2_precheck
 
@@ -1126,6 +1131,7 @@ y3_job_sync() {
   load_push
   J_DEP=d; J_F5=f; CFG[defaults|sync_timeout]=2
   parse_sync_lines "$PROBE_PAIR"; sync_select || return 1
+  J_SYNC_BASE='/Common/f5a.example|T1'     # recorded by sync_precheck before the change
   sleep() { :; }
   local n="${TMP}/y3.n"; echo 0 > "$n"
   f5_mut() { echo "SYNC|STARTED"; return 0; }
@@ -1186,6 +1192,144 @@ y6_discovery_helpers() {
   [[ "$(draft_base /Part/my\ odd.crt)" == my-odd ]]
 }
 check "discovery: virtual server destinations become verify addresses; object names become section names" y6_discovery_helpers
+
+# ---- fourth review (of 2.2.0): G1-G7 ----------------------------------------
+echo "== Fourth review (2.2.0, G1-G7)"
+
+G_PAIR_OLD='SELF|unit-a
+DG|ha-group|sync-failover|disabled|unit-a,unit-b
+DGSTATUS|ha-group|In Sync
+DGCID|ha-group:unit-a|unit-a|OLD
+DGCID|ha-group:unit-b|unit-a|OLD'
+
+g1_precheck_commits() {
+  load_push
+  J_DEP=site; J_F5=a
+  parse_sync_lines "$G_PAIR_OLD"; sync_select || return 1
+  # the fresh read says In Sync, but the members' commits differ
+  f5_sh() { printf '%s\n' 'DGSTATUS|ha-group|In Sync' 'DGCID|ha-group:unit-a|unit-a|NEW' 'DGCID|ha-group:unit-b|unit-a|OLD'; }
+  sync_precheck >/dev/null 2>&1 && { echo "accepted divergent commits"; return 1; }
+  echo "$J_MSG" | head -c 160; echo
+  [[ "$J_SYNC_PRE" == 0 && "$J_MSG" == *"different last commits"* ]] || return 1
+  # consistent: accepted, and this unit's commit is remembered
+  f5_sh() { printf '%s\n' 'DGSTATUS|ha-group|In Sync' 'DGCID|ha-group:unit-a|unit-a|OLD' 'DGCID|ha-group:unit-b|unit-a|OLD'; }
+  sync_precheck && [[ "$J_SYNC_PRE" == 1 && "$J_SYNC_BASE" == 'unit-a|OLD' ]]
+}
+check "G1: the pre-change check needs In Sync AND the same commit on every member, read fresh" g1_precheck_commits
+
+g2_old_snapshot() {
+  load_push
+  J_DEP=site; J_F5=a; CFG[defaults|sync_timeout]=2
+  parse_sync_lines "$G_PAIR_OLD"; sync_select || return 1
+  f5_sh() { printf '%s\n' 'DGSTATUS|ha-group|In Sync' 'DGCID|ha-group:unit-a|unit-a|OLD' 'DGCID|ha-group:unit-b|unit-a|OLD'; }
+  sync_precheck >/dev/null 2>&1 || return 1
+  f5_mut() { echo 'SYNC|STARTED'; return 0; }
+  sleep() { SECONDS=$((SECONDS + 3)); }
+  local rc=0
+  job_sync always >/dev/null 2>&1 || rc=$?
+  echo "old snapshot: rc=$rc"
+  [[ "$rc" == 1 ]] || return 1
+  # with no recorded commit at all, success is never claimed
+  local base="$J_SYNC_BASE"; J_SYNC_BASE=""; rc=0
+  job_sync always >/dev/null 2>&1 || rc=$?
+  echo "no baseline: rc=$rc"; J_SYNC_BASE="$base"
+  [[ "$rc" == 1 ]] || return 1
+  # the new commit on every member: accepted
+  f5_sh() { printf '%s\n' 'DGSTATUS|ha-group|In Sync' 'DGCID|ha-group:unit-a|unit-a|NEW' 'DGCID|ha-group:unit-b|unit-a|NEW'; }
+  job_sync always >/dev/null 2>&1
+}
+check "G2: after a sync, the pre-change commit is never accepted as proof; only the new commit on every member" g2_old_snapshot
+
+g3_unknown_sync() {
+  load_push
+  J_DEP=site; J_F5=a; CFG[defaults|sync_timeout]=1
+  parse_sync_lines "$G_PAIR_OLD"; sync_select || return 1
+  f5_sh() { printf '%s\n' 'DGSTATUS|ha-group|In Sync' 'DGCID|ha-group:unit-a|unit-a|OLD' 'DGCID|ha-group:unit-b|unit-a|OLD'; }
+  sync_precheck >/dev/null 2>&1 || return 1
+  f5_mut() { return "$ST_UNKNOWN"; }
+  f5_sh() { printf '%s\n' 'DGSTATUS|ha-group|Changes Pending' 'DGCID|ha-group:unit-a|unit-a|NEW' 'DGCID|ha-group:unit-b|unit-a|OLD'; }
+  sleep() { SECONDS=$((SECONDS + 3)); }
+  local rc=0
+  job_sync always >/dev/null 2>&1 || rc=$?
+  echo "job_sync rc=$rc"
+  [[ "$rc" == 2 ]] || return 1
+  # in a deployment: CRITICAL, exit 5, the BIG-IP lock kept
+  job_unstage() { :; }; job_prune() { return 0; }
+  lock_release() { echo "keep=$REMOTE_LOCK_KEEP" > "${TMP}/g3-release"; }
+  { echo 'g3_tail() {'; sed -n '/^  J_CHANGED=0; JOB_ACTIVE=0$/,/^  lock_release$/p' "$PUSH"; echo '}'; } > "${TMP}/g3-tail.sh"
+  grep -q 'job_sync always' "${TMP}/g3-tail.sh" || { echo "could not find the end of run_job"; return 1; }
+  J_CERT=c; CERT_END[c]="Dec 1 00:00:00 2026 GMT"; X_SYNC=high-availability; J_TS=t; CONFIG_FILE=x
+  # shellcheck disable=SC1090
+  source "${TMP}/g3-tail.sh"; g3_tail >/dev/null 2>&1
+  echo "result=$J_RESULT rc=$J_RC $(cat "${TMP}/g3-release")"
+  [[ "$J_RESULT" == CRITICAL && "$J_RC" == 5 && "$(cat "${TMP}/g3-release")" == keep=1 ]]
+}
+check "G3: a config-sync that never reported, and never showed the new commit, is CRITICAL and keeps the BIG-IP lock" g3_unknown_sync
+
+g_seed() {
+  printf '%s\n' '[f5:box]' 'host = 192.0.2.10' > "$1"
+  CONFIG_FILE="$1"; J_PART=Common; F5S=(box); DEPLOYS=(); SECT_SEEN=([f5:box]=1)
+  D_PAIR[box]='standalone|box'; D_SELF[box]=unit-a; D_FO[box]=active
+  D_ROWS=('box|clientssl|rsa|site-cert.pem|site-chain.pem|site-key.pem')
+  D_NENT[box\|clientssl]=1
+  D_CERTS=('box|site-cert.pem|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|2030-01-01|example.test')
+  D_VS=('box|clientssl|vs-one|192.0.2.20:443')
+}
+
+g4_write_race() {
+  load_push
+  local draft="${TMP}/g4-draft.conf" victim="${TMP}/g4-victim"
+  printf 'PRESERVE THIS FILE\n' > "$victim"
+  g_seed "${TMP}/g4-base.conf"
+  WRITE_CONFIG="$draft"; SEL_F5=()
+  discover_one() { ln -s "$victim" "$WRITE_CONFIG"; return 0; }   # planted after the early check
+  local rc=0
+  action_discover >/dev/null 2>&1 || rc=$?
+  echo "rc=$rc victim=$(head -1 "$victim")"
+  [[ "$rc" != 0 && "$(cat "$victim")" == 'PRESERVE THIS FILE' && -L "$draft" ]] || return 1
+  [[ -z "$(ls -A "$TMP" | grep '^\.f5-cert-push-draft')" ]] || { echo "temporary file left"; return 1; }
+  # a clean name: written, mode 0600
+  rm -f "$draft"; unset -f discover_one; discover_one() { return 0; }
+  g_seed "${TMP}/g4-base.conf"; rc=0
+  action_discover >/dev/null 2>&1 || rc=$?
+  [[ "$rc" == 0 && -f "$draft" && ! -L "$draft" && "$(stat -c %a "$draft")" == 600 ]]
+}
+check "G4: --write-config never writes through, or over, anything at its name (even one planted during discovery)" g4_write_race
+
+g5_entry_coverage() {
+  load_push
+  local draft="${TMP}/g5-draft.conf"
+  g_seed "${TMP}/g5-base.conf"
+  DEPLOYS=(existing); SECT_SEEN=([f5:box]=1 [cert:old]=1 [deploy:existing]=1)
+  CFG[deploy:existing\|f5]=box; CFG[deploy:existing\|cert]=old; CFG[deploy:existing\|profile]='clientssl:rsa'
+  D_ROWS=('box|clientssl|rsa|site-cert.pem|none|site-key.pem' 'box|clientssl|ecdsa|other-cert.pem|none|other-key.pem')
+  D_NENT[box\|clientssl]=2
+  D_CERTS+=('box|other-cert.pem|BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB|2030-01-01|other.test')
+  write_draft_config "$draft" box >/dev/null 2>&1 || return 1
+  sed -n '/^# Suggested by/,$p' "$draft" | grep '^profile'
+  sed -n '/^# Suggested by/,$p' "$draft" | grep -q '^profile = clientssl:ecdsa$' || return 1
+  ! sed -n '/^# Suggested by/,$p' "$draft" | grep -q '^profile = clientssl:rsa$'
+}
+check "G5: a deployment for one entry of a profile does not hide the profile's other entries from the draft" g5_entry_coverage
+
+g6_cn_sni() {
+  load_push
+  local draft="${TMP}/g6-draft.conf" rc=0
+  g_seed "${TMP}/g6-base.conf"
+  D_CERTS=('box|site-cert.pem|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|2030-01-01|Example Certificate')
+  write_draft_config "$draft" box >/dev/null 2>&1 || return 1
+  grep '^verify' "$draft"
+  grep -q '^verify  = 192\.0\.2\.20:443$' "$draft" || return 1
+  "$PUSH" --config "$draft" --list >/dev/null 2>&1 || rc=$?
+  echo "--list rc=$rc"; [[ "$rc" == 0 ]]
+}
+check "G6: a CN that is not a host name is not used as the SNI name; the draft stays valid" g6_cn_sni
+
+g7_docs() {
+  local root; root="$(cd "${T_DIR}/.." && pwd)"
+  ! grep -q 'It does not synchronise an HA pair' "$root/README.md" && ! grep -q 'HA synchronisation is manual' "$root/docs/OPERATIONS.md"
+}
+check "G7: the documentation no longer says HA sync is manual" g7_docs
 
 echo
 t_summary
