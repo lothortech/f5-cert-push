@@ -6,7 +6,8 @@ You describe your BIG-IPs, certificates and deployments once in a configuration 
 deployment the tool then:
 
 1. **Validates** the certificate, key and chain locally (they match, not expired, chain verifies).
-2. **Reads** the BIG-IP and refuses to touch one whose configuration is not loaded or which is standby.
+2. **Reads** the BIG-IP and refuses to touch one whose configuration is not loaded, or an HA pair that is
+   not In Sync. Of a pair, only the active unit is changed.
 3. **Backs up** what is there, to the BIG-IP (`/shared`) **and** to the machine running the tool, with
    SHA-256 checksums, and writes a self-verifying **restore script**.
 4. **Uploads** the new files to a private staging directory and checks their checksums on the BIG-IP.
@@ -19,7 +20,8 @@ deployment the tool then:
    state it cannot confirm is reported `CRITICAL`, never as success. A dropped connection, a timeout or a
    Ctrl-C in the middle of a change is recovered the same way.
 9. **Prunes** old backups and old certificate versions down to the number you choose.
-10. **Reports** a summary, and returns an exit code that automation can act on.
+10. **Synchronises an HA pair** (config-sync), confirms both units loaded the change, and checks the standby.
+11. **Reports** a summary, and returns an exit code that automation can act on.
 
 It is a single Bash script plus a configuration file (and an optional wrapper, `f5-cert-install.sh`, for
 certificates that people upload by hand). Nothing is installed on the BIG-IP.
@@ -115,7 +117,8 @@ You must say what to act on; there is no "run everything" by accident.
 | `--dry-run` | print exactly what a deploy would do; change nothing |
 | `--validate` | check the config file and the local certificate files |
 | `--list` | show the deployments the config defines |
-| `--discover --f5 NAME` | list every client-ssl profile and entry on a BIG-IP, with expiry dates |
+| `--discover [--f5 NAME]` | show each BIG-IP's device groups and sync status, and every client-ssl profile with its certificate, chain, key, expiry and virtual servers |
+| `--discover --write-config FILE` | the same, plus a draft configuration with a deployment for every profile found |
 | `--list-backups` | list the backup sets for the selected deployments |
 | `--rollback --set TS` | restore the state captured just before run `TS` |
 

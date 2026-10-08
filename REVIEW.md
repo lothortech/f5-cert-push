@@ -123,6 +123,11 @@ These are the places the author is least sure about. They are leads, not claims.
 17. **Rollback verification (2.1.0).** `restore_and_verify` compares certificate objects by the fingerprint
     `tmsh` reports, and keys by the SHA-256 of their public key computed on the BIG-IP from the filestore file
     (`find_pem`). Can a restore that did not really restore pass these checks?
+19. **Config-sync (2.2.0).** `sync_precheck`, `job_sync`, `peer_job` and the deferral in `run_jobs`. Can a
+    run sync a group that was not In Sync before it (and so publish someone else's change)? Can `job_sync`
+    report success before the peers have loaded the change (stale "In Sync", commit ids read from the wrong
+    group)? Can a standby be reported `IN_SYNC` without having the new certificate? After a rollback or an
+    interruption, can the tool sync a state it has not confirmed?
 18. **2.0.0 backup sets** are read by parsing their restore script (`parse_inventory`). Can a crafted 2.0.0-style
     script make the parser accept a line that the script would execute differently?
 

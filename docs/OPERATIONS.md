@@ -81,6 +81,8 @@ Start with one BIG-IP, one certificate, one deployment. Find the profile names w
 
 ```bash
 ./f5-cert-push.sh --config /etc/f5-cert-push.conf --discover --f5 prod-a
+# every BIG-IP in the file, plus a draft configuration for the profiles found:
+./f5-cert-push.sh --config /etc/f5-cert-push.conf --discover --write-config /root/draft.conf
 ```
 
 ### 1.5 Validate, rehearse, deploy
@@ -166,7 +168,12 @@ A signal never leaves a BIG-IP changed but unverified:
 | `UPDATED` | Deployed and verified | 0 |
 | `UPTODATE` | Already current; nothing done | 0 |
 | `DRYRUN` | `--dry-run`; nothing done | 0 |
-| `RESTORED` | `--rollback` completed **and verified** on the device | 0 |
+| `RESTORED` | `--rollback` completed **and verified** on the device (and synchronised to the peers, for a pair) | 0 |
+| `IN_SYNC` | A standby unit: it has the new certificate, received by config-sync from its active unit | 0 |
+| `SKIPPED` | A standby unit: not checked, because the deployment on its active unit did not complete (see that line) | 0 |
+| `SYNC_FAILED` | Deployed and verified on the active unit, but the device group did not synchronise: the peers still have the old certificate. The message gives the command | 1 |
+| `NOT_SYNCED` | A standby unit does not have the new certificate after the sync | 1 |
+| `STANDBY` | A standby unit, and no active unit of its device group was deployed in this run | 1 |
 | `OUTDATED` | `--check`: needs a deploy | 4 |
 | `FAILED` | Failed; see the message. The BIG-IP is unchanged | 1 |
 | `FAILED_CHANGED` | Verification failed, `auto_rollback = no`, so the BIG-IP **stays on the new certificate**; the message gives the rollback command | 1 |
@@ -293,15 +300,22 @@ Anything else (including a profile or entry that is missing) is reported as not 
 
 ## 5. HA pairs and multiple BIG-IPs
 
-**The tool does not synchronise a device group.** For an HA pair:
+**List both units of a pair in the deployment** (`f5 = dc1-a, dc1-b`). With `sync = auto` (the default) the
+tool deploys to whichever unit is active, synchronises the device group, confirms every member loaded the
+change (In Sync, same last commit), and then checks the standby read-only. See
+[CONFIGURATION.md, HA pairs](CONFIGURATION.md#ha-pairs-and-config-sync) for the steps.
 
-1. Deploy to the **active** unit. The tool refuses a standby unit (`allow_standby = no`).
-2. Synchronise as you normally do (for example `tmsh run cm config-sync to-group NAME`).
-3. After a successful run on a BIG-IP that is not standalone, the tool prints a reminder to synchronise.
+- **The group must be In Sync before a deployment.** If it shows `Changes Pending` (someone changed a unit
+  and did not sync), the tool stops before changing anything: syncing afterwards would publish that other
+  change too. Look at what differs, sync from the unit whose configuration is right, then run again.
+- **If the sync fails** (`SYNC_FAILED`, exit 1), the active unit serves the new certificate and the peers the
+  old one. Finish it on the active unit: `tmsh run cm config-sync to-group <group>`, then
+  `tmsh show cm sync-status`.
+- **Failover** needs no change to the file: the next run deploys to whichever unit is active.
+- `sync = no`: the old behaviour. Deploy to the active unit only (a standby is refused) and synchronise
+  yourself; the tool prints a reminder.
 
-Objects are created in the device group's synced folders (`/Common`), so the sync carries them to the peer.
-Alternatively list **both** units as separate `[f5:]` sections with `allow_standby = yes`, but then the next
-config-sync can overwrite what you pushed to the standby. The first approach is safer.
+SSH keys are **not** part of the synchronised configuration: authorise the tool's key on every unit.
 
 For many BIG-IPs (separate environments, data centres, tenants) define one `[f5:]` per device and one
 `[deploy:]` per certificate-to-devices mapping; see [CONFIGURATION.md](CONFIGURATION.md#recipes). Deployments
@@ -372,6 +386,9 @@ a record of its own.
 | Summary `CRITICAL` | The BIG-IP's state is not confirmed. 1) Look: `f5-cert-push.sh --deploy NAME --check`, or `tmsh list ltm profile client-ssl <name> cert-key-chain` on the BIG-IP. 2) Restore if needed with the printed `--rollback --set TS` command (or `bash restore-<TS>.sh` on the BIG-IP; every old PEM is in the backup directory). 3) Remove the BIG-IP lock the run left in place: `rm -rf /var/run/f5-cert-push.lock`. |
 | `pruning ... did not report its outcome` (summary `CRITICAL`, "deployed and verified") | The new certificate is live and verified, but removing old backups or old certificate objects was interrupted and may still be running. Nothing needs restoring: check that nothing still runs (`ps -ef \| grep f5-cert-push` on the BIG-IP), then remove the lock: `rm -rf /var/run/f5-cert-push.lock`. A later run prunes again. |
 | `the staging directory ... is left in place` | Shown with a `CRITICAL` result: a step that may still be running could be using it. A later run removes it after two hours, or remove it yourself once the device is checked: `rm -rf /var/tmp/f5-cert-push.*`. |
+| `device group ... is 'Changes Pending', not In Sync` | Someone changed a unit of the pair and did not synchronise. Nothing was changed. Check what differs (`tmsh show cm sync-status`), sync from the unit whose configuration is right, then run again. |
+| `... NOT synchronised: device group ... did not report In Sync` (`SYNC_FAILED`) | The new certificate is live on the active unit; the peers still have the old one. On the active unit: `tmsh run cm config-sync to-group <group>`, then `tmsh show cm sync-status`. Raise `sync_timeout` if the pair is just slow. |
+| `in N sync-failover device groups; set sync_group` | Name the group to synchronise in the unit's `[f5:]` section. |
 | `an earlier step never reported its outcome` | The BIG-IP stopped answering in the middle of a change for longer than `remote_timeout`. The tool rolled back and verified, but the stalled step might still complete. Check the device as for `CRITICAL`. |
 | `no complete reply from the BIG-IP ...; reading the outcome of the step` | The connection dropped during a step. Not an error by itself: the outcome is read back from the BIG-IP and the run continues. |
 | `this run no longer holds the lock on the BIG-IP` | Another run took over the BIG-IP lock (this run had not renewed it for `remote_lock_stale_minutes`: a stalled host or network). This run stopped before changing anything more. Find out which run holds it (`cat /var/run/f5-cert-push.lock/owner`). |

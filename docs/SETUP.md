@@ -105,7 +105,7 @@ Run as root.
 ### 4.1 Install the tools
 
 ```bash
-tar xzf f5-cert-push-2.1.2.tar.gz && cd f5-cert-push
+tar xzf f5-cert-push-2.2.0.tar.gz && cd f5-cert-push
 install -d -m 755 /opt/f5-cert-push
 install -m 750 f5-cert-push.sh f5-cert-install.sh /opt/f5-cert-push/
 sha256sum -c SHA256SUMS 2>/dev/null | grep -E 'f5-cert-(push|install)\.sh'   # optional: verify the copy
@@ -302,10 +302,10 @@ Backups of the objects being replaced go to `/shared/cert-backups/<prefix>/` on 
 
 ### 6.4 Pairs, partitions, sync
 
-- **Pair (active/standby):** run the tool against the **active** unit, then sync (**Device Management >
-  Overview**, or `tmsh run cm config-sync to-group <group>`). The tool prints a reminder but does not sync, so a
-  review step stays in your hands. Listing both units as `[f5:]` sections is possible (`allow_standby = yes`) but
-  not recommended: the next config-sync can overwrite what was pushed to the standby.
+- **Pair (active/standby):** define both units as `[f5:]` sections and list both in each deployment. The tool
+  deploys to the active one, runs config-sync, confirms both units loaded it, and checks the standby. The pair
+  must be **In Sync** before a run. Authorise the SSH key on **both** units: `authorized_keys` is not synchronised.
+  (`sync = no` if you prefer to sync yourself; then list only the active unit.)
 - **Partitions:** set `partition = Name` in `[f5:]`, or write profiles as `/Part/profile`. The objects are
   created in the same partition as the profile.
 - **Config not loaded / unit offline / standby:** the tool stops with a clear error. Fix the device first.

@@ -28,6 +28,50 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 @media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
 @media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
 </style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html" class="cur">Changelog</a></nav><main><h1 id="changelog">Changelog</h1>
+<h2 id="220">2.2.0</h2>
+<h3 id="ha-pairs-config-sync-with-verification">HA pairs: config-sync, with verification</h3>
+<ul>
+<li>After a deployment to the <strong>active</strong> unit, the tool now <strong>synchronises its device group</strong> and waits until
+  every member reports <strong>In Sync with the same last commit</strong>: proof that the peers loaded this unit's
+  configuration, not just a status line. <code>sync = auto</code> (the default) picks the one sync-failover device group
+  the unit shares with another device; <code>sync_group = NAME</code> (in <code>[f5:]</code>) names it, and <code>sync = no</code> turns this
+  off. <code>sync_timeout</code> (default 120 s) bounds the wait. A group with auto-sync is not synced again, only waited on.</li>
+<li><strong>Refuses to start unless the group is already In Sync.</strong> A config-sync copies the unit's whole
+  configuration, so syncing on top of someone else's pending change would publish it too. A pair showing
+  <code>Changes Pending</code> (or anything but In Sync) stops the deployment before the backup, with the reason.</li>
+<li><strong>List both units</strong> of a pair in a deployment (<code>f5 = dc1-a, dc1-b</code>). Whichever is active is deployed to and
+  synchronised; the standby is not changed directly, and is checked <strong>after</strong> the sync (read-only): it must
+  now serve the new certificate. A failover between runs needs no configuration change. A standby listed
+  first waits for its active unit's job.</li>
+<li>New results: <code>IN_SYNC</code> (standby has the new certificate), <code>NOT_SYNCED</code> (it does not), <code>SKIPPED</code> (its active
+  unit's deployment did not complete), <code>STANDBY</code> (no active unit of its group was in the run),
+  <code>SYNC_FAILED</code> (deployed and verified on the active unit, but the sync did not complete: exit 1, with the
+  command to run).</li>
+<li>A failed deployment that was rolled back (or an interrupted one) re-synchronises the group if it was In Sync
+  before, so the next run is not refused. Not after <code>CRITICAL</code>: an unknown state is never copied to the peers.</li>
+<li><code>--rollback</code> synchronises the group after a verified restore, if it was In Sync before; a standby listed in
+  the rollback is skipped (it receives the rollback by the sync).</li>
+<li><code>--check</code> also compares a standby unit (read-only).</li>
+</ul>
+<h3 id="discovery-and-a-draft-configuration">Discovery and a draft configuration</h3>
+<ul>
+<li><code>--discover</code> now shows, for each BIG-IP (<code>--f5 NAME</code>, repeatable; default: every one in the configuration):
+  the device, its failover state, <strong>its device groups with type, members, auto-sync and sync status</strong>, and
+  every client-ssl profile entry with its <strong>certificate (CN, expiry), chain and key, and the virtual servers
+  that use it</strong>. Profiles on the default certificate are summarised on one line.</li>
+<li><code>--discover --write-config FILE</code> writes your configuration <strong>plus suggested <code>[cert:]</code> and <code>[deploy:]</code>
+  sections</strong> for every profile entry that no deployment covers yet: one deployment per certificate and per
+  pair (both units listed), entries named where a profile has several, <code>verify</code> lines from the virtual
+  servers that use the profile, and certificate paths to fill in. The suggested deployments are
+  <code>enabled = no</code> until you review them. It never overwrites a file.</li>
+</ul>
+<h3 id="other">Other</h3>
+<ul>
+<li>New dependency on the host: <code>paste</code> (coreutils).</li>
+<li><strong>(config)</strong> <code>sync = auto</code> is the default: a deployment to a unit in a sync-failover group now synchronises
+  the group, and refuses to start if the group is not In Sync. Set <code>sync = no</code> to keep the old behaviour.
+  Standalone units are unaffected.</li>
+</ul>
 <h2 id="212">2.1.2</h2>
 <p>Fixes for every finding of the third independent review (of 2.1.1; <code>F1</code>-<code>F5</code>, report summarised in <code>REVIEW.md</code>
 section 7c). Each has a regression test in <code>tests/regress.sh</code> that fails against 2.1.1 and passes now.</p>
@@ -156,7 +200,7 @@ Backup sets written by 2.0.0 can still be restored with <code>--rollback</code>.
 <li>Overlapping deployments are detected by what the names mean on the device: BIG-IPs by host and port, profiles
   fully qualified with their partition, and a profile without an entry overlapping every entry. (R12)</li>
 </ul>
-<h3 id="other">Other</h3>
+<h3 id="other_1">Other</h3>
 <ul>
 <li>Multi-line messages mark their continuation lines (<code>|</code>) so remote text cannot forge a log record.</li>
 <li>Only the objects a run asked to create are ever deleted again; a reply cannot add others.</li>

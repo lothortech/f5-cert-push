@@ -281,6 +281,11 @@ step that has not claimed its id (by claiming it itself). (2.1.1) Signals are ha
 <li><strong>Rollback verification (2.1.0).</strong> <code>restore_and_verify</code> compares certificate objects by the fingerprint
     <code>tmsh</code> reports, and keys by the SHA-256 of their public key computed on the BIG-IP from the filestore file
     (<code>find_pem</code>). Can a restore that did not really restore pass these checks?</li>
+<li><strong>Config-sync (2.2.0).</strong> <code>sync_precheck</code>, <code>job_sync</code>, <code>peer_job</code> and the deferral in <code>run_jobs</code>. Can a
+    run sync a group that was not In Sync before it (and so publish someone else's change)? Can <code>job_sync</code>
+    report success before the peers have loaded the change (stale "In Sync", commit ids read from the wrong
+    group)? Can a standby be reported <code>IN_SYNC</code> without having the new certificate? After a rollback or an
+    interruption, can the tool sync a state it has not confirmed?</li>
 <li><strong>2.0.0 backup sets</strong> are read by parsing their restore script (<code>parse_inventory</code>). Can a crafted 2.0.0-style
     script make the parser accept a line that the script would execute differently?</li>
 </ol>

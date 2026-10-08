@@ -59,7 +59,9 @@ Applies to everything. Any of these can also be set in a more specific section w
 | `verify_unreachable` | `warn` | deploy | What to do when a verify endpoint gives no TLS answer at all: `warn` or `fail`. |
 | `chain_check` | `warn` | cert | Whether the certificate must verify against the supplied chain: `off`, `warn` or `fail`. **Needs OpenSSL 1.1.0+**: older versions cannot do this reliably (their `verify -partial_chain` accepts a mismatched chain), so there the check is skipped with a warning, and `fail` is refused. |
 | `fixed_names` | `no` | deploy | Also maintain the four fixed-name objects `<prefix>-cert.pem`, `-chain.pem`, `-fullchain.pem`, `-privkey.pem`. They are read back after being overwritten; if that fails, the whole deployment fails and is rolled back (profiles included). See [Object naming](#object-naming). |
-| `allow_standby` | `no` | f5 | Permit deploying to a BIG-IP that reports STANDBY. |
+| `allow_standby` | `no` | f5 | Permit deploying to a BIG-IP that reports STANDBY. Not needed for HA pairs (see [HA pairs](#ha-pairs-and-config-sync)). |
+| `sync` | `auto` | f5, deploy | After deploying to a unit in a sync-failover device group, synchronise the group and confirm every member loaded the change; refuse to start if the group is not In Sync. `no`: never sync (the tool reminds you to). See [HA pairs](#ha-pairs-and-config-sync). |
+| `sync_timeout` | `120` | f5 | Seconds to wait for the device group to report In Sync after a sync. |
 | `log_file` | none | | Append a timestamped log of every run (created mode 0600). |
 | `lock_dir` | see right | f5 | Where the per-BIG-IP lock lives. Default `/var/lock/f5-cert-push` for root, otherwise `$XDG_RUNTIME_DIR` or `/tmp`. |
 
@@ -76,7 +78,8 @@ One BIG-IP. `NAME` is how deployments refer to it and appears in backup paths an
 | `user` | `root` | SSH account. It must be able to run `tmsh` **and** read `/config/filestore`; in practice `root`. |
 | `ssh_key` | ssh default | Private key file. Used with `IdentitiesOnly`, so only this key is offered. Prefer a key dedicated to this tool. |
 | `partition` | `Common` | The BIG-IP partition that holds the certificates and profiles. |
-| `known_hosts_file`, `strict_host_key_checking`, `connect_timeout`, `remote_timeout`, `remote_lock_stale_minutes`, `connection_reuse`, `backup_dir_remote`, `keep`, `allow_standby`, `lock_dir` | from `[defaults]` | Per-BIG-IP overrides. |
+| `sync_group` | automatic | The device group to synchronise. Needed only if this unit is in more than one sync-failover group. |
+| `known_hosts_file`, `strict_host_key_checking`, `connect_timeout`, `remote_timeout`, `remote_lock_stale_minutes`, `connection_reuse`, `backup_dir_remote`, `keep`, `allow_standby`, `lock_dir`, `sync`, `sync_timeout` | from `[defaults]` | Per-BIG-IP overrides. |
 
 Two `[f5:]` sections that point at the same `host:port` are treated as one device for locking: their
 deployments run one after another, never at once. The lock exists both on this host and **on the BIG-IP
@@ -118,14 +121,14 @@ Connects one certificate to one or more BIG-IPs and says what to update there.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `f5` | **required** | BIG-IP name(s). Repeat the line, or separate with commas. One job runs per BIG-IP. |
+| `f5` | **required** | BIG-IP name(s). Repeat the line, or separate with commas. One job runs per BIG-IP. For an HA pair list **both** units: the active one is deployed to and synchronised, the standby is checked afterwards. |
 | `cert` | **required** | The `[cert:]` section to deploy. |
 | `profile` | none | client-ssl profile(s) to update. Repeat for several. See [Profiles and entries](#profiles-and-entries). **Omit entirely** to replace only the fixed-name objects, touching no profile. |
 | `verify` | none | After the change, connect here and confirm the new certificate is served. Repeatable. See [Verification](#verification-endpoints). |
 | `verify_from` | `f5` | `f5`: probe from the BIG-IP itself. `local`: probe from the host running the tool. |
 | `env` | none | A label for `--env`. |
 | `enabled` | `yes` | `no` skips the deployment even with `--all`. |
-| `keep`, `auto_rollback`, `fixed_names`, `verify_unreachable` | from `[defaults]` | Per-deployment overrides. |
+| `keep`, `auto_rollback`, `fixed_names`, `verify_unreachable`, `sync` | from `[defaults]` | Per-deployment overrides. |
 
 Two enabled deployments may not manage the same profile (or the same profile entry) on the same BIG-IP, and
 may not use the same `object_prefix` for different certificates on the same BIG-IP (and partition). The tool
@@ -139,6 +142,45 @@ are spelled:
 
 The same overlap within one deployment's own `profile` lines is refused too. (One deployment that lists two
 `[f5:]` names for the same device deploys the same certificate twice, which is harmless and allowed.)
+
+## HA pairs and config-sync
+
+Certificates, keys and client-ssl profiles are part of the configuration a device group synchronises. So for an
+HA pair the tool changes **one** unit, the active one, and lets config-sync carry the change to the other:
+
+```ini
+[f5:dc1-a]
+host = 10.0.0.11
+ssh_key = /root/.ssh/f5_push_ecdsa
+[f5:dc1-b]
+host = 10.0.0.12
+ssh_key = /root/.ssh/f5_push_ecdsa
+
+[deploy:www-dc1]
+f5      = dc1-a, dc1-b        # both units; whichever is active is deployed to
+cert    = www
+profile = www-clientssl
+verify  = 10.1.10.10:443 www.example.com
+```
+
+With `sync = auto` (the default), for each deployment:
+
+1. Each unit is read. The **standby** is not changed: its job waits until the active unit's job has run.
+2. On the **active** unit the tool finds the sync-failover device group it shares with another device
+   (`sync_group` names it if there are several) and **refuses to start unless that group is In Sync**:
+   config-sync copies the unit's whole configuration, so a pending change by someone else would be copied too.
+3. The deployment runs as usual (backup, install, one-transaction switch, verify, prune).
+4. The tool runs `tmsh run cm config-sync to-group <group>` (or, if the group has auto-sync, just waits) and
+   then waits, up to `sync_timeout`, until the group reports **In Sync and every member shows the same last
+   commit**, which proves the peers loaded this unit's configuration.
+5. The standby's job then reads its profiles: it must now have the new certificate (`IN_SYNC`).
+
+If the sync does not complete, the active unit keeps the new (verified) certificate and the run reports
+`SYNC_FAILED` (exit 1) with the command to finish it. If the deployment fails and is rolled back, the group is
+synchronised again so it is left In Sync. A failover between runs needs no change to the file.
+
+Units that are not in a sync-failover group with another device (standalone) are deployed to directly, as
+before. `sync = no` restores the old behaviour: deploy to the active unit only, and sync yourself.
 
 ## Profiles and entries
 

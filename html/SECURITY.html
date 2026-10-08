@@ -137,7 +137,11 @@ something is checked in addition to its output.</p>
 <ul>
 <li>No "run everything" default: you must name a deployment, environment, lineage or <code>--all</code>.</li>
 <li>The BIG-IP is refused unless its configuration is <strong>fully loaded</strong> and the unit is <strong>active</strong> (or standby
-  with an explicit opt-in).</li>
+  with an explicit opt-in). A standby unit of a synchronised pair is only <strong>read</strong>, after the sync.</li>
+<li><strong>Config-sync publishes the whole configuration</strong>, not just the certificate. The tool therefore syncs only a
+  device group that was <strong>In Sync before it changed anything</strong>, so what it publishes is its own change and
+  nothing else (a change someone makes on the unit <em>during</em> the run would still be included). It never syncs
+  after a <code>CRITICAL</code> result, and it confirms the sync by the members' commit ids, not just a status word.</li>
 <li>Nothing on the BIG-IP changes until the <strong>backup is complete and verified</strong>: the set must contain exactly
   the items planned (an inventory compared with a list worked out locally), and its checksums must cover
   every file, the restore script included. The new files are installed under <strong>new names</strong>. The live

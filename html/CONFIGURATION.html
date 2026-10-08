@@ -161,7 +161,19 @@ contain no <code>..</code> and no <code>//</code>.</p>
 <td><code>allow_standby</code></td>
 <td><code>no</code></td>
 <td>f5</td>
-<td>Permit deploying to a BIG-IP that reports STANDBY.</td>
+<td>Permit deploying to a BIG-IP that reports STANDBY. Not needed for HA pairs (see <a href="#ha-pairs-and-config-sync">HA pairs</a>).</td>
+</tr>
+<tr>
+<td><code>sync</code></td>
+<td><code>auto</code></td>
+<td>f5, deploy</td>
+<td>After deploying to a unit in a sync-failover device group, synchronise the group and confirm every member loaded the change; refuse to start if the group is not In Sync. <code>no</code>: never sync (the tool reminds you to). See <a href="#ha-pairs-and-config-sync">HA pairs</a>.</td>
+</tr>
+<tr>
+<td><code>sync_timeout</code></td>
+<td><code>120</code></td>
+<td>f5</td>
+<td>Seconds to wait for the device group to report In Sync after a sync.</td>
 </tr>
 <tr>
 <td><code>log_file</code></td>
@@ -215,7 +227,12 @@ contain no <code>..</code> and no <code>//</code>.</p>
 <td>The BIG-IP partition that holds the certificates and profiles.</td>
 </tr>
 <tr>
-<td><code>known_hosts_file</code>, <code>strict_host_key_checking</code>, <code>connect_timeout</code>, <code>remote_timeout</code>, <code>remote_lock_stale_minutes</code>, <code>connection_reuse</code>, <code>backup_dir_remote</code>, <code>keep</code>, <code>allow_standby</code>, <code>lock_dir</code></td>
+<td><code>sync_group</code></td>
+<td>automatic</td>
+<td>The device group to synchronise. Needed only if this unit is in more than one sync-failover group.</td>
+</tr>
+<tr>
+<td><code>known_hosts_file</code>, <code>strict_host_key_checking</code>, <code>connect_timeout</code>, <code>remote_timeout</code>, <code>remote_lock_stale_minutes</code>, <code>connection_reuse</code>, <code>backup_dir_remote</code>, <code>keep</code>, <code>allow_standby</code>, <code>lock_dir</code>, <code>sync</code>, <code>sync_timeout</code></td>
 <td>from <code>[defaults]</code></td>
 <td>Per-BIG-IP overrides.</td>
 </tr>
@@ -292,7 +309,7 @@ so a renewal landing mid-run cannot make the tool upload something it did not va
 <tr>
 <td><code>f5</code></td>
 <td><strong>required</strong></td>
-<td>BIG-IP name(s). Repeat the line, or separate with commas. One job runs per BIG-IP.</td>
+<td>BIG-IP name(s). Repeat the line, or separate with commas. One job runs per BIG-IP. For an HA pair list <strong>both</strong> units: the active one is deployed to and synchronised, the standby is checked afterwards.</td>
 </tr>
 <tr>
 <td><code>cert</code></td>
@@ -325,7 +342,7 @@ so a renewal landing mid-run cannot make the tool upload something it did not va
 <td><code>no</code> skips the deployment even with <code>--all</code>.</td>
 </tr>
 <tr>
-<td><code>keep</code>, <code>auto_rollback</code>, <code>fixed_names</code>, <code>verify_unreachable</code></td>
+<td><code>keep</code>, <code>auto_rollback</code>, <code>fixed_names</code>, <code>verify_unreachable</code>, <code>sync</code></td>
 <td>from <code>[defaults]</code></td>
 <td>Per-deployment overrides.</td>
 </tr>
@@ -343,6 +360,39 @@ are spelled:</p>
 </ul>
 <p>The same overlap within one deployment's own <code>profile</code> lines is refused too. (One deployment that lists two
 <code>[f5:]</code> names for the same device deploys the same certificate twice, which is harmless and allowed.)</p>
+<h2 id="ha-pairs-and-config-sync">HA pairs and config-sync</h2>
+<p>Certificates, keys and client-ssl profiles are part of the configuration a device group synchronises. So for an
+HA pair the tool changes <strong>one</strong> unit, the active one, and lets config-sync carry the change to the other:</p>
+<pre><code class="language-ini">[f5:dc1-a]
+host = 10.0.0.11
+ssh_key = /root/.ssh/f5_push_ecdsa
+[f5:dc1-b]
+host = 10.0.0.12
+ssh_key = /root/.ssh/f5_push_ecdsa
+
+[deploy:www-dc1]
+f5      = dc1-a, dc1-b        # both units; whichever is active is deployed to
+cert    = www
+profile = www-clientssl
+verify  = 10.1.10.10:443 www.example.com
+</code></pre>
+<p>With <code>sync = auto</code> (the default), for each deployment:</p>
+<ol>
+<li>Each unit is read. The <strong>standby</strong> is not changed: its job waits until the active unit's job has run.</li>
+<li>On the <strong>active</strong> unit the tool finds the sync-failover device group it shares with another device
+   (<code>sync_group</code> names it if there are several) and <strong>refuses to start unless that group is In Sync</strong>:
+   config-sync copies the unit's whole configuration, so a pending change by someone else would be copied too.</li>
+<li>The deployment runs as usual (backup, install, one-transaction switch, verify, prune).</li>
+<li>The tool runs <code>tmsh run cm config-sync to-group &lt;group&gt;</code> (or, if the group has auto-sync, just waits) and
+   then waits, up to <code>sync_timeout</code>, until the group reports <strong>In Sync and every member shows the same last
+   commit</strong>, which proves the peers loaded this unit's configuration.</li>
+<li>The standby's job then reads its profiles: it must now have the new certificate (<code>IN_SYNC</code>).</li>
+</ol>
+<p>If the sync does not complete, the active unit keeps the new (verified) certificate and the run reports
+<code>SYNC_FAILED</code> (exit 1) with the command to finish it. If the deployment fails and is rolled back, the group is
+synchronised again so it is left In Sync. A failover between runs needs no change to the file.</p>
+<p>Units that are not in a sync-failover group with another device (standalone) are deployed to directly, as
+before. <code>sync = no</code> restores the old behaviour: deploy to the active unit only, and sync yourself.</p>
 <h2 id="profiles-and-entries">Profiles and entries</h2>
 <p>A client-ssl profile holds one or more <strong>cert-key-chain entries</strong>. Most profiles have exactly one; a
 profile can hold both an RSA and an ECDSA entry (a profile cannot hold two of the same key type).</p>

@@ -1,5 +1,47 @@
 # Changelog
 
+## 2.2.0
+
+### HA pairs: config-sync, with verification
+- After a deployment to the **active** unit, the tool now **synchronises its device group** and waits until
+  every member reports **In Sync with the same last commit**: proof that the peers loaded this unit's
+  configuration, not just a status line. `sync = auto` (the default) picks the one sync-failover device group
+  the unit shares with another device; `sync_group = NAME` (in `[f5:]`) names it, and `sync = no` turns this
+  off. `sync_timeout` (default 120 s) bounds the wait. A group with auto-sync is not synced again, only waited on.
+- **Refuses to start unless the group is already In Sync.** A config-sync copies the unit's whole
+  configuration, so syncing on top of someone else's pending change would publish it too. A pair showing
+  `Changes Pending` (or anything but In Sync) stops the deployment before the backup, with the reason.
+- **List both units** of a pair in a deployment (`f5 = dc1-a, dc1-b`). Whichever is active is deployed to and
+  synchronised; the standby is not changed directly, and is checked **after** the sync (read-only): it must
+  now serve the new certificate. A failover between runs needs no configuration change. A standby listed
+  first waits for its active unit's job.
+- New results: `IN_SYNC` (standby has the new certificate), `NOT_SYNCED` (it does not), `SKIPPED` (its active
+  unit's deployment did not complete), `STANDBY` (no active unit of its group was in the run),
+  `SYNC_FAILED` (deployed and verified on the active unit, but the sync did not complete: exit 1, with the
+  command to run).
+- A failed deployment that was rolled back (or an interrupted one) re-synchronises the group if it was In Sync
+  before, so the next run is not refused. Not after `CRITICAL`: an unknown state is never copied to the peers.
+- `--rollback` synchronises the group after a verified restore, if it was In Sync before; a standby listed in
+  the rollback is skipped (it receives the rollback by the sync).
+- `--check` also compares a standby unit (read-only).
+
+### Discovery and a draft configuration
+- `--discover` now shows, for each BIG-IP (`--f5 NAME`, repeatable; default: every one in the configuration):
+  the device, its failover state, **its device groups with type, members, auto-sync and sync status**, and
+  every client-ssl profile entry with its **certificate (CN, expiry), chain and key, and the virtual servers
+  that use it**. Profiles on the default certificate are summarised on one line.
+- `--discover --write-config FILE` writes your configuration **plus suggested `[cert:]` and `[deploy:]`
+  sections** for every profile entry that no deployment covers yet: one deployment per certificate and per
+  pair (both units listed), entries named where a profile has several, `verify` lines from the virtual
+  servers that use the profile, and certificate paths to fill in. The suggested deployments are
+  `enabled = no` until you review them. It never overwrites a file.
+
+### Other
+- New dependency on the host: `paste` (coreutils).
+- **(config)** `sync = auto` is the default: a deployment to a unit in a sync-failover group now synchronises
+  the group, and refuses to start if the group is not In Sync. Set `sync = no` to keep the old behaviour.
+  Standalone units are unaffected.
+
 ## 2.1.2
 
 Fixes for every finding of the third independent review (of 2.1.1; `F1`-`F5`, report summarised in `REVIEW.md`

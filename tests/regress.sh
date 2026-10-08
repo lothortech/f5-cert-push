@@ -1078,5 +1078,114 @@ f5_trust_path_named() {
 }
 check "F5: a refused upload or store directory names the directory that is unsafe" f5_trust_path_named
 
+# ---- 2.2.0: config-sync and discovery (no BIG-IP needed) ----------------------
+echo "== 2.2.0: config-sync"
+
+PROBE_PAIR='SELF|f5a.example
+DG|Sync-Failover|sync-failover|disabled|f5a.example,f5b.example
+DG|device_trust_group|sync-only|enabled|f5a.example,f5b.example
+DG|gtm|sync-only|disabled|f5a.example
+DGSTATUS|Sync-Failover|In Sync
+DGCID|Sync-Failover:f5a.example|/Common/f5a.example|2026-Oct-07_22:39:51
+DGCID|Sync-Failover:f5b.example|/Common/f5a.example|2026-Oct-07_22:39:51'
+
+y1_select() {
+  load_push
+  J_DEP=d; J_F5=f
+  parse_sync_lines "$PROBE_PAIR"
+  sync_select || return 1
+  echo "group=$J_SYNC_G peers=$(sync_peers)"
+  [[ "$J_SYNC_G" == Sync-Failover && "$(sync_peers)" == f5b.example ]] || return 1
+  CFG[deploy:d|sync]=no; sync_select; [[ -z "$J_SYNC_G" ]] || return 1; unset 'CFG[deploy:d|sync]'
+  CFG[f5:f|sync_group]=nosuch; sync_select >/dev/null 2>&1 && return 1; unset 'CFG[f5:f|sync_group]'
+  # standalone: no group with another member
+  parse_sync_lines 'SELF|solo.example
+DG|gtm|sync-only|disabled|solo.example'
+  sync_select && [[ -z "$J_SYNC_G" ]] || return 1
+  # two sync-failover groups: the operator must choose
+  parse_sync_lines "$PROBE_PAIR
+DG|Other|sync-failover|disabled|f5a.example,f5c.example"
+  sync_select >/dev/null 2>&1 && return 1
+  CFG[f5:f|sync_group]=Other; sync_select && [[ "$J_SYNC_G" == Other ]]
+}
+check "sync: the device group is the one sync-failover group shared with another unit; sync = no and sync_group are honoured" y1_select
+
+y2_precheck() {
+  load_push
+  J_DEP=d; J_F5=f
+  parse_sync_lines "${PROBE_PAIR/DGSTATUS|Sync-Failover|In Sync/DGSTATUS|Sync-Failover|Changes Pending}"
+  sync_select || return 1
+  sync_precheck >/dev/null 2>&1 && return 1
+  echo "$J_MSG"
+  [[ "$J_MSG" == *"'Changes Pending', not In Sync"* && "$J_SYNC_PRE" == 0 ]] || return 1
+  parse_sync_lines "$PROBE_PAIR"; sync_precheck && [[ "$J_SYNC_PRE" == 1 ]]
+}
+check "sync: a device group that is not In Sync is refused before any change" y2_precheck
+
+y3_job_sync() {
+  load_push
+  J_DEP=d; J_F5=f; CFG[defaults|sync_timeout]=2
+  parse_sync_lines "$PROBE_PAIR"; sync_select || return 1
+  sleep() { :; }
+  local n="${TMP}/y3.n"; echo 0 > "$n"
+  f5_mut() { echo "SYNC|STARTED"; return 0; }
+  # pending twice, then In Sync with matching commits
+  f5_sh() {
+    local c; c=$(( $(cat "$n") + 1 )); echo "$c" > "$n"
+    if (( c < 3 )); then printf '%s\n' 'DGSTATUS|Sync-Failover|Changes Pending' 'DGCID|Sync-Failover:f5a.example|/Common/f5a.example|T2' 'DGCID|Sync-Failover:f5b.example|/Common/f5a.example|T1'
+    else printf '%s\n' 'DGSTATUS|Sync-Failover|In Sync' 'DGCID|Sync-Failover:f5a.example|/Common/f5a.example|T2' 'DGCID|Sync-Failover:f5b.example|/Common/f5a.example|T2'; fi
+  }
+  job_sync always >/dev/null 2>&1 || { echo "sync not confirmed: $SYNC_ERR"; return 1; }
+  # "In Sync" with different commits is not accepted (a stale status)
+  f5_sh() { printf '%s\n' 'DGSTATUS|Sync-Failover|In Sync' 'DGCID|Sync-Failover:f5a.example|/Common/f5a.example|T2' 'DGCID|Sync-Failover:f5b.example|/Common/f5a.example|T1'; }
+  job_sync always >/dev/null 2>&1 && return 1
+  echo "$SYNC_ERR"; [[ "$SYNC_ERR" == *"did not report In Sync"* ]] || return 1
+  # config-sync itself fails
+  f5_mut() { echo "FAIL|01070734:3: Configuration error"; return 1; }
+  job_sync always >/dev/null 2>&1 && return 1
+  echo "$SYNC_ERR"; [[ "$SYNC_ERR" == *"01070734:3: Configuration error"* ]]
+}
+check "sync: success needs In Sync AND matching commits on every member; a timeout or a config-sync error is reported" y3_job_sync
+
+y4_peer_job() {
+  load_push
+  J_DEP=d; J_F5=f2; X_SELF=f5b.example; DRY_RUN=0; PEER_PASS=0
+  job_select_targets() { return 0; }; job_objinfo() { return 0; }
+  job_is_current() { return 0; }
+  peer_job >/dev/null 2>&1; [[ "$J_RESULT" == DEFER ]] || { echo "first pass: $J_RESULT"; return 1; }
+  PEER_PASS=1; J_RC=0
+  peer_job >/dev/null 2>&1; [[ "$J_RESULT" == STANDBY && "$J_RC" == 1 ]] || { echo "no active: $J_RESULT"; return 1; }
+  PEER_DONE[d|f5b.example]="synced|f5a"; J_RC=0
+  peer_job >/dev/null 2>&1; [[ "$J_RESULT" == IN_SYNC && "$J_RC" == 0 ]] || { echo "synced: $J_RESULT"; return 1; }
+  job_is_current() { return 1; }
+  peer_job >/dev/null 2>&1; [[ "$J_RESULT" == NOT_SYNCED && "$J_RC" == 1 ]] || { echo "not current: $J_RESULT"; return 1; }
+  PEER_DONE[d|f5b.example]="failed|f5a"; J_RC=0
+  peer_job >/dev/null 2>&1; [[ "$J_RESULT" == SKIPPED && "$J_RC" == 0 ]]
+}
+check "sync: a standby is checked only after its active unit; IN_SYNC, NOT_SYNCED, SKIPPED or STANDBY as the case may be" y4_peer_job
+
+y5_order() {
+  load_push
+  JOBS=("d|b" "d|a")
+  run_job() { echo "$2" >> "${TMP}/y5.order"
+    if [[ "$2" == b && "$PEER_PASS" == 0 ]]; then J_RESULT=DEFER; else J_RESULT=UPDATED; fi; }
+  f5_close() { :; }
+  run_jobs >/dev/null 2>&1
+  echo "order=$(paste -sd, "${TMP}/y5.order") results=${RES_JOB[*]}"
+  [[ "$(paste -sd, "${TMP}/y5.order")" == b,a,b && "${RES_JOB[*]}" == "d@a d@b" ]]
+}
+check "sync: a standby listed first is run again after the active unit, and recorded once" y5_order
+
+y6_discovery_helpers() {
+  load_push
+  [[ "$(dest_hostport Common/10.1.10.10:https)" == 10.1.10.10:443 ]] || return 1
+  [[ "$(dest_hostport /P/10.0.0.5%2:8443)" == 10.0.0.5:8443 ]] || return 1
+  [[ "$(dest_hostport Common/2001:db8::1.443)" == '[2001:db8::1]:443' ]] || return 1
+  [[ -z "$(dest_hostport Common/0.0.0.0:any)" ]] || return 1
+  [[ "$(draft_base www-example-cert-20260101-120000.pem)" == www-example ]] || return 1
+  [[ "$(draft_base /Part/my\ odd.crt)" == my-odd ]]
+}
+check "discovery: virtual server destinations become verify addresses; object names become section names" y6_discovery_helpers
+
 echo
 t_summary

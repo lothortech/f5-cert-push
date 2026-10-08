@@ -33,7 +33,8 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 deployment the tool then:</p>
 <ol>
 <li><strong>Validates</strong> the certificate, key and chain locally (they match, not expired, chain verifies).</li>
-<li><strong>Reads</strong> the BIG-IP and refuses to touch one whose configuration is not loaded or which is standby.</li>
+<li><strong>Reads</strong> the BIG-IP and refuses to touch one whose configuration is not loaded, or an HA pair that is
+   not In Sync. Of a pair, only the active unit is changed.</li>
 <li><strong>Backs up</strong> what is there, to the BIG-IP (<code>/shared</code>) <strong>and</strong> to the machine running the tool, with
    SHA-256 checksums, and writes a self-verifying <strong>restore script</strong>.</li>
 <li><strong>Uploads</strong> the new files to a private staging directory and checks their checksums on the BIG-IP.</li>
@@ -46,6 +47,7 @@ deployment the tool then:</p>
    state it cannot confirm is reported <code>CRITICAL</code>, never as success. A dropped connection, a timeout or a
    Ctrl-C in the middle of a change is recovered the same way.</li>
 <li><strong>Prunes</strong> old backups and old certificate versions down to the number you choose.</li>
+<li><strong>Synchronises an HA pair</strong> (config-sync), confirms both units loaded the change, and checks the standby.</li>
 <li><strong>Reports</strong> a summary, and returns an exit code that automation can act on.</li>
 </ol>
 <p>It is a single Bash script plus a configuration file (and an optional wrapper, <code>f5-cert-install.sh</code>, for
@@ -207,8 +209,12 @@ documented in <a href="CONFIGURATION.html">docs/CONFIGURATION.html</a>.</p>
 <td>show the deployments the config defines</td>
 </tr>
 <tr>
-<td><code>--discover --f5 NAME</code></td>
-<td>list every client-ssl profile and entry on a BIG-IP, with expiry dates</td>
+<td><code>--discover [--f5 NAME]</code></td>
+<td>show each BIG-IP's device groups and sync status, and every client-ssl profile with its certificate, chain, key, expiry and virtual servers</td>
+</tr>
+<tr>
+<td><code>--discover --write-config FILE</code></td>
+<td>the same, plus a draft configuration with a deployment for every profile found</td>
 </tr>
 <tr>
 <td><code>--list-backups</code></td>

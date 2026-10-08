@@ -88,6 +88,8 @@ $EDITOR /etc/f5-cert-push.conf
 </code></pre>
 <p>Start with one BIG-IP, one certificate, one deployment. Find the profile names with:</p>
 <pre><code class="language-bash">./f5-cert-push.sh --config /etc/f5-cert-push.conf --discover --f5 prod-a
+# every BIG-IP in the file, plus a draft configuration for the profiles found:
+./f5-cert-push.sh --config /etc/f5-cert-push.conf --discover --write-config /root/draft.conf
 </code></pre>
 <h3 id="15-validate-rehearse-deploy">1.5 Validate, rehearse, deploy</h3>
 <pre><code class="language-bash">./f5-cert-push.sh --validate                   # config + certificate files, no network
@@ -232,8 +234,33 @@ even if the rollback is verified (the step might still complete later).</p>
 </tr>
 <tr>
 <td><code>RESTORED</code></td>
-<td><code>--rollback</code> completed <strong>and verified</strong> on the device</td>
+<td><code>--rollback</code> completed <strong>and verified</strong> on the device (and synchronised to the peers, for a pair)</td>
 <td>0</td>
+</tr>
+<tr>
+<td><code>IN_SYNC</code></td>
+<td>A standby unit: it has the new certificate, received by config-sync from its active unit</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>SKIPPED</code></td>
+<td>A standby unit: not checked, because the deployment on its active unit did not complete (see that line)</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>SYNC_FAILED</code></td>
+<td>Deployed and verified on the active unit, but the device group did not synchronise: the peers still have the old certificate. The message gives the command</td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>NOT_SYNCED</code></td>
+<td>A standby unit does not have the new certificate after the sync</td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>STANDBY</code></td>
+<td>A standby unit, and no active unit of its device group was deployed in this run</td>
+<td>1</td>
 </tr>
 <tr>
 <td><code>OUTDATED</code></td>
@@ -378,15 +405,22 @@ BIG-IP and requires, for every item in the backup's <code>INVENTORY</code>:</p>
 <p>Anything else (including a profile or entry that is missing) is reported as not restored.</p>
 <hr />
 <h2 id="5-ha-pairs-and-multiple-big-ips">5. HA pairs and multiple BIG-IPs</h2>
-<p><strong>The tool does not synchronise a device group.</strong> For an HA pair:</p>
-<ol>
-<li>Deploy to the <strong>active</strong> unit. The tool refuses a standby unit (<code>allow_standby = no</code>).</li>
-<li>Synchronise as you normally do (for example <code>tmsh run cm config-sync to-group NAME</code>).</li>
-<li>After a successful run on a BIG-IP that is not standalone, the tool prints a reminder to synchronise.</li>
-</ol>
-<p>Objects are created in the device group's synced folders (<code>/Common</code>), so the sync carries them to the peer.
-Alternatively list <strong>both</strong> units as separate <code>[f5:]</code> sections with <code>allow_standby = yes</code>, but then the next
-config-sync can overwrite what you pushed to the standby. The first approach is safer.</p>
+<p><strong>List both units of a pair in the deployment</strong> (<code>f5 = dc1-a, dc1-b</code>). With <code>sync = auto</code> (the default) the
+tool deploys to whichever unit is active, synchronises the device group, confirms every member loaded the
+change (In Sync, same last commit), and then checks the standby read-only. See
+<a href="CONFIGURATION.html#ha-pairs-and-config-sync">CONFIGURATION.md, HA pairs</a> for the steps.</p>
+<ul>
+<li><strong>The group must be In Sync before a deployment.</strong> If it shows <code>Changes Pending</code> (someone changed a unit
+  and did not sync), the tool stops before changing anything: syncing afterwards would publish that other
+  change too. Look at what differs, sync from the unit whose configuration is right, then run again.</li>
+<li><strong>If the sync fails</strong> (<code>SYNC_FAILED</code>, exit 1), the active unit serves the new certificate and the peers the
+  old one. Finish it on the active unit: <code>tmsh run cm config-sync to-group &lt;group&gt;</code>, then
+  <code>tmsh show cm sync-status</code>.</li>
+<li><strong>Failover</strong> needs no change to the file: the next run deploys to whichever unit is active.</li>
+<li><code>sync = no</code>: the old behaviour. Deploy to the active unit only (a standby is refused) and synchronise
+  yourself; the tool prints a reminder.</li>
+</ul>
+<p>SSH keys are <strong>not</strong> part of the synchronised configuration: authorise the tool's key on every unit.</p>
 <p>For many BIG-IPs (separate environments, data centres, tenants) define one <code>[f5:]</code> per device and one
 <code>[deploy:]</code> per certificate-to-devices mapping; see <a href="CONFIGURATION.html#recipes">CONFIGURATION.html</a>. Deployments
 run <strong>sequentially</strong>; two runs against the same BIG-IP cannot overlap (the lock), and a failure in one
@@ -504,6 +538,18 @@ a record of its own.</p>
 <tr>
 <td><code>the staging directory ... is left in place</code></td>
 <td>Shown with a <code>CRITICAL</code> result: a step that may still be running could be using it. A later run removes it after two hours, or remove it yourself once the device is checked: <code>rm -rf /var/tmp/f5-cert-push.*</code>.</td>
+</tr>
+<tr>
+<td><code>device group ... is 'Changes Pending', not In Sync</code></td>
+<td>Someone changed a unit of the pair and did not synchronise. Nothing was changed. Check what differs (<code>tmsh show cm sync-status</code>), sync from the unit whose configuration is right, then run again.</td>
+</tr>
+<tr>
+<td><code>... NOT synchronised: device group ... did not report In Sync</code> (<code>SYNC_FAILED</code>)</td>
+<td>The new certificate is live on the active unit; the peers still have the old one. On the active unit: <code>tmsh run cm config-sync to-group &lt;group&gt;</code>, then <code>tmsh show cm sync-status</code>. Raise <code>sync_timeout</code> if the pair is just slow.</td>
+</tr>
+<tr>
+<td><code>in N sync-failover device groups; set sync_group</code></td>
+<td>Name the group to synchronise in the unit's <code>[f5:]</code> section.</td>
 </tr>
 <tr>
 <td><code>an earlier step never reported its outcome</code></td>

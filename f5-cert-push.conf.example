@@ -85,9 +85,18 @@ chain_check = warn
 # those names. It stores an extra copy of the private key on the BIG-IP.
 fixed_names = no
 
-# Push to a BIG-IP that reports STANDBY. Normally you deploy to the active unit
-# and then sync. Leave 'no' unless you know you need it.
+# Push to a BIG-IP that reports STANDBY. Not needed for HA pairs (see 'sync').
+# Leave 'no' unless you know you need it.
 allow_standby = no
+
+# HA pairs. With 'auto', a deployment to a unit in a sync-failover device group
+# synchronises the group afterwards (config-sync) and waits until every member
+# has loaded the change; the standby is then checked. It refuses to start if the
+# group is not In Sync (a sync would also copy someone else's pending change).
+#   auto | no        (no: never sync; you sync yourself)
+sync = auto
+# Seconds to wait for the group to report In Sync after the sync.
+sync_timeout = 120
 
 # Append a timestamped log of every run here (mode 0600). Optional.
 #log_file = /var/log/f5-cert-push.log
@@ -109,10 +118,12 @@ host = 10.0.0.11
 # partition = Common   # the partition holding the certificates and profiles
 ssh_key = /root/.ssh/f5_push_ecdsa
 
-# --- its pair (deploy to each; or to the active one and sync) --------------
+# --- its pair. List BOTH units in a deployment: the active one is deployed to
+#     and synchronised, the standby is checked afterwards. -------------------
 [f5:prod-b]
 host = 10.0.0.12
 ssh_key = /root/.ssh/f5_push_ecdsa
+# sync_group = Sync-Failover   # only if the unit is in several sync-failover groups
 
 # --- a lab device, with a few settings overridden ---------------------------
 [f5:lab]

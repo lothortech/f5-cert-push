@@ -33,7 +33,7 @@ run "$BIN" --config "$CF" --deploy nope --dry-run; expect_rc 2 "unknown deployme
 run "$BIN" --config "$CF" --f5 nope --list;    expect_rc 2 "unknown BIG-IP is refused";              expect_has "no such BIG-IP" "unknown BIG-IP is named"
 run "$BIN" --config "$CF" --deploy=d --list;   expect_rc 0 "--opt=value form is accepted"
 run "$BIN" --config "$CF" --rollback --deploy d --set bogus; expect_rc 2 "--rollback needs a well-formed --set"
-run "$BIN" --config "$CF" --discover;          expect_rc 2 "--discover needs exactly one --f5"
+run "$BIN" --config "$CF" --discover --f5 nosuch; expect_rc 2 "--discover refuses an unknown BIG-IP"
 
 #######################################################################
 echo "== configuration: accepted forms"

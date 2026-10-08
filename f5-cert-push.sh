@@ -29,7 +29,7 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.1.2"
+readonly VERSION="2.2.0"
 readonly PROG="f5-cert-push"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
@@ -45,6 +45,7 @@ readonly EX_OK=0 EX_ERR=1 EX_USAGE=2 EX_ROLLED_BACK=3 EX_OUTDATED=4 EX_CRITICAL=
 #######################################################################
 CONFIG_FILE=""
 ACTION="run"            # run | validate | list | discover | list-backups | rollback
+WRITE_CONFIG=""         # --discover --write-config FILE
 DRY_RUN=0
 CHECK_ONLY=0
 FORCE=0
@@ -152,16 +153,26 @@ signal_finish() {
   if (( J_CHANGED )); then
     job_handle_failure "interrupted by SIG${SIGNALLED} after the BIG-IP was changed"
     J_CHANGED=0; JOB_ACTIVE=0
+    signal_resync
     record_result "${J_DEP}@${J_F5}"
   elif (( JOB_ACTIVE )); then
     JOB_ACTIVE=0
     job_remove_created || true
     J_RESULT=FAILED; J_RC=130; J_MSG="interrupted by SIG${SIGNALLED}; the profiles were not changed"
+    signal_resync
     record_result "${J_DEP}@${J_F5}"
   fi
   JOB_TAG=""
   print_summary
   signal_exit
+}
+
+# After an interrupted job has recovered: leave its device group In Sync, as
+# job_abort does (objects may have been created and removed). Not after CRITICAL.
+signal_resync() {
+  if [[ -n "${J_SYNC_G:-}" ]] && (( J_SYNC_PRE && ! REMOTE_LOCK_KEEP )) && [[ "$J_RESULT" != CRITICAL ]]; then
+    job_sync ifneeded || J_MSG+="; and device group ${J_SYNC_G} could not be synchronised afterwards (${SYNC_ERR})"
+  fi
 }
 
 # Exit after a signal with the most severe result of the whole run (as main does),
@@ -201,6 +212,8 @@ declare -A BUILTIN=(
   [chain_check]=warn
   [fixed_names]=no
   [allow_standby]=no
+  [sync]=auto
+  [sync_timeout]=120
   [port]=22
   [user]=root
   [partition]=Common
@@ -229,7 +242,11 @@ ACTIONS  (default: deploy)
   --dry-run          show exactly what a deploy would do; change nothing
   --validate         check the config file and local certificate files only
   --list             show the deployments the config defines
-  --discover         list client-ssl profiles and their certificates on --f5 NAME
+  --discover         show each BIG-IP (--f5 NAME, repeatable; default: all): its device
+                     groups and sync state, every client-ssl profile with its certificate,
+                     chain, key and expiry, and the virtual servers that use it
+  --write-config F   with --discover: write the configuration plus suggested [cert:] and
+                     [deploy:] sections for every profile not yet covered (to a new file F)
   --list-backups     list backup sets for the selected deployments
   --rollback --set TS
                      restore the BIG-IP state captured just before run TS
@@ -275,11 +292,11 @@ key_allowed() {   # key_allowed TYPE KEY
   case "$1" in
     defaults)
       case "$2" in
-        keep|backup_dir_local|backup_dir_remote|strict_host_key_checking|known_hosts_file|connect_timeout|remote_timeout|remote_lock_stale_minutes|connection_reuse|log_file|lock_dir|min_days_valid|auto_rollback|verify_unreachable|chain_check|fixed_names|allow_standby) return 0 ;;
+        keep|backup_dir_local|backup_dir_remote|strict_host_key_checking|known_hosts_file|connect_timeout|remote_timeout|remote_lock_stale_minutes|connection_reuse|log_file|lock_dir|min_days_valid|auto_rollback|verify_unreachable|chain_check|fixed_names|allow_standby|sync|sync_timeout) return 0 ;;
       esac ;;
     f5)
       case "$2" in
-        host|port|user|ssh_key|partition|known_hosts_file|strict_host_key_checking|backup_dir_remote|connect_timeout|remote_timeout|remote_lock_stale_minutes|connection_reuse|allow_standby|keep|lock_dir) return 0 ;;
+        host|port|user|ssh_key|partition|known_hosts_file|strict_host_key_checking|backup_dir_remote|connect_timeout|remote_timeout|remote_lock_stale_minutes|connection_reuse|allow_standby|keep|lock_dir|sync|sync_group|sync_timeout) return 0 ;;
       esac ;;
     cert)
       case "$2" in
@@ -287,7 +304,7 @@ key_allowed() {   # key_allowed TYPE KEY
       esac ;;
     deploy)
       case "$2" in
-        f5|cert|profile|verify|verify_from|env|enabled|keep|auto_rollback|fixed_names|verify_unreachable) return 0 ;;
+        f5|cert|profile|verify|verify_from|env|enabled|keep|auto_rollback|fixed_names|verify_unreachable|sync) return 0 ;;
       esac ;;
   esac
   return 1
@@ -438,8 +455,12 @@ check_value() {   # check_value KEY VALUE
       [[ "$val" == yes || "$val" == accept-new ]] || { echo "'strict_host_key_checking' must be yes or accept-new"; return 1; } ;;
     keep|min_days_valid)
       is_uint "$val" || { echo "'${key}' must be a non-negative whole number"; return 1; } ;;
-    connect_timeout|remote_timeout|remote_lock_stale_minutes)
+    connect_timeout|remote_timeout|remote_lock_stale_minutes|sync_timeout)
       if ! is_uint "$val" || (( 10#$val < 1 )); then echo "'${key}' must be a positive number of seconds"; return 1; fi ;;
+    sync)
+      [[ "$val" == auto || "$val" == no ]] || { echo "'sync' must be auto or no"; return 1; } ;;
+    sync_group)
+      is_name "$val" || { echo "'sync_group' must be a device group name (letters, digits, . _ -)"; return 1; } ;;
     auto_rollback|fixed_names|allow_standby|enabled|connection_reuse)
       [[ -n "$(norm_bool "$val")" ]] || { echo "'${key}' must be yes or no"; return 1; } ;;
     verify_unreachable)
@@ -490,7 +511,8 @@ validate_config() {
     for key in host port user ssh_key partition known_hosts_file strict_host_key_checking \
                backup_dir_remote backup_dir_local log_file lock_dir le_dir cert key chain fullchain \
                object_prefix keep min_days_valid connect_timeout remote_timeout remote_lock_stale_minutes connection_reuse auto_rollback \
-               verify_unreachable chain_check fixed_names allow_standby verify_from env enabled; do
+               verify_unreachable chain_check fixed_names allow_standby verify_from env enabled \
+               sync sync_group sync_timeout; do
       val="${CFG[$s|$key]-}"
       [[ -n "$val" ]] || continue
       # 'cert' is a file path in [cert:*] but a section name in [deploy:*].
@@ -1100,6 +1122,22 @@ echo "VERSION|$(tmsh -q show sys version 2>/dev/null | awk '/^  Version/{print $
 echo "MCP|$(tmsh -q show sys mcp-state field-fmt 2>/dev/null | awk '$1=="phase"{p=$2} $1=="last-load"{l=$2} END{print p "|" l}')"
 echo "FAILOVER|$(tmsh -q show sys failover 2>/dev/null | head -1 | awk '{print tolower($2)}')"
 echo "SYNC|$(tmsh -q show cm sync-status 2>/dev/null | awk '$1=="Mode"{print $2; exit}')"
+# This device, its device groups (members, type, auto-sync) and their sync state.
+echo "SELF|$(tmsh -q list cm device one-line 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "self-device" && $(i+1) == "true") { print $3; exit }}')"
+for g in $(tmsh -q list cm device-group one-line 2>/dev/null | awk '$1 == "cm" && $2 == "device-group" {print $3}'); do
+  tmsh -q list cm device-group "$g" auto-sync devices type 2>/dev/null | awk -v G="$g" '
+    $1 == "auto-sync" { a = $2 }
+    $1 == "type"      { t = $2 }
+    /^    devices \{/  { d = 1; next }
+    d && /^    \}/     { d = 0; next }
+    d && /^        [^ ]+ \{ \}$/ { m = m (m == "" ? "" : ",") $1 }
+    END { print "DG|" G "|" t "|" a "|" m }'
+done
+tmsh -q show cm sync-status field-fmt 2>/dev/null | sed -n 's/^ *details\.[0-9]*\.details \([^ ]*\) (\([^)]*\)): .*/DGSTATUS|\1|\2/p'
+tmsh -q show cm device-group field-fmt 2>/dev/null | awk '
+  $1 == "cm" && $2 == "device-group-device" { k = $3; o = ""; next }
+  $1 == "commit-id-originator" { o = $2 }
+  $1 == "commit-id-time"       { print "DGCID|" k "|" o "|" $2 "_" $3 }'
 if tmsh -q list auth partition "$PART" 2>&1 | grep -q '^auth partition'; then
   echo "PARTITION|OK"
 else
@@ -1505,17 +1543,60 @@ else
 fi
 REMOTE_EOF
 
+define R_SYNCSTATE <<'REMOTE_EOF'
+# The sync status of every device group, and each member's last commit id.
+tmsh -q show cm sync-status field-fmt 2>/dev/null | sed -n 's/^ *details\.[0-9]*\.details \([^ ]*\) (\([^)]*\)): .*/DGSTATUS|\1|\2/p'
+tmsh -q show cm device-group field-fmt 2>/dev/null | awk '
+  $1 == "cm" && $2 == "device-group-device" { k = $3; o = ""; next }
+  $1 == "commit-id-originator" { o = $2 }
+  $1 == "commit-id-time"       { print "DGCID|" k "|" o "|" $2 "_" $3 }'
+REMOTE_EOF
+
+define R_SYNC <<'REMOTE_EOF'
+# (needs R_LIB) args: DEVICE-GROUP. Push this unit's configuration to the group.
+out="$(tmsh -q run cm config-sync to-group "$1" 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] || tmsh_failed "$out"; then
+  echo "FAIL|$(printf '%s' "$out" | tr '\n|' '  ' | cut -c1-400)"
+  exit 1
+fi
+echo "SYNC|STARTED"
+REMOTE_EOF
+
 define R_DISCOVER <<'REMOTE_EOF'
-# Lists every client-ssl profile entry in every partition. ("cd /" makes the
-# recursive listing span partitions; names then print as Partition/name.)
+# Every client-ssl profile entry in every partition, the virtual servers and the
+# profiles they use, and the details of every certificate a profile uses.
+# ("cd /" makes recursive listings span partitions; names then print as Partition/name.)
+#   DP|/Part/profile|entry|cert|chain|key|inherit
+#   VS|/Part/virtual|destination|/Part/profile,...
+#   CERT|name|FINGERPRINT|EXPIRY-EPOCH|CN
+certs=""
 for p in $(printf '%s\n' 'cd /' 'list ltm profile client-ssl one-line recursive' | tmsh -q 2>/dev/null | awk '{print $4}'); do
-  tmsh -q list ltm profile client-ssl "/$p" cert-key-chain 2>/dev/null | awk -v P="/$p" '
-    function flush() { if (e != "") print "DP|" P "|" e "|" c "|" h "|" k }
+  o="$(tmsh -q list ltm profile client-ssl "/$p" inherit-certkeychain cert-key-chain 2>/dev/null)"
+  inh="$(printf '%s\n' "$o" | awk '$1=="inherit-certkeychain"{print $2}')"
+  printf '%s\n' "$o" | awk -v P="/$p" -v I="${inh:-false}" '
+    function flush() { if (e != "") print "DP|" P "|" e "|" c "|" h "|" k "|" I }
     /^        [^ ].* \{$/ { flush(); e = $1; c = "none"; h = "none"; k = "none"; next }
     /^            cert /   { c = $2 }
     /^            chain /  { h = $2 }
     /^            key /    { k = $2 }
     END { flush() }'
+  certs="$certs $(printf '%s\n' "$o" | awk '/^            cert /{print $2}')"
+done
+printf '%s\n' 'cd /' 'list ltm virtual recursive destination profiles' | tmsh -q 2>/dev/null | awk '
+  function flush() { if (v != "") print "VS|/" v "|" d "|" pl }
+  /^ltm virtual / { flush(); v = $3; d = ""; pl = ""; inp = 0; next }
+  /^    destination / { d = $2; next }
+  /^    profiles \{/ { inp = 1; next }
+  inp && /^    \}/ { inp = 0; next }
+  inp && /^        [^ ]+ \{/ { pl = pl (pl == "" ? "" : ",") "/" $1 }
+  END { flush() }'
+for c in $(printf '%s\n' $certs | sort -u); do
+  [ "$c" = none ] && continue
+  o="$(tmsh -q list sys file ssl-cert "$c" fingerprint expiration-date subject 2>/dev/null)" || continue
+  fp="$(printf '%s\n' "$o" | awk '$1=="fingerprint"{print $2}')"; fp="$(printf '%s' "${fp#*/}" | tr -d ':' | tr 'a-f' 'A-F')"
+  ex="$(printf '%s\n' "$o" | awk '$1=="expiration-date"{print $2}')"
+  cn="$(printf '%s\n' "$o" | sed -n 's/^ *subject .*CN=\([^,"]*\).*/\1/p' | head -1)"
+  echo "CERT|$c|$fp|$ex|$cn"
 done
 REMOTE_EOF
 
@@ -1659,7 +1740,15 @@ J_AUTOROLL=yes J_FIXED=no J_VUNREACH=warn J_VFROM=f5 J_FP="" J_MODE=""
 # back, so even a verified rollback is reported CRITICAL.
 J_RC=0 J_MSG="" J_RESULT="" J_CHANGED=0 J_UNKNOWN=0 J_BDIR_R="" J_BDIR_L=""
 declare -a J_PROF=() J_VERIFY=() J_TARGETS=() J_CREATED=()
-X_VERSION="" X_PHASE="" X_LASTLOAD="" X_FAILOVER="" X_SYNC="" X_PARTITION=""
+X_VERSION="" X_PHASE="" X_LASTLOAD="" X_FAILOVER="" X_SYNC="" X_PARTITION="" X_SELF=""
+# Device groups as read by the probe: type, auto-sync, members (comma separated),
+# sync status, and each "GROUP:DEVICE" member's last commit id.
+declare -A DG_TYPE=() DG_AUTO=() DG_MEM=() DG_STAT=() DG_CID=()
+# Config-sync: the device group this job synchronises (empty: none), whether it was
+# In Sync before this run changed anything, and what each active unit's job left
+# for its peers: PEER_DONE["DEPLOY|DEVICE"] = "synced|F5" "uptodate|F5" "failed|F5".
+J_SYNC_G="" J_SYNC_PRE=0 SYNC_ERR="" PEER_PASS=0
+declare -A PEER_DONE=()
 declare -A PR_STATE=() PR_INH=() OBJ_FP=() OBJ_EXP=() OBJ_OK=() OBJ_KEYPUB=() OBJ_CERTS=()
 declare -a ENT_LIST=()
 LAST_TS=""
@@ -1697,6 +1786,7 @@ job_init() {   # job_init DEPLOY F5NAME
   J_VFROM="$(eff verify_from "$sd")"
   J_RC=0; J_MSG=""; J_RESULT=""; J_CHANGED=0; J_UNKNOWN=0; J_BDIR_R=""; J_BDIR_L=""
   J_PROF=(); J_VERIFY=(); J_TARGETS=(); J_CREATED=()
+  J_SYNC_G=""; J_SYNC_PRE=0; SYNC_ERR=""
   while IFS= read -r line; do [[ -n "$line" ]] && J_PROF+=("$line"); done <<<"${CFG[$sd|profile]-}"
   while IFS= read -r line; do [[ -n "$line" ]] && J_VERIFY+=("$line"); done <<<"${CFG[$sd|verify]-}"
   if (( ${#J_PROF[@]} > 0 )); then J_MODE=atomic; else J_MODE=objects; fi
@@ -1732,6 +1822,7 @@ job_probe_profiles() {   # job_probe_profiles PROFILE...   (fully qualified or C
   fi
   X_VERSION=""; X_PHASE=""; X_LASTLOAD=""; X_FAILOVER=""; X_SYNC=""; X_PARTITION=""
   PR_STATE=(); PR_INH=(); ENT_LIST=()
+  parse_sync_lines "$out"
   while IFS='|' read -r tag a b c d e f; do
     case "$tag" in
       VERSION)   X_VERSION="$a" ;;
@@ -1756,12 +1847,192 @@ job_probe_profiles() {   # job_probe_profiles PROFILE...   (fully qualified or C
   return 0
 }
 
-job_gate() {
+# Device-group lines (SELF, DG, DGSTATUS, DGCID) from R_PROBE / R_SYNCSTATE. Names
+# that are not plain names are dropped: they are only compared and printed.
+parse_sync_lines() {   # parse_sync_lines OUTPUT [state]   (state: only the status and commit lines)
+  local tag a b c d m ok
+  if [[ "${2:-}" != state ]]; then X_SELF=""; DG_TYPE=(); DG_AUTO=(); DG_MEM=(); fi
+  DG_STAT=(); DG_CID=()
+  while IFS='|' read -r tag a b c d; do
+    case "$tag" in
+      SELF) if is_name "$a"; then X_SELF="$a"; fi ;;
+      DG)
+        is_name "$a" || continue
+        ok=1
+        for m in ${d//,/ }; do is_name "$m" || ok=0; done
+        (( ok )) || continue
+        DG_TYPE[$a]="$b"; DG_AUTO[$a]="${c:-disabled}"; DG_MEM[$a]="$d" ;;
+      DGSTATUS) if is_name "$a" && [[ "$b" =~ ^[A-Za-z\ ]{1,40}$ ]]; then DG_STAT[$a]="$b"; fi ;;
+      DGCID) if [[ "$a" =~ ^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$ ]]; then DG_CID[$a]="${b}|${c}"; fi ;;
+    esac
+  done <<<"$1"
+}
+
+csv_has() { [[ ",$2," == *",$1,"* ]]; }   # csv_has ITEM A,B,C
+
+# The members of the job's device group other than this unit, comma separated.
+sync_peers() {
+  local m out=""
+  for m in ${DG_MEM[$J_SYNC_G]//,/ }; do [[ "$m" == "$X_SELF" ]] || out+="${out:+,}${m}"; done
+  printf '%s' "$out"
+}
+
+# Choose the device group to synchronise after a change (J_SYNC_G), or none.
+#   sync = no                          none
+#   sync_group = NAME (in [f5:])       that group; this unit must be a member
+#   otherwise                          the one sync-failover group this unit shares
+#                                      with another device (several: name one)
+sync_select() {
+  local g n=0 pick="" want
+  J_SYNC_G=""
+  if [[ "$(eff sync "deploy:${J_DEP}" "f5:${J_F5}")" == no ]]; then return 0; fi
+  want="$(eff sync_group "f5:${J_F5}")"
+  if [[ -n "$want" ]]; then
+    if [[ -z "${DG_TYPE[$want]+x}" ]]; then job_fail "${EX_ERR}" "sync_group '${want}' does not exist on this BIG-IP (tmsh list cm device-group)"; return 1; fi
+    if [[ -z "$X_SELF" ]] || ! csv_has "$X_SELF" "${DG_MEM[$want]}"; then job_fail "${EX_ERR}" "this BIG-IP (${X_SELF:-unknown}) is not a member of sync_group '${want}'"; return 1; fi
+    J_SYNC_G="$want"; return 0
+  fi
+  [[ -n "$X_SELF" ]] || return 0
+  for g in "${!DG_TYPE[@]}"; do
+    [[ "${DG_TYPE[$g]}" == sync-failover ]] || continue
+    csv_has "$X_SELF" "${DG_MEM[$g]}" || continue
+    [[ "${DG_MEM[$g]}" == *,* ]] || continue
+    n=$((n + 1)); pick="$g"
+  done
+  if (( n > 1 )); then
+    job_fail "${EX_ERR}" "this BIG-IP is in ${n} sync-failover device groups; set sync_group = NAME in its [f5:${J_F5}] section (or sync = no)"; return 1
+  fi
+  J_SYNC_G="$pick"
+  return 0
+}
+
+# Before changing anything: the group must be In Sync. Otherwise the sync after the
+# deployment would also copy whatever else is pending on this unit to its peers.
+sync_precheck() {
+  local st
+  [[ -n "$J_SYNC_G" ]] || return 0
+  st="${DG_STAT[$J_SYNC_G]:-unknown}"
+  if [[ "$st" != "In Sync" ]]; then
+    job_fail "${EX_ERR}" "device group ${J_SYNC_G} is '${st}', not In Sync. Synchronising after this deployment would also copy whatever else is pending to $(sync_peers). Resolve the group first (check what differs, then sync from the unit whose configuration is right: tmsh run cm config-sync to-group ${J_SYNC_G}), or set sync = no for this deployment"
+    return 1
+  fi
+  J_SYNC_PRE=1
+  return 0
+}
+
+# Read the group's state now: SS_STATUS, and SS_SAME=1 when every member reports
+# the same last commit (the peers have loaded exactly this unit's configuration).
+sync_state() {   # sync_state GROUP
+  local g="$1" out k m first="" same=1 n=0
+  SS_STATUS=""; SS_SAME=0
+  out="$(f5_sh "${R_SYNCSTATE}" 2>/dev/null)" || return 1
+  parse_sync_lines "$out" state
+  SS_STATUS="${DG_STAT[$g]:-}"
+  for m in ${DG_MEM[$g]//,/ }; do
+    k="${DG_CID[${g}:${m}]:-}"
+    [[ -n "$k" ]] || { same=0; continue; }
+    n=$((n + 1))
+    if [[ -z "$first" ]]; then first="$k"; elif [[ "$k" != "$first" ]]; then same=0; fi
+  done
+  (( n >= 2 && same )) && SS_SAME=1
+  return 0
+}
+
+# Synchronise the job's device group and wait until every member has this unit's
+# configuration. "always" after a change; "ifneeded" only when it is not In Sync.
+job_sync() {   # job_sync always|ifneeded   -> 0 in sync, 1 not (SYNC_ERR says why)
+  local g="$J_SYNC_G" out rc=0 limit deadline
+  SYNC_ERR=""
+  [[ -n "$g" ]] || return 0
+  limit=$(( 10#$(eff sync_timeout "f5:${J_F5}") ))
+  if [[ "$1" == ifneeded ]] && sync_state "$g" && [[ "$SS_STATUS" == "In Sync" && "$SS_SAME" == 1 ]]; then
+    return 0
+  fi
+  if [[ "${DG_AUTO[$g]:-disabled}" == enabled ]]; then
+    info "device group ${g} synchronises automatically; waiting for $(sync_peers)"
+  else
+    info "synchronising device group ${g} to $(sync_peers)"
+    mut_begin
+    out="$(f5_mut "${R_LIB}"$'\n'"${R_SYNC}" "$g")" || rc=$?
+    mut_end
+    if (( rc != 0 && rc != ST_UNKNOWN )); then
+      local why
+      why="$(printf '%s\n' "$out" | sed -n 's/^FAIL|//p' | head -1 | sanitize)"
+      SYNC_ERR="config-sync to ${g} failed ($(mut_status_text "$rc")): ${why:-$(remote_err)}"; return 1
+    fi
+  fi
+  deadline=$(( SECONDS + limit ))
+  while :; do
+    if sync_state "$g" && [[ "$SS_STATUS" == "In Sync" && "$SS_SAME" == 1 ]]; then
+      ok "device group ${g} is In Sync: $(sync_peers) loaded this unit's configuration"
+      return 0
+    fi
+    (( SECONDS < deadline )) || break
+    sleep 3
+  done
+  SYNC_ERR="device group ${g} did not report In Sync with matching commits within ${limit}s (last status: ${SS_STATUS:-unknown})"
+  return 1
+}
+
+# Tell the peers' jobs (later in this run) what happened on their active unit.
+peer_mark() {   # peer_mark synced|uptodate|failed
+  local m
+  [[ -n "$J_SYNC_G" ]] || return 0
+  for m in ${DG_MEM[$J_SYNC_G]//,/ }; do
+    [[ "$m" == "$X_SELF" ]] || PEER_DONE["${J_DEP}|${m}"]="${1}|${J_F5}"
+  done
+}
+
+# A STANDBY unit listed in a deployment whose device group is synchronised: it is
+# not changed directly. It receives the change from its active unit by config-sync,
+# and this job checks that it did. Read-only.
+peer_job() {
+  local st from
+  if (( DRY_RUN )); then
+    J_RESULT=DRYRUN; J_MSG="standby: receives this deployment by config-sync from its active unit"
+    info "this BIG-IP is standby: it is not changed directly; it receives the deployment by config-sync from its active unit, and is then checked"
+    return 0
+  fi
+  st="${PEER_DONE[${J_DEP}|${X_SELF}]-}"
+  if [[ -z "$st" && "$PEER_PASS" == 0 ]]; then J_RESULT=DEFER; return 0; fi
+  from="${st#*|}"
+  case "${st%%|*}" in
+    synced|uptodate)
+      if ! { job_select_targets && job_objinfo; }; then J_RESULT=FAILED; return 0; fi
+      if job_is_current; then
+        J_RESULT=IN_SYNC; J_RC=0
+        J_MSG="standby; has the new certificate (by config-sync from ${from})"
+        ok "${J_MSG}"
+      else
+        J_RESULT=NOT_SYNCED; J_RC="${EX_ERR}"
+        J_MSG="standby; does NOT have the new certificate, although ${from} $( [[ "${st%%|*}" == synced ]] && printf 'reported its device group In Sync' || printf 'already had it'). Check: tmsh show cm sync-status"
+        err "${J_MSG}"
+      fi ;;
+    failed)
+      J_RESULT=SKIPPED; J_RC=0
+      J_MSG="standby; not checked: the deployment on its active unit ${from} did not complete (see that line)"
+      warn "${J_MSG}" ;;
+    *)
+      J_RESULT=STANDBY; J_RC="${EX_ERR}"
+      J_MSG="standby, and no active unit of its device group was deployed in this run: add the active unit to this deployment's f5 list"
+      err "${J_MSG}" ;;
+  esac
+  return 0
+}
+
+job_gate_loaded() {
   if [[ -z "$X_VERSION" ]]; then job_fail "${EX_ERR}" "the BIG-IP did not return a version; is tmsh available to ${F5_USER}?"; return 1; fi
   if [[ "$X_PHASE" != running || "$X_LASTLOAD" != full-config-load-succeed ]]; then
     job_fail "${EX_ERR}" "the BIG-IP configuration is not fully loaded (phase '${X_PHASE}', last load '${X_LASTLOAD}'); refusing to change it"; return 1
   fi
-  if [[ "$X_FAILOVER" != active ]]; then
+  if [[ "$X_PARTITION" != OK ]]; then job_fail "${EX_ERR}" "partition '${F5_PART}' does not exist on the BIG-IP"; return 1; fi
+  return 0
+}
+
+job_gate() {
+  job_gate_loaded || return 1
+  # --check only reads: a standby unit can be compared too.
+  if [[ "$X_FAILOVER" != active ]] && ! { (( CHECK_ONLY )) && [[ "$X_FAILOVER" == standby ]]; }; then
     if [[ "$X_FAILOVER" == standby && "$(eff_bool allow_standby "f5:${J_F5}")" == yes ]]; then
       warn "this BIG-IP is STANDBY; proceeding because allow_standby = yes"
     else
@@ -2605,6 +2876,9 @@ job_print_plan() {
   fi
   if (( ${#J_VERIFY[@]} > 0 )); then info "  then verify: ${J_VERIFY[*]} (from ${J_VFROM}); roll back automatically on a mismatch: ${J_AUTOROLL}"; fi
   if (( J_KEEP > 0 )); then info "  finally prune to the newest ${J_KEEP} backup set(s) and certificate version(s)"; fi
+  if [[ -n "$J_SYNC_G" ]]; then
+    info "  and synchronise device group ${J_SYNC_G} to $(sync_peers) (now: ${DG_STAT[$J_SYNC_G]:-unknown}; it must be In Sync before the change), waiting until they have loaded it"
+  fi
 }
 
 run_job() {   # run_job DEPLOY F5NAME   -> sets J_RESULT, J_RC, J_MSG
@@ -2635,15 +2909,26 @@ run_job() {   # run_job DEPLOY F5NAME   -> sets J_RESULT, J_RC, J_MSG
   fi
 
   info "connecting to ${F5_USER}@${F5_HOST} (partition ${F5_PART}); mode: ${J_MODE}"
-  if ! { job_probe && job_gate && job_select_targets && job_objinfo; }; then
+  if ! job_probe; then J_RESULT=FAILED; lock_release; return 0; fi
+  # A standby unit of a synchronised pair is not changed directly (peer_job).
+  if [[ "$X_FAILOVER" == standby && "$(eff_bool allow_standby "f5:${f5}")" != yes ]] && (( ! CHECK_ONLY )) \
+     && [[ "$(eff sync "deploy:${dep}" "f5:${f5}")" != no ]]; then
+    if job_gate_loaded; then peer_job; else J_RESULT=FAILED; fi
+    lock_release; return 0
+  fi
+  if ! { job_gate && sync_select && job_select_targets && job_objinfo; }; then
     J_RESULT=FAILED; lock_release; return 0
   fi
   ok "BIG-IP ${X_VERSION}, ${X_FAILOVER}, sync mode ${X_SYNC:-unknown}, configuration loaded"
+  if [[ -n "$J_SYNC_G" ]]; then
+    info "device group ${J_SYNC_G} (${DG_TYPE[$J_SYNC_G]}, auto-sync ${DG_AUTO[$J_SYNC_G]:-disabled}) with $(sync_peers): ${DG_STAT[$J_SYNC_G]:-unknown}"
+  fi
   job_report_state
 
   if job_is_current && (( ! FORCE )); then
     J_RESULT=UPTODATE; J_MSG="already serving this certificate"
     ok "nothing to do: the BIG-IP already has this certificate (use --force to redeploy)"
+    if (( ! CHECK_ONLY )); then peer_mark uptodate; fi
     lock_release; return 0
   fi
   if (( CHECK_ONLY )); then
@@ -2654,6 +2939,7 @@ run_job() {   # run_job DEPLOY F5NAME   -> sets J_RESULT, J_RC, J_MSG
   if (( DRY_RUN )); then
     job_print_plan; J_RESULT=DRYRUN; J_MSG="dry run"; return 0
   fi
+  if ! sync_precheck; then J_RESULT=FAILED; peer_mark failed; lock_release; return 0; fi
 
   # ---- apply --------------------------------------------------------
   # From here a signal is handled by signal_finish (roll back if changed).
@@ -2700,11 +2986,22 @@ run_job() {   # run_job DEPLOY F5NAME   -> sets J_RESULT, J_RC, J_MSG
   job_unstage
   job_prune || pruned=0
   mut_end
-  if [[ "$X_SYNC" != standalone && -n "$X_SYNC" ]]; then
-    warn "this BIG-IP is in a sync group (mode ${X_SYNC}); synchronise the configuration to its peers"
-  fi
   if (( pruned )); then
     J_RESULT=UPDATED; J_RC="${EX_OK}"; J_MSG="deployed; expires ${CERT_END[$J_CERT]}"
+    if [[ -n "$J_SYNC_G" ]]; then
+      if job_sync always; then
+        J_MSG+="; synchronised to $(sync_peers)"
+        peer_mark synced
+      else
+        # Live and verified here; the peers still have the previous certificate.
+        J_RESULT=SYNC_FAILED; J_RC="${EX_ERR}"
+        J_MSG="deployed and verified on this unit (expires ${CERT_END[$J_CERT]}), but NOT synchronised: ${SYNC_ERR}. Its peers ($(sync_peers)) still have the previous certificate: on this unit run 'tmsh run cm config-sync to-group ${J_SYNC_G}', then check 'tmsh show cm sync-status'"
+        err "${J_MSG}"
+        peer_mark failed
+      fi
+    elif [[ "$X_SYNC" != standalone && -n "$X_SYNC" ]]; then
+      warn "this BIG-IP is in a sync group (mode ${X_SYNC}) and sync = no: synchronise the configuration to its peers yourself"
+    fi
   else
     # The deployment itself is verified, but a pruning step may still be deleting
     # old objects or backups: keep other runs out until it is understood.
@@ -2724,6 +3021,16 @@ job_abort() {   # job_abort REASON
   job_handle_failure "$1"
   J_CHANGED=0; JOB_ACTIVE=0     # the outcome is decided and reported; nothing more to recover
   job_unstage
+  # The BIG-IP is back where it was (or never left), but objects may have been created
+  # and removed: synchronise so the group is In Sync again for the next run. Not after
+  # CRITICAL: the state is not known, and must not be copied to the peers.
+  if [[ -n "$J_SYNC_G" ]] && (( J_SYNC_PRE && ! REMOTE_LOCK_KEEP )) && [[ "$J_RESULT" != CRITICAL ]]; then
+    if ! job_sync ifneeded; then
+      J_MSG+="; and device group ${J_SYNC_G} could not be synchronised afterwards (${SYNC_ERR}): check 'tmsh show cm sync-status'"
+      warn "device group ${J_SYNC_G} could not be synchronised after the recovery: ${SYNC_ERR}"
+    fi
+  fi
+  peer_mark failed
   lock_release
   mut_end
 }
@@ -2810,11 +3117,18 @@ print_summary() {
 
 run_jobs() {   # run a prepared job list through run_job and record the results
   local j dep f5
-  for j in "${JOBS[@]}"; do
+  local -a todo=("${JOBS[@]}") deferred=()
+  PEER_PASS=0
+  while (( ${#todo[@]} > 0 )); do
+  for j in "${todo[@]}"; do
     dep="${j%%|*}"; f5="${j##*|}"
     J_RC=0; J_MSG=""; J_RESULT=""
     run_job "$dep" "$f5"
     f5_close
+    if [[ "$J_RESULT" == DEFER ]]; then
+      # a standby unit: checked after its active unit's job (later in this run)
+      deferred+=("$j"); JOB_TAG=""; continue
+    fi
     record_result "${dep}@${f5}"
     JOB_TAG=""
     if [[ -n "$SIGNALLED" ]]; then
@@ -2823,8 +3137,12 @@ run_jobs() {   # run a prepared job list through run_job and record the results
     fi
     if (( FAIL_FAST )) && [[ "${J_RC}" != 0 && "${J_RC}" != "${EX_OUTDATED}" ]]; then
       warn "stopping after the first failure (--fail-fast)"
+      deferred=()
       break
     fi
+  done
+  if [[ -n "$SIGNALLED" ]] || (( PEER_PASS )); then break; fi
+  todo=(${deferred[@]+"${deferred[@]}"}); deferred=(); PEER_PASS=1
   done
 }
 
@@ -2883,48 +3201,251 @@ action_list() {
   return 0
 }
 
-action_discover() {
-  local f5n out rc=0 tag a b c d e cn
-  local -A seen=()
-  local -a specs=() rows=()
-  if (( ${#SEL_F5[@]} != 1 )); then usage_die "--discover needs exactly one --f5 NAME"; fi
-  f5n="${SEL_F5[0]}"
+# A virtual server destination as HOST:PORT for a verify line ("" if not usable):
+# drops the partition and route domain, and maps the common service names.
+dest_hostport() {   # dest_hostport DESTINATION
+  local d="${1##*/}" h pt
+  if [[ "$d" == *:*:* ]]; then h="${d%.*}"; pt="${d##*.}"      # IPv6: ADDR.PORT
+  else h="${d%:*}"; pt="${d##*:}"; fi
+  h="${h%%\%*}"
+  case "$pt" in https) pt=443 ;; http) pt=80 ;; any|0) return 0 ;; esac
+  [[ "$pt" =~ ^[0-9]{1,5}$ ]] || return 0
+  if [[ "$h" == *:* ]]; then printf '[%s]:%s' "$h" "$pt"; else printf '%s:%s' "$h" "$pt"; fi
+}
+
+# Discovery results, per BIG-IP name: D_SELF, D_FO (failover state), D_VER, and
+# rows. D_PAIR is the device-group key that links the units of one pair.
+declare -A D_SELF=() D_FO=() D_VER=() D_PAIR=() D_NENT=()
+declare -a D_ROWS=() D_VS=() D_CERTS=()
+
+discover_one() {   # discover_one F5NAME   -> prints the report; appends to D_ROWS/D_VS/D_CERTS
+  local f5n="$1" out rc=0 tag a b c d e f g key m pa
   JOB_TAG="$f5n"
   f5_load "$f5n"
-  info "reading client-ssl profiles on ${F5_USER}@${F5_HOST}"
+  J_F5="$f5n"; J_DEP=""
+  info "reading ${F5_USER}@${F5_HOST}"
+  out="$(f5_sh "${R_PROBE}" "${F5_PART}")" || rc=$?
+  if (( rc != 0 )); then err "cannot read ${f5n}: $(remote_err)"; return 1; fi
+  parse_sync_lines "$out"
+  while IFS='|' read -r tag a b; do
+    case "$tag" in VERSION) D_VER[$f5n]="$a" ;; FAILOVER) D_FO[$f5n]="$a" ;; esac
+  done <<<"$out"
+  D_SELF[$f5n]="$X_SELF"
+  echo
+  echo "== ${f5n} (${F5_HOST}): ${X_SELF:-unknown device}, BIG-IP ${D_VER[$f5n]:-?}, ${D_FO[$f5n]:-unknown}" | sanitize
+  # The sync-failover group this unit shares with others (what a deployment syncs).
+  key="standalone|${f5n}"
+  for g in $(printf '%s\n' "${!DG_TYPE[@]}" | sort); do
+    csv_has "$X_SELF" "${DG_MEM[$g]}" || continue
+    printf '   device group %-22s %-14s auto-sync %-9s %-16s members: %s\n' "$g" "${DG_TYPE[$g]}" "${DG_AUTO[$g]:-disabled}" "${DG_STAT[$g]:-(status unknown)}" "${DG_MEM[$g]//,/, }" | sanitize
+    if [[ "${DG_TYPE[$g]}" == sync-failover && "${DG_MEM[$g]}" == *,* ]]; then
+      # shellcheck disable=SC2086   # the member list is split on purpose
+      key="${g}|$(printf '%s\n' ${DG_MEM[$g]//,/ } | sort | paste -sd, -)"
+    fi
+  done
+  D_PAIR[$f5n]="$key"
+
   out="$(f5_sh "${R_DISCOVER}")" || rc=$?
-  if (( rc != 0 )); then err "cannot read the BIG-IP: $(remote_err)"; return "${EX_ERR}"; fi
-  local skipped=0 pa ca ha ka
-  while IFS='|' read -r tag a b c d e; do
+  if (( rc != 0 )); then err "cannot read the profiles on ${f5n}: $(remote_err)"; return 1; fi
+  local -A cn=() exp=() fpr=() used=()
+  local -a rows=()
+  local skipped=0 ca ha ka n_def=0 defs=""
+  while IFS='|' read -r tag a b c d e f; do
+    case "$tag" in
+      CERT)
+        ca="$(norm_name "$a")"
+        safe_obj "$ca" || continue
+        [[ "$b" =~ ^[0-9A-F]{64}$ ]] && fpr[$ca]="$b"
+        [[ "$c" =~ ^[0-9]+$ ]] && exp[$ca]="$(hex_to_date "$c")"
+        [[ "$d" =~ ^[A-Za-z0-9.*_\ -]{1,100}$ ]] && cn[$ca]="$d"
+        D_CERTS+=("${f5n}|${ca}|${fpr[$ca]:-}|${exp[$ca]:-}|${cn[$ca]:-}") ;;
+      VS)
+        pa="$(norm_name "$a")"
+        safe_obj "$pa" || continue
+        for m in ${c//,/ }; do
+          m="$(norm_name "$m")"; safe_obj "$m" || continue
+          used[$m]+="${used[$m]:+, }${pa} ($(dest_hostport "$b"))"
+          D_VS+=("${f5n}|${m}|${pa}|$(dest_hostport "$b")")
+        done ;;
+    esac
+  done <<<"$out"
+  while IFS='|' read -r tag a b c d e f; do
     [[ "$tag" == DP ]] || continue
     pa="$(norm_name "$a")"; ca="$(norm_name "$c")"; ha="$(norm_name "$d")"; ka="$(norm_name "$e")"
-    # Names are shown and queried again only if they have the expected form.
+    D_NENT[$f5n|$pa]=$(( ${D_NENT[$f5n|$pa]:-0} + 1 ))
     if ! safe_obj "$pa" || ! is_name "$b" || ! { [[ "$ca" == none ]] || safe_obj "$ca"; } \
        || ! { [[ "$ha" == none ]] || safe_obj "$ha"; } || ! { [[ "$ka" == none ]] || safe_obj "$ka"; }; then
       skipped=$((skipped + 1)); continue
     fi
+    if [[ "$ca" == default.crt || "$ca" == none || "$f" == true ]]; then
+      n_def=$((n_def + 1)); defs+="${defs:+, }${pa}"; continue
+    fi
     rows+=("${pa}|${b}|${ca}|${ha}|${ka}")
-    cn="$ca"
-    if [[ -z "${seen[$cn]+x}" && "$cn" != none ]]; then seen[$cn]=1; specs+=("cert:${cn}"); fi
+    D_ROWS+=("${f5n}|${pa}|${b}|${ca}|${ha}|${ka}")
   done <<<"$out"
-  if (( skipped > 0 )); then warn "skipped ${skipped} profile entr$( (( skipped == 1 )) && printf 'y' || printf 'ies') whose names contain unexpected characters"; fi
-  local -A exp=()
-  if (( ${#specs[@]} > 0 )); then
-    out="$(f5_sh "${R_LIB}"$'\n'"${R_OBJINFO}" "${specs[@]}")" || true
-    while IFS='|' read -r tag a b c d e; do
-      if [[ "$tag" == OBJ && "$c" == OK ]]; then exp[$b]="$(hex_to_date "$e")"; fi
-    done <<<"$out"
-  fi
   echo
-  printf '  %-32s %-22s %-40s %s\n' "PROFILE" "ENTRY" "CERTIFICATE" "EXPIRES"
   local r p en cc hh kk
   for r in ${rows[@]+"${rows[@]}"}; do
     IFS='|' read -r p en cc hh kk <<<"$r"
-    printf '  %-32s %-22s %-40s %s\n' "$p" "$en" "$cc" "${exp[$cc]:--}" | sanitize
+    {
+      printf '   profile %s   (entry %s)\n' "$p" "$en"
+      printf '      cert   %s   %s, expires %s\n' "$cc" "${cn[$cc]:+CN ${cn[$cc]}}" "${exp[$cc]:-?}"
+      printf '      chain  %s\n' "$hh"
+      printf '      key    %s\n' "$kk"
+      printf '      used by %s\n' "${used[$p]:-(no virtual server)}"
+    } | sanitize
   done
-  echo
+  if (( ${#rows[@]} == 0 )); then echo "   (no client-ssl profile with its own certificate)"; fi
+  if (( n_def > 0 )); then
+    printf '   %d profile entr%s use the default certificate or inherit it, and are not listed: %s\n' "$n_def" "$( (( n_def == 1 )) && printf 'y' || printf 'ies')" "$defs" | sanitize | cut -c1-400
+  fi
+  if (( skipped > 0 )); then warn "skipped ${skipped} profile entr$( (( skipped == 1 )) && printf 'y' || printf 'ies') whose names contain unexpected characters"; fi
   f5_close
+  return 0
+}
+
+action_discover() {
+  local f5n status=0
+  local -a which=()
+  if (( ${#SEL_F5[@]} > 0 )); then
+    for f5n in "${SEL_F5[@]}"; do [[ -n "${SECT_SEEN[f5:${f5n}]+x}" ]] || usage_die "no such BIG-IP: ${f5n}"; which+=("$f5n"); done
+  else
+    for f5n in ${F5S[@]+"${F5S[@]}"}; do which+=("$f5n"); done
+  fi
+  (( ${#which[@]} > 0 )) || usage_die "--discover: the configuration defines no [f5:NAME] section"
+  if [[ -n "$WRITE_CONFIG" && -e "$WRITE_CONFIG" ]]; then usage_die "--write-config: ${WRITE_CONFIG} already exists; give a new file name"; fi
+  for f5n in "${which[@]}"; do discover_one "$f5n" || status=1; done
+  JOB_TAG=""
+  echo
   info "use these names in a [deploy:NAME] section as:  profile = PROFILE   (or PROFILE:ENTRY for multi-entry profiles)"
+  if [[ -n "$WRITE_CONFIG" ]]; then
+    if (( status )); then err "not writing ${WRITE_CONFIG}: a BIG-IP could not be read"; return "${EX_ERR}"; fi
+    write_draft_config "$WRITE_CONFIG" "${which[@]}" || return "${EX_ERR}"
+  fi
+  return "$(( status ? EX_ERR : 0 ))"
+}
+
+# A section name from an object name: www-example-cert-20260101-120000.pem -> www-example
+draft_base() {   # draft_base OBJECTNAME
+  local b="${1##*/}"
+  b="${b%.pem}"; b="${b%.crt}"; b="${b%.cer}"
+  b="$(printf '%s' "$b" | sed -E 's/-cert(-[0-9]{8}-[0-9]{6})?$//; s/[^A-Za-z0-9._-]+/-/g; s/^[^A-Za-z0-9]+//' | cut -c1-40)"
+  printf '%s' "${b:-cert}"
+}
+
+# Write the configuration plus suggested [cert:] and [deploy:] sections for every
+# profile entry found that no deployment covers yet. One deployment per certificate
+# and per pair (all the pair's units listed: the standby is checked after the sync),
+# disabled until reviewed.
+write_draft_config() {   # write_draft_config FILE F5NAME...
+  local file="$1"; shift
+  local f5n r src pairkey p en cc hh kk fp nm d covered cnv ex sni hp
+  local -A pair_units=() pair_src=() cert_of_fp=() used_names=() vlines=()
+  local -a pairs=() body=()
+  for f5n in "$@"; do
+    pairkey="${D_PAIR[$f5n]}"
+    if [[ -z "${pair_units[$pairkey]+x}" ]]; then pairs+=("$pairkey"); pair_units[$pairkey]=""; fi
+    pair_units[$pairkey]+="${pair_units[$pairkey]:+, }${f5n}"
+    if [[ -z "${pair_src[$pairkey]:-}" || "${D_FO[$f5n]}" == active ]]; then pair_src[$pairkey]="$f5n"; fi
+  done
+  for d in "${!SECT_SEEN[@]}"; do used_names[$d]=1; done
+  for pairkey in "${pairs[@]}"; do
+    src="${pair_src[$pairkey]}"
+    local -A by_cert=()
+    local -a order=()
+    for r in ${D_ROWS[@]+"${D_ROWS[@]}"}; do
+      IFS='|' read -r f5n p en cc hh kk <<<"$r"
+      [[ "$f5n" == "$src" ]] || continue
+      # already covered by a deployment for one of this pair's units?
+      covered=0
+      for d in ${DEPLOYS[@]+"${DEPLOYS[@]}"}; do
+        local u
+        for u in $(deploy_f5s "$d"); do
+          [[ ", ${pair_units[$pairkey]}," == *", ${u},"* ]] || continue
+          while IFS= read -r line; do
+            [[ "$(profile_fq "${line%%:*}")" == "$(profile_fq "$p")" ]] && covered=1
+          done <<<"${CFG[deploy:$d|profile]-}"
+        done
+      done
+      (( covered )) && continue
+      if [[ -z "${by_cert[$cc]+x}" ]]; then order+=("$cc"); by_cert[$cc]=""; fi
+      by_cert[$cc]+="${p}|${en}"$'\n'
+    done
+    for cc in ${order[@]+"${order[@]}"}; do
+      fp=""; cnv=""; ex=""
+      for r in ${D_CERTS[@]+"${D_CERTS[@]}"}; do
+        IFS='|' read -r f5n d fp2 ex2 cn2 <<<"$r"
+        if [[ "$f5n" == "$src" && "$d" == "$cc" ]]; then fp="$fp2"; ex="$ex2"; cnv="$cn2"; fi
+      done
+      if [[ -n "$fp" && -n "${cert_of_fp[$fp]:-}" ]]; then
+        nm="${cert_of_fp[$fp]}"
+      else
+        nm="$(draft_base "$cc")"
+        local base="$nm" k=2
+        while [[ -n "${used_names[cert:$nm]:-}" ]]; do nm="${base}-${k}"; k=$((k + 1)); done
+        used_names[cert:$nm]=1
+        [[ -n "$fp" ]] && cert_of_fp[$fp]="$nm"
+        body+=("" "# Currently on ${src}: ${cc}${cnv:+, CN ${cnv}}${ex:+, expires ${ex}}"
+               "# CHANGE the three paths to where you save this certificate's files (section 5 of USER-GUIDE)."
+               "[cert:${nm}]"
+               "cert          = /path/to/certs/${nm}/cert.pem"
+               "chain         = /path/to/certs/${nm}/chain.pem"
+               "key           = /path/to/certs/${nm}/privkey.pem"
+               "object_prefix = ${nm}")
+      fi
+      local dn="${nm}-${src}" k=2 pl en2 multi
+      while [[ -n "${used_names[deploy:$dn]:-}" ]]; do dn="${nm}-${src}-${k}"; k=$((k + 1)); done
+      used_names[deploy:$dn]=1
+      body+=("" "# Review, then set enabled = yes. A standby unit listed here is not changed directly:"
+             "# it gets the change by config-sync from the active unit, and is then checked.")
+      if [[ "$pairkey" != standalone\|* ]]; then
+        local mem missing=""
+        local members="${pairkey#*|}"
+        for mem in ${members//,/ }; do
+          local known=0 u2
+          for u2 in "$@"; do [[ "${D_SELF[$u2]}" == "$mem" ]] && known=1; done
+          (( known )) || missing+="${missing:+, }${mem}"
+        done
+        if [[ -n "$missing" ]]; then
+          body+=("# ${missing}: also in device group ${pairkey%%|*}, but not in this configuration. Add an"
+                 "# [f5:] section for it and list it below, so that it is checked after the sync.")
+        fi
+      fi
+      body+=("[deploy:${dn}]" "enabled = no" "f5      = ${pair_units[$pairkey]}" "cert    = ${nm}")
+      vlines=()
+      while IFS='|' read -r pl en2; do
+        [[ -n "$pl" ]] || continue
+        # a profile with several entries needs the entry named
+        multi="${D_NENT[$src|$pl]:-1}"
+        if (( multi > 1 )); then body+=("profile = ${pl#/Common/}:${en2}"); else body+=("profile = ${pl#/Common/}"); fi
+        for r in ${D_VS[@]+"${D_VS[@]}"}; do
+          IFS='|' read -r f5n d _ hp <<<"$r"
+          [[ "$f5n" == "$src" && "$d" == "$pl" && -n "$hp" ]] || continue
+          sni=""; [[ -n "$cnv" && "$cnv" != \** ]] && sni=" ${cnv}"
+          [[ -n "${vlines[$hp]:-}" ]] && continue
+          vlines[$hp]=1
+          body+=("verify  = ${hp}${sni}")
+        done
+      done <<<"${by_cert[$cc]}"
+    done
+    unset by_cert order
+  done
+  if (( ${#body[@]} == 0 )); then
+    info "every profile entry found is already covered by a deployment; not writing ${file}"
+    return 0
+  fi
+  ( umask 077
+    {
+      cat -- "$CONFIG_FILE"
+      echo
+      echo "############################################################################"
+      echo "# Suggested by ${PROG} --discover on $(date -u '+%Y-%m-%d %H:%M UTC')"
+      echo "# for every client-ssl profile entry that no deployment covered yet."
+      echo "############################################################################"
+      printf '%s\n' "${body[@]}"
+    } > "$file"
+  ) || { err "cannot write ${file}"; return 1; }
+  ok "wrote ${file}: your configuration plus the suggested sections. Edit the certificate paths, review each deployment, set enabled = yes, then: ${PROG} --config ${file} --validate"
   return 0
 }
 
@@ -3004,7 +3525,13 @@ action_rollback() {
     job_lock; rc=$?
     if (( rc == 2 )); then J_RC="${EX_LOCKED}"; J_RESULT=LOCKED; J_MSG="another run holds the lock for ${F5_HOST}"; record_result "$JOB_TAG"; continue; fi
     if (( rc != 0 )); then J_RC="${EX_ERR}"; J_RESULT=FAILED; J_MSG="cannot take the lock"; record_result "$JOB_TAG"; continue; fi
-    if ! { job_probe && job_gate; }; then J_RESULT=FAILED; lock_release; f5_close; record_result "$JOB_TAG"; continue; fi
+    if ! job_probe; then J_RESULT=FAILED; lock_release; f5_close; record_result "$JOB_TAG"; continue; fi
+    if [[ "$X_FAILOVER" == standby && "$(eff_bool allow_standby "f5:${f5}")" != yes && "$(eff sync "deploy:${dep}" "f5:${f5}")" != no ]]; then
+      J_RC=0; J_RESULT=SKIPPED; J_MSG="standby; receives the rollback by config-sync from its active unit"
+      info "${J_MSG}"; lock_release; f5_close; record_result "$JOB_TAG"; continue
+    fi
+    if ! { job_gate && sync_select; }; then J_RESULT=FAILED; lock_release; f5_close; record_result "$JOB_TAG"; continue; fi
+    local pre_sync="${DG_STAT[$J_SYNC_G]:-}"
     d="${WORK}/restore.${f5}.${J_PREFIX}.${J_TS}"
     if ! fetch_backup_set "$d" || ! verify_backup_set "$d" "$J_TS"; then
       job_fail "${EX_ERR}" "backup set ${J_TS} cannot be used: ${VB_ERR}. Nothing was changed."
@@ -3020,6 +3547,18 @@ action_rollback() {
     mut_end
     if (( vrc == 0 )); then
       J_CHANGED=0; J_RC=0; J_RESULT=RESTORED; J_MSG="restored the state before ${J_TS} (verified)"; ok "${J_MSG}"
+      if [[ -n "$J_SYNC_G" ]]; then
+        if [[ "$pre_sync" != "In Sync" ]]; then
+          J_MSG+="; NOT synchronised: device group ${J_SYNC_G} was '${pre_sync:-unknown}' before the rollback, so syncing could copy other changes. Check it and sync it yourself"
+          warn "device group ${J_SYNC_G} was not In Sync before the rollback; not synchronising it"
+        elif job_sync always; then
+          J_MSG+="; synchronised to $(sync_peers)"
+        else
+          J_RC="${EX_ERR}"; J_RESULT=NOT_SYNCED
+          J_MSG+="; but NOT synchronised: ${SYNC_ERR}. On this unit run 'tmsh run cm config-sync to-group ${J_SYNC_G}'"
+          err "${J_MSG}"
+        fi
+      fi
     elif (( vrc == 10 )); then
       J_CHANGED=0; J_RC="${EX_ERR}"; J_RESULT=FAILED; J_MSG="the backup on the BIG-IP failed its integrity check; nothing was changed"
     else
@@ -3056,6 +3595,7 @@ parse_args() {
       --deploy)       need_value "$1" $# "${2:-}"; SEL_DEPLOY+=("$2"); shift 2 ;;
       --env)          need_value "$1" $# "${2:-}"; SEL_ENV+=("$2"); shift 2 ;;
       --f5)           need_value "$1" $# "${2:-}"; SEL_F5+=("$2"); shift 2 ;;
+      --write-config) need_value "$1" $# "${2:-}"; WRITE_CONFIG="$2"; shift 2 ;;
       --lineage)      need_value "$1" $# "${2:-}"; SEL_LINEAGE+=("$2"); shift 2 ;;
       --all)          SEL_ALL=1; shift ;;
       --set)          need_value "$1" $# "${2:-}"; ROLLBACK_SET="$2"; shift 2 ;;
@@ -3078,7 +3618,7 @@ parse_args() {
 
 check_dependencies() {
   local t missing=""
-  for t in ssh openssl awk sed grep timeout sha256sum mktemp stat date tr cut sort head find id wc cat cmp; do
+  for t in ssh openssl awk sed grep timeout sha256sum mktemp stat date tr cut sort head find id wc cat cmp paste; do
     command -v "$t" >/dev/null 2>&1 || missing+=" ${t}"
   done
   if [[ -n "$missing" ]]; then

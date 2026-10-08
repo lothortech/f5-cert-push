@@ -15,6 +15,10 @@
 #   F5_TEST_VS_A=10.1.10.77  F5_TEST_VS_B=10.1.10.78
 #        two UNUSED addresses in a subnet the BIG-IP has a self IP in, used as
 #        test virtual-server addresses (port 443). Probed from the BIG-IP itself.
+#   F5_TEST_PEER_HOST=10.0.0.2   the other unit of an HA pair (same key): adds the
+#        config-sync scenarios p1-p8. The two units must be in one sync-failover
+#        device group with manual sync, F5_TEST_HOST active. p7 FAILS OVER the pair
+#        (and back): only on a lab pair.
 #   F5_TEST_ONLY="s2 s9"         run only the named scenarios
 #   T_VERBOSE=1                  show output for failures
 #
@@ -35,6 +39,7 @@ BUSER="${F5_TEST_USER:-root}"
 VSA="${F5_TEST_VS_A:-10.1.10.77}"
 VSB="${F5_TEST_VS_B:-10.1.10.78}"
 ONLY="${F5_TEST_ONLY:-}"
+PEER="${F5_TEST_PEER_HOST:-}"
 
 KH="${TMP}/known_hosts"
 CF="${TMP}/run.conf"
@@ -45,6 +50,10 @@ export PUSH_LOG="${TMP}/run.log"
 
 ssh-keyscan -T 10 -t ecdsa,ed25519,rsa -p "$PORT" "$HOST" > "$KH" 2>/dev/null
 [[ -s "$KH" ]] || { echo "cannot read the BIG-IP's SSH host keys" >&2; exit 1; }
+if [[ -n "$PEER" ]]; then
+  ssh-keyscan -T 10 -t ecdsa,ed25519,rsa -p "$PORT" "$PEER" >> "$KH" 2>/dev/null
+  grep -q "$PEER" "$KH" || { echo "cannot read the peer's SSH host keys" >&2; exit 1; }
+fi
 chmod 600 "$KH"
 
 # The test helper reuses one SSH connection (the BIG-IP's logins are slow). This is a
@@ -54,6 +63,22 @@ F5SSH=(ssh -T -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o LogLevel=ERROR
        -o UserKnownHostsFile="$KH" -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -p "$PORT"
        -o ControlMaster=auto -o ControlPath="$CM" -o ControlPersist=900 "${BUSER}@${HOST}")
 f5() { "${F5SSH[@]}" "$@"; }
+# The peer unit (F5_TEST_PEER_HOST), and the pair's sync-failover device group.
+CMP="${TMP}/cmp"
+f5p() { ssh -T -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o LogLevel=ERROR -o UserKnownHostsFile="$KH" \
+          -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -p "$PORT" -o ControlMaster=auto -o ControlPath="$CMP" \
+          -o ControlPersist=900 "${BUSER}@${PEER}" "$@"; }
+pair_group() { f5 "tmsh -q list cm device-group one-line" | awk '/type sync-failover/ {print $3; exit}'; }
+group_status() { f5 "tmsh -q show cm sync-status field-fmt" | sed -n "s/^ *details\.[0-9]*\.details $1 (\([^)]*\)).*/\1/p"; }
+# Push the active unit's configuration to its peer and wait for In Sync.
+group_sync() {   # group_sync [FROM: f5|f5p]
+  local via="${1:-f5}" g i
+  g="$(pair_group)"; [[ -n "$g" ]] || return 1
+  "$via" "tmsh run cm config-sync to-group $g" >/dev/null 2>&1
+  for i in $(seq 1 40); do [[ "$(group_status "$g")" == "In Sync" ]] && return 0; sleep 3; done
+  return 1
+}
+failover_state() { "$1" "tmsh -q show sys failover" | awk 'NR == 1 {print tolower($2)}'; }
 
 want() { [[ -z "$ONLY" || " $ONLY " == *" $1 "* ]]; }
 
@@ -78,11 +103,18 @@ CLEAN
 
 suite_cleanup() {
   if [[ -n "${SERVER_PID:-}" ]]; then kill "$SERVER_PID" 2>/dev/null; fi
+  if [[ -n "$PEER" ]]; then
+    # the original unit active again, then its (cleaned) configuration to the peer
+    if [[ "$(failover_state f5)" != active ]]; then f5p "tmsh run sys failover standby" >/dev/null 2>&1; sleep 20; fi
+    f5p 'rm -rf /shared/cert-backups/zzz-* /var/run/f5-cert-push.lock; find /var/tmp -maxdepth 1 -name "f5-cert-push.*" -exec rm -rf {} + 2>/dev/null; exit 0' || true
+  fi
   f5_cleanup
+  if [[ -n "$PEER" ]]; then group_sync || echo "WARNING: the pair did not return to In Sync after the cleanup" >&2; fi
   if [[ -n "$(f5 "printf '%s\n' 'cd /' 'list ltm profile client-ssl one-line recursive' | tmsh -q | awk '{print \$4}' | grep -E '(^|/)zzz'" 2>/dev/null)" ]]; then
     echo "WARNING: zzz-* objects remain on the BIG-IP; remove them by hand" >&2
   fi
   ssh -o ControlPath="$CM" -O exit "${BUSER}@${HOST}" >/dev/null 2>&1 || true
+  if [[ -n "$PEER" ]]; then ssh -o ControlPath="$CMP" -O exit "${BUSER}@${PEER}" >/dev/null 2>&1 || true; fi
 }
 
 # Lines describing a profile's entries: "entry cert chain key"
@@ -137,6 +169,7 @@ verify_unreachable = ${VUN:-warn}
 auto_rollback = ${AUTOROLL:-yes}
 connect_timeout = 10
 remote_timeout = 120
+sync = ${SYNC:-no}
 
 [f5:t]
 host = ${HOST}
@@ -152,6 +185,8 @@ port = ${PORT}
 user = ${BUSER}
 ssh_key = ${KEY}
 known_hosts_file = ${KH}
+
+$( [[ -n "$PEER" ]] && printf '[f5:peer]\nhost = %s\nport = %s\nuser = %s\nssh_key = %s\nknown_hosts_file = %s\n' "$PEER" "$PORT" "$BUSER" "$KEY" "$KH" )
 
 [cert:zt]
 cert = ${LIVE}/cert.pem
@@ -700,6 +735,7 @@ cat > "$CF" <<EOF
 backup_dir_local = ${BK}
 lock_dir = ${LOCKS}
 connect_timeout = 10
+sync = ${SYNC:-no}
 [f5:t]
 host = ${HOST}
 port = ${PORT}
@@ -758,6 +794,7 @@ cat > "$CF" <<EOF
 backup_dir_local = ${BK}
 lock_dir = ${LOCKS}
 connect_timeout = 10
+sync = ${SYNC:-no}
 chain_check = fail
 min_days_valid = 1
 [f5:t]
@@ -891,6 +928,192 @@ expect_eq "$(bound_cert zzz-t2 e1)" "$PREV" "zzz-t2 is back on its previous cert
 expect_eq "$(served_fp "$VSA")" "$PREV_FP" "the virtual server serves the previous certificate"
 expect_true "the BIG-IP-side lock was released" f5 "test ! -d /var/run/f5-cert-push.lock"
 expect_eq "$(stage_left)" "0" "no staging directory is left on the BIG-IP"
+fi
+
+#######################################################################
+# HA pair: config-sync (F5_TEST_PEER_HOST)
+#######################################################################
+peer_entries() {   # like entries, on the peer
+  f5p "tmsh -q list ltm profile client-ssl $1 cert-key-chain" | awk '
+    function flush() { if (e != "") print e, c }
+    /^        [^ ].* \{$/ { flush(); e = $1; c = "-"; next }
+    /^            cert /  { c = $2 }
+    END { flush() }'
+}
+peer_cert() { peer_entries "$1" | awk -v e="$2" '$1 == e { print $2 }'; }
+PAIR_DEPLOY="[deploy:pair]
+sync = auto
+f5 = peer
+f5 = t
+cert = zt
+profile = zzz-t1
+verify = ${VSA}:443 zzz.test
+"
+if [[ -n "$PEER" ]]; then
+G="$(pair_group)"
+if [[ -z "$G" || "$(failover_state f5)" != active || "$(failover_state f5p)" != standby ]]; then
+  echo "pair scenarios skipped: ${HOST} must be active and ${PEER} standby in one sync-failover group (group '${G}')" >&2
+  PEER=""
+fi
+fi
+
+if [[ -n "$PEER" ]] && want p1; then
+echo "== p1: discovery shows the pair and writes a draft configuration"
+conf ""
+group_sync; expect_eq "$(group_status "$G")" "In Sync" "the pair starts In Sync"
+tool --discover --f5 t --f5 peer --write-config "${TMP}/draft.conf"
+expect_rc 0 "--discover of both units exits 0"
+expect_has "device group ${G}" "the device group is shown"; expect_has "In Sync" "its sync status is shown"
+expect_has "standby" "the standby unit is identified"; expect_has "used by lothortech" "a profile's virtual servers are shown"
+expect_true "the draft configuration was written" test -s "${TMP}/draft.conf"
+expect_true "the draft lists both units in one deployment" grep -q '^f5      = t, peer$' "${TMP}/draft.conf"
+expect_true "the draft names an entry of the two-entry profile" grep -q '^profile = zzz-t3:e_ec$' "${TMP}/draft.conf"
+expect_true "the draft's deployments are disabled until reviewed" grep -q '^enabled = no$' "${TMP}/draft.conf"
+run "$BIN" --config "${TMP}/draft.conf" --list
+expect_rc 0 "the draft is a valid configuration (--list)"
+tool --discover --f5 t --write-config "${TMP}/draft.conf"
+expect_rc 2 "--write-config refuses to overwrite a file"
+fi
+
+if [[ -n "$PEER" ]] && want p2; then
+echo "== p2: deploy to the active unit, sync, and check the standby"
+use_cert c
+conf "$PAIR_DEPLOY"
+group_sync
+tool --deploy pair
+expect_rc 0 "deploy with sync exits 0"
+expect_has "synchronising device group ${G}" "the device group is synchronised"
+expect_has "is In Sync" "the sync is confirmed"
+expect_has "IN_SYNC" "the standby's line says IN_SYNC"; expect_has "UPDATED" "the active unit's line says UPDATED"
+C2="$(bound_cert zzz-t1 e1)"
+expect_eq "$(bound_fp zzz-t1 e1)" "$CUR_FP" "the active unit uses the new certificate"
+expect_eq "$(peer_cert zzz-t1 e1)" "$C2" "the standby's profile uses the same new object"
+expect_true "the standby has the certificate object" f5p "tmsh -q list sys file ssl-cert $C2 >/dev/null"
+expect_eq "$(group_status "$G")" "In Sync" "the pair is In Sync afterwards"
+expect_true "the standby saved the change to disk (bigip.conf)" f5p "grep -q '$C2' /config/bigip.conf"
+expect_true "no lock is left on the active unit" f5 "test ! -d /var/run/f5-cert-push.lock"
+expect_true "no lock is left on the standby" f5p "test ! -d /var/run/f5-cert-push.lock"
+P2_TS="$(printf '%s\n' "$OUT" | sed -n 's/.*--deploy pair --f5 t --rollback --set \([0-9-]*\).*/\1/p' | head -1)"
+tool --deploy pair
+expect_rc 0 "a second run exits 0"; expect_has "UPTODATE" "the active unit is up to date"; expect_has "IN_SYNC" "the standby is confirmed again"
+tool --deploy pair --check
+expect_rc 0 "--check of both units exits 0 (the standby is compared too)"
+# zzz-t1 now has its own certificate, so discovery lists it with its virtual server
+rm -f "${TMP}/draft2.conf"
+tool --discover --f5 t --f5 peer --write-config "${TMP}/draft2.conf"
+expect_has "used by zzz-vs1 (${VSA}:443)" "discovery shows the virtual server using zzz-t1"
+expect_true "the draft does not suggest zzz-t1 again (already covered by [deploy:pair])" bash -c "! sed -n '/^# Suggested by/,\$p' '${TMP}/draft2.conf' | grep -q '^profile = zzz-t1\$'"
+fi
+
+if [[ -n "$PEER" ]] && want p3; then
+echo "== p3: a pair that is not In Sync is refused before anything changes"
+use_cert d
+conf "$PAIR_DEPLOY"
+group_sync
+f5 "tmsh modify ltm profile client-ssl zzz-other description zzz-pending" >/dev/null
+sleep 2
+expect_eq "$(group_status "$G")" "Changes Pending" "an unsynchronised change is pending"
+S0="$(snapshot)"; P0="$(peer_cert zzz-t1 e1)"; B0="$(remote_backups zzz-cert)"
+tool --deploy pair
+expect_rc 1 "the deploy is refused (exit 1)"; expect_has "not In Sync" "the reason is given"
+expect_eq "$(snapshot)" "$S0" "nothing changed on the active unit"
+expect_eq "$(peer_cert zzz-t1 e1)" "$P0" "nothing changed on the standby"
+expect_eq "$(remote_backups zzz-cert)" "$B0" "no backup was made"
+expect_has "SKIPPED" "the standby is reported as skipped"
+group_sync
+fi
+
+if [[ -n "$PEER" ]] && want p4; then
+echo "== p4: a failed verification rolls back, and the pair is left In Sync on the old certificate"
+use_cert e
+conf "[deploy:pairbad]
+sync = auto
+f5 = t, peer
+cert = zt
+profile = zzz-t1
+verify = ${VSB}:443 zzz.test
+"
+group_sync
+PREV="$(bound_cert zzz-t1 e1)"; PREVP="$(peer_cert zzz-t1 e1)"
+tool --deploy pairbad
+expect_rc 3 "the mismatch rolls back (exit 3)"; expect_has "ROLLED_BACK" "the summary says ROLLED_BACK"
+expect_eq "$(bound_cert zzz-t1 e1)" "$PREV" "the active unit is back on its previous certificate"
+expect_eq "$(peer_cert zzz-t1 e1)" "$PREVP" "the standby never left its previous certificate"
+expect_eq "$(group_status "$G")" "In Sync" "the pair is In Sync again after the recovery"
+expect_has "SKIPPED" "the standby is reported as skipped"
+fi
+
+if [[ -n "$PEER" ]] && want p5; then
+echo "== p5: --rollback restores the active unit and synchronises the standby"
+use_cert c
+conf "$PAIR_DEPLOY"
+group_sync
+if [[ -n "${P2_TS:-}" ]]; then
+  tool --deploy pair --f5 t --rollback --set "$P2_TS"
+  expect_rc 0 "the rollback exits 0"; expect_has "RESTORED" "the summary says RESTORED"; expect_has "synchronised to" "the rollback was synchronised"
+  expect_eq "$(peer_cert zzz-t1 e1)" "$(bound_cert zzz-t1 e1)" "the standby has the restored binding too"
+  expect_eq "$(group_status "$G")" "In Sync" "the pair is In Sync"
+  tool --deploy pair --rollback --set "$P2_TS"
+  expect_has "receives the rollback by config-sync" "a standby listed in a rollback is skipped, with the reason"
+else
+  t_fail "p5 needs the backup set from p2" "run p2 first"
+fi
+fi
+
+if [[ -n "$PEER" ]] && want p6; then
+echo "== p6: sync = no leaves the peer alone and says so"
+use_cert f
+conf "[deploy:nosync]
+sync = no
+f5 = t
+cert = zt
+profile = zzz-t1
+verify = ${VSA}:443 zzz.test
+"
+group_sync
+PREVP="$(peer_cert zzz-t1 e1)"
+tool --deploy nosync
+expect_rc 0 "the deploy exits 0"; expect_has "synchronise the configuration to its peers yourself" "the operator is told to sync"
+expect_eq "$(peer_cert zzz-t1 e1)" "$PREVP" "the standby was not changed"
+expect_eq "$(group_status "$G")" "Changes Pending" "the pair shows Changes Pending"
+group_sync
+fi
+
+if [[ -n "$PEER" ]] && want p7; then
+echo "== p7: after a failover the same configuration deploys to the new active unit"
+use_cert g
+conf "$PAIR_DEPLOY"
+group_sync
+f5 "tmsh run sys failover standby" >/dev/null 2>&1
+for i in $(seq 1 30); do [[ "$(failover_state f5p)" == active ]] && break; sleep 2; done
+expect_eq "$(failover_state f5p)" active "the peer took over"
+tool --deploy pair
+expect_rc 0 "the deploy exits 0"
+expect_true "the new active unit was updated" grep -Eq 'pair@peer +UPDATED' <<<"$OUT"
+expect_true "the new standby was checked after the sync" grep -Eq 'pair@t +IN_SYNC' <<<"$OUT"
+expect_eq "$(peer_cert zzz-t1 e1)" "$(bound_cert zzz-t1 e1)" "both units have the same binding"
+expect_eq "$(bound_fp zzz-t1 e1)" "$CUR_FP" "and it is the new certificate"
+f5p "tmsh run sys failover standby" >/dev/null 2>&1
+for i in $(seq 1 30); do [[ "$(failover_state f5)" == active ]] && break; sleep 2; done
+expect_eq "$(failover_state f5)" active "the original unit is active again"
+fi
+
+if [[ -n "$PEER" ]] && want p8; then
+echo "== p8: SIGTERM during the switch: rolled back and the pair left In Sync"
+use_cert a
+conf "$PAIR_DEPLOY"
+group_sync
+PREV="$(bound_cert zzz-t1 e1)"
+use_cert h
+export FAKE_SSH_MODE=term-during-txn FAKE_SSH_FLAG="${TMP}/p8.flag" FAKE_SSH_CF="$CF"
+rm -f "$FAKE_SSH_FLAG"
+PATH="$FAKEBIN:$PATH" run "$BIN" --config "$CF" --deploy pair
+unset FAKE_SSH_MODE FAKE_SSH_FLAG FAKE_SSH_CF
+expect_true "the signal really was sent during the switch" test -e "${TMP}/p8.flag"
+expect_rc 3 "the run rolls back and exits 3"
+expect_eq "$(bound_cert zzz-t1 e1)" "$PREV" "the active unit is back on its previous certificate"
+expect_eq "$(group_status "$G")" "In Sync" "the pair is In Sync after the interrupted run"
+expect_eq "$(peer_cert zzz-t1 e1)" "$PREV" "the standby has the previous certificate"
 fi
 
 t_summary

@@ -229,7 +229,7 @@ installer then never has to copy a key across devices.</p>
 <h2 id="4-linux-server-setup">4. Linux server setup</h2>
 <p>Run as root.</p>
 <h3 id="41-install-the-tools">4.1 Install the tools</h3>
-<pre><code class="language-bash">tar xzf f5-cert-push-2.1.2.tar.gz &amp;&amp; cd f5-cert-push
+<pre><code class="language-bash">tar xzf f5-cert-push-2.2.0.tar.gz &amp;&amp; cd f5-cert-push
 install -d -m 755 /opt/f5-cert-push
 install -m 750 f5-cert-push.sh f5-cert-install.sh /opt/f5-cert-push/
 sha256sum -c SHA256SUMS 2&gt;/dev/null | grep -E 'f5-cert-(push|install)\.sh'   # optional: verify the copy
@@ -373,10 +373,10 @@ on the device until pruned, so a rollback is instant.</p>
 <code>/shared</code> is the large volume; make sure it has space (a few KB per set).</p>
 <h3 id="64-pairs-partitions-sync">6.4 Pairs, partitions, sync</h3>
 <ul>
-<li><strong>Pair (active/standby):</strong> run the tool against the <strong>active</strong> unit, then sync (<strong>Device Management &gt;
-  Overview</strong>, or <code>tmsh run cm config-sync to-group &lt;group&gt;</code>). The tool prints a reminder but does not sync, so a
-  review step stays in your hands. Listing both units as <code>[f5:]</code> sections is possible (<code>allow_standby = yes</code>) but
-  not recommended: the next config-sync can overwrite what was pushed to the standby.</li>
+<li><strong>Pair (active/standby):</strong> define both units as <code>[f5:]</code> sections and list both in each deployment. The tool
+  deploys to the active one, runs config-sync, confirms both units loaded it, and checks the standby. The pair
+  must be <strong>In Sync</strong> before a run. Authorise the SSH key on <strong>both</strong> units: <code>authorized_keys</code> is not synchronised.
+  (<code>sync = no</code> if you prefer to sync yourself; then list only the active unit.)</li>
 <li><strong>Partitions:</strong> set <code>partition = Name</code> in <code>[f5:]</code>, or write profiles as <code>/Part/profile</code>. The objects are
   created in the same partition as the profile.</li>
 <li><strong>Config not loaded / unit offline / standby:</strong> the tool stops with a clear error. Fix the device first.</li>

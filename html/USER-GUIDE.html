@@ -85,7 +85,7 @@ home folder (<code>~</code>), not under <code>/mnt/c</code>, so file permissions
 <h2 id="2-one-time-setup">2. One-time setup</h2>
 <pre><code class="language-bash">mkdir -p ~/f5-cert-push/certs ~/f5-cert-push/backups
 cd ~/f5-cert-push
-tar xzf /path/to/f5-cert-push-2.1.2.tar.gz --strip-components=1     # puts f5-cert-push.sh here
+tar xzf /path/to/f5-cert-push-2.2.0.tar.gz --strip-components=1     # puts f5-cert-push.sh here
 chmod 700 ~/f5-cert-push
 chmod 750 f5-cert-push.sh
 ./f5-cert-push.sh --version
@@ -386,6 +386,14 @@ verify  = 10.1.10.10:443 www.example.com    # after the change, check this virtu
 <p>To find the profile names on the BIG-IP:</p>
 <pre><code class="language-bash">./f5-cert-push.sh --config f5-cert-push.conf --discover --f5 prod-a
 </code></pre>
+<p>It shows each profile with its certificate (name, CN, expiry), chain and key, the virtual servers that use
+it, and the unit's device groups and sync status. <strong>Shortcut for a new setup:</strong> write only the <code>[defaults]</code>
+and <code>[f5:]</code> sections, then let the tool draft the rest from what is on the BIG-IPs:</p>
+<pre><code class="language-bash">./f5-cert-push.sh --config f5-cert-push.conf --discover --write-config draft.conf
+</code></pre>
+<p><code>draft.conf</code> is your file plus a <code>[cert:]</code> and a <code>[deploy:]</code> section for every profile it found (both units of
+a pair in one deployment, <code>verify</code> lines from the virtual servers). Fill in the certificate file paths, delete
+what you do not want managed, set <code>enabled = yes</code> on the rest, and use it as your configuration.</p>
 <p>Many certificates, many BIG-IPs and several environments (<code>env = prod</code> / <code>env = test</code>) are all just more
 sections; every setting is in <a href="CONFIGURATION.html">CONFIGURATION.html</a> and a full example is in
 <code>f5-cert-push.conf.example</code>.</p>
@@ -452,26 +460,43 @@ the summary says <code>RESTORED</code> only when that is confirmed. It does not 
 works even if you have already deleted or replaced them. Each backup also contains a
 <code>restore-&lt;time&gt;.sh</code> you can run directly on the BIG-IP.</p>
 <h2 id="9-high-availability-pairs">9. High-availability pairs</h2>
-<p>Run the tool <strong>once, against the active BIG-IP</strong>, not once per unit. Certificates, keys and profiles are part of
-the synchronised configuration, so config-sync carries them to the peer. Refer to
-<a href="OPERATIONS.html">OPERATIONS.html</a> section 5 for the details. In short:</p>
+<p>Put <strong>both units</strong> of the pair in the configuration and in the deployment:</p>
+<pre><code class="language-ini">[f5:dc1-a]
+host    = 10.0.0.11
+ssh_key = /home/YOURNAME/.ssh/f5_push_ecdsa
+[f5:dc1-b]
+host    = 10.0.0.12
+ssh_key = /home/YOURNAME/.ssh/f5_push_ecdsa
+
+[deploy:www-dc1]
+f5      = dc1-a, dc1-b
+cert    = www
+profile = www-clientssl
+verify  = 10.1.10.10:443 www.example.com
+</code></pre>
+<p>Then run the routine in section 7 as usual. The tool:</p>
 <ol>
-<li>Put <strong>only the active unit</strong> in the configuration (<code>[f5:...]</code>). The tool refuses a standby unit.</li>
-<li>Run the routine in section 7.</li>
-<li>Synchronise the pair as you normally do, from the BIG-IP:</li>
+<li>deploys to whichever unit is <strong>active</strong> (after a failover, the other one: nothing to edit);</li>
+<li><strong>synchronises the pair</strong> (config-sync) and waits until both units report the same configuration;</li>
+<li>checks the <strong>standby</strong> now has the new certificate. The summary shows <code>UPDATED</code> for the active unit and
+   <code>IN_SYNC</code> for the standby.</li>
 </ol>
-<p><code>bash
-   tmsh run cm config-sync to-group YOUR-DEVICE-GROUP</code></p>
-<p>or in the web UI (<strong>Device Management &gt; Overview &gt; Sync</strong>). The tool reminds you when this is needed.
-4. Check the peer: <code>tmsh show cm sync-status</code> should say <strong>In Sync</strong>, and the same fingerprint should be served
-   after a failover test, if you do one.</p>
-<p>If the pair is <strong>not</strong> synchronising (sync disabled, or each unit is configured separately), run the routine
-against each unit in turn, active first.</p>
+<p>Two things to know:</p>
+<ul>
+<li><strong>The pair must be In Sync before you start.</strong> If someone changed a unit without syncing, the tool stops
+  without changing anything and says so, because a sync would also copy their change. Sort that out first
+  (<strong>Device Management &gt; Overview</strong> shows what is pending).</li>
+<li><strong>Authorise your key on both units</strong> (section 4). Keys are not part of what the pair synchronises.</li>
+</ul>
+<p>For several pairs (for example a main data centre and a DR site), make one deployment per pair, each listing
+that pair's two units, and give them <code>env</code> labels so <code>--env dc1</code> or <code>--env dr</code> runs one site. If your pair
+does not use config-sync, set <code>sync = no</code> and list only the active unit; then sync yourself.</p>
 <h2 id="10-quick-reference">10. Quick reference</h2>
 <pre><code class="language-bash">cd ~/f5-cert-push
 ./f5-cert-push.sh --validate                          # check files + config (no network)
 ./f5-cert-push.sh --list                              # what the configuration defines
-./f5-cert-push.sh --discover --f5 prod-a              # profiles and their current certificates
+./f5-cert-push.sh --discover                          # every BIG-IP: groups, sync, profiles, certificates
+./f5-cert-push.sh --discover --write-config draft.conf  # ... plus a draft configuration
 ./f5-cert-push.sh --deploy www --check                # compare with the BIG-IP (read-only)
 ./f5-cert-push.sh --deploy www --dry-run              # rehearsal (changes nothing)
 ./f5-cert-push.sh --deploy www                        # do it
