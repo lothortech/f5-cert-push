@@ -336,7 +336,12 @@ certificates and keys (including every version the tool installed), the backup s
 
 (Standalone: leave out `--peer`. If the lab was left failed over, it finds the active unit itself.) It reports,
 and leaves alone, anything of yours that uses a lab item. If the pair was not In Sync before the removal, it does
-not synchronise (that would publish other pending changes) and tells you; `--sync` overrides that.
+not synchronise (that would publish other pending changes): the other unit then keeps its copy of the lab, and the
+script says so and exits 1. Check what else is pending, then rerun with `--sync` (or sync the pair yourself).
+
+If you quit half way, the same two commands clean up whatever you got to: the deployments you made, their
+backups, a lock left by an interrupted run (add `--remove-stale`, when no f5-cert-push run is going on), and a
+lab left failed over or out of sync.
 
 Then remove what you made on this machine:
 

@@ -149,6 +149,15 @@ FILES=""
 for h in "${ALL[@]}"; do FILES+="$(files_on "$h")"$'\n'; done
 
 count() { printf '%s\n' "$1" | grep -c "^$2|" || true; }
+cfg_count() {   # cfg_count HOST: lab virtual servers, profiles, certificates and keys in its configuration
+  on "$1" 'bash -s' -- "$PREFIX" <<'EOF'
+P="$1-"; n=0
+for k in "ltm virtual" "ltm profile client-ssl" "sys file ssl-cert" "sys file ssl-key"; do
+  c="$(tmsh -q list $k one-line 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "{") { print $(i-1); break }}' | grep -c "^$P")"; n=$((n + c))
+done
+echo "$n"
+EOF
+}
 GROUP="$(printf '%s\n' "$INV" | awk -F'|' '$1 == "GROUP" {print $2; exit}')"
 GMEM="$(printf '%s\n' "$INV" | awk -F'|' '$1 == "GROUP" {print $3; exit}')"
 GPRE=""; [[ -n "$GROUP" ]] && GPRE="$(printf '%s\n' "$INV" | awk -F'|' -v g="$GROUP" '$1 == "GSTAT" && $2 == g {print $3; exit}')"
@@ -159,6 +168,13 @@ echo "  on the active unit $ACTIVE (configuration${GROUP:+, synchronised in $GRO
 printf '    %-28s %s\n' "virtual servers" "$(count "$INV" VS)" "client-ssl profiles" "$(count "$INV" PROFILE)" \
   "certificates" "$(count "$INV" CERT)" "keys" "$(count "$INV" KEY)"
 printf '%s\n' "$INV" | awk -F'|' '$1 == "VS" || $1 == "PROFILE" {printf "      %-8s %s\n", tolower($1), $2}'
+# an unsynchronised peer can still hold the lab configuration
+PEERCFG=0
+for h in "${ALL[@]}"; do
+  [[ "$h" == "$ACTIVE" ]] && continue
+  c="$(cfg_count "$h")"; PEERCFG=$(( PEERCFG + ${c:-0} ))
+  if (( ${c:-0} > 0 )); then echo "  on $h (not active): $c lab configuration item(s); removed there when the group is synchronised"; fi
+done
 for h in "${ALL[@]}"; do
   echo "  files on $h:"
   printf '%s\n' "$FILES" | awk -F'|' -v h="$h" '$2 == h && $1 != "" {printf "      %-8s %s  (%s)\n", tolower($1), $3, $4}'
@@ -188,7 +204,7 @@ TOTAL=$(( $(count "$INV" VS) + $(count "$INV" PROFILE) + $(count "$INV" CERT) + 
 NF=$(printf '%s\n' "$FILES" | grep -cE '^(BACKUP|SSHKEY)\|' || true)
 (( STALE )) && NF=$(( NF + $(printf '%s\n' "$FILES" | grep -cE '^(STAGE|LOCK)\|' || true) ))
 echo
-if (( TOTAL == 0 && NF == 0 )) && [[ -z "$LOCAL" ]]; then ok "no lab items found: nothing to do"; exit 0; fi
+if (( TOTAL == 0 && NF == 0 && PEERCFG == 0 )) && [[ -z "$LOCAL" ]]; then ok "no lab items found: nothing to do"; exit 0; fi
 if (( DRY )); then info "dry run: nothing was changed"; exit 0; fi
 if (( ! YES )); then
   read -r -p "Remove these lab items? [y/N] " a || a=""
@@ -229,7 +245,7 @@ EOF
 done
 
 # ---- synchronise ------------------------------------------------------------------------------
-if [[ -n "$GROUP" ]] && (( TOTAL > 0 )); then
+if [[ -n "$GROUP" ]] && (( TOTAL > 0 || PEERCFG > 0 )); then
   if [[ "$GPRE" == "In Sync" || "$FORCESYNC" == 1 ]]; then
     info "synchronising device group $GROUP"
     on "$ACTIVE" "tmsh run cm config-sync to-group $GROUP" || warn "config-sync to $GROUP failed"
@@ -245,21 +261,23 @@ if [[ -n "$GROUP" ]] && (( TOTAL > 0 )); then
 fi
 
 # ---- check -------------------------------------------------------------------------------
-left="$(on "$ACTIVE" 'bash -s' -- "$PREFIX" <<'EOF'
-P="$1-"; n=0
-for k in "ltm virtual" "ltm profile client-ssl" "sys file ssl-cert" "sys file ssl-key"; do
-  c="$(tmsh -q list $k one-line 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "{") { print $(i-1); break }}' | grep -c "^$P")"; n=$((n + c))
+left="$(cfg_count "$ACTIVE")"
+pl=0; plmsg=""
+for h in "${ALL[@]}"; do
+  [[ "$h" == "$ACTIVE" ]] && continue
+  c="$(cfg_count "$h")"; c="${c:-1}"
+  if (( c > 0 )); then pl=$(( pl + c )); plmsg+="$h still has $c lab configuration item(s); "; fi
 done
-echo "$n"
-EOF
-)"
 fl=0
 for h in "${ALL[@]}"; do
   c="$(files_on "$h" | grep -cE '^(BACKUP|SSHKEY)\|' || true)"; fl=$((fl + c))
 done
 if [[ -n "$LOCAL" ]]; then rm -rf -- "$LOCAL" && ok "removed the local lab directory $LOCAL"; fi
-if (( ${left:-1} == 0 && fl == 0 )); then
+if (( ${left:-1} == 0 && fl == 0 && pl == 0 )); then
   ok "all lab items are gone"
+elif (( ${left:-1} == 0 && fl == 0 )); then
+  warn "removed on the active unit $ACTIVE, but ${plmsg}it is removed there when the device group is synchronised: check what else is pending, then sync, or rerun with --sync"
+  exit 1
 else
   warn "${left:-?} lab configuration item(s) and $fl lab file item(s) remain (see the messages above)"
   exit 1

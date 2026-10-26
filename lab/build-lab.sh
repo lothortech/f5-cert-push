@@ -36,7 +36,7 @@
 set -euo pipefail
 
 VERSION="2.2.2"
-HOST="" PORT=22 BUSER=root KEY="" OUT="$HOME/f5-cert-push-lab" VSIPS="" DOSYNC=1 YES=0
+HOST="" PORT=22 BUSER=root KEY="" OUT="${HOME:-$(cd ~ 2>/dev/null && pwd || echo .)}/f5-cert-push-lab" VSIPS="" DOSYNC=1 YES=0
 
 die()  { printf 'build-lab: %s\n' "$*" >&2; exit 1; }
 info() { printf '[*] %s\n' "$*"; }

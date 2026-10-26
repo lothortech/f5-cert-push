@@ -302,7 +302,11 @@ certificates and keys (including every version the tool installed), the backup s
 </code></pre>
 <p>(Standalone: leave out <code>--peer</code>. If the lab was left failed over, it finds the active unit itself.) It reports,
 and leaves alone, anything of yours that uses a lab item. If the pair was not In Sync before the removal, it does
-not synchronise (that would publish other pending changes) and tells you; <code>--sync</code> overrides that.</p>
+not synchronise (that would publish other pending changes): the other unit then keeps its copy of the lab, and the
+script says so and exits 1. Check what else is pending, then rerun with <code>--sync</code> (or sync the pair yourself).</p>
+<p>If you quit half way, the same two commands clean up whatever you got to: the deployments you made, their
+backups, a lock left by an interrupted run (add <code>--remove-stale</code>, when no f5-cert-push run is going on), and a
+lab left failed over or out of sync.</p>
 <p>Then remove what you made on this machine:</p>
 <pre><code class="language-bash">cd ~ &amp;&amp; rm -rf ~/f5-cert-push ~/certs ~/.ssh/f5_push_ecdsa ~/.ssh/f5_push_ecdsa.pub
 for h in $A $B; do ssh-keygen -R $h; done
