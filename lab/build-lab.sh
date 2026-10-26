@@ -18,7 +18,7 @@
 # during the lab is too). Remove it all with remove-lab.sh, even half way through.
 # It creates no f5-cert-push configuration: that is the trainee's job (docs/LAB.md).
 #
-#   ./build-lab.sh --host 192.0.2.10 [--key ~/.ssh/admin_key] [--out ./f5-cert-push-lab]
+#   ./build-lab.sh --host 192.0.2.10 [--key ~/.ssh/admin_key] [--out ~/f5-cert-push-lab]
 #
 # Options:
 #   --host H          the BIG-IP (for a pair: the ACTIVE unit)            (required)
@@ -26,7 +26,7 @@
 #   --port P          SSH port (default 22)
 #   --key FILE        SSH private key (default: your ssh defaults, or a password)
 #   --out DIR         where to put the lab CA and the trainee's certificates
-#                     (default ./f5-cert-push-lab; must not exist yet)
+#                     (default ~/f5-cert-push-lab; must not exist yet)
 #   --vs-ips A,B,C    three unused addresses for the virtual servers (default: .201-.203,
 #                     or the next free ones, in the subnet of the BIG-IP's first IPv4
 #                     self IP, which must be a /24 for the automatic choice)
@@ -36,7 +36,7 @@
 set -euo pipefail
 
 VERSION="2.2.2"
-HOST="" PORT=22 BUSER=root KEY="" OUT="./f5-cert-push-lab" VSIPS="" DOSYNC=1 YES=0
+HOST="" PORT=22 BUSER=root KEY="" OUT="$HOME/f5-cert-push-lab" VSIPS="" DOSYNC=1 YES=0
 
 die()  { printf 'build-lab: %s\n' "$*" >&2; exit 1; }
 info() { printf '[*] %s\n' "$*"; }
