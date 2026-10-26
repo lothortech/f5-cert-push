@@ -74,7 +74,7 @@ SSHO=(-p "$PORT" -o ControlMaster=auto -o ControlPath="$CMD/cm" -o ControlPersis
 f5() { ssh "${SSHO[@]}" "$BUSER@$HOST" "$@"; }
 
 info "connecting to $BUSER@$HOST"
-f5 true || die "cannot log in to $BUSER@$HOST over SSH"
+f5 true </dev/null || die "cannot log in to $BUSER@$HOST over SSH"
 
 # ---- 1. the BIG-IP --------------------------------------------------------------
 PROBE="$(f5 'bash -s' <<'EOF'
@@ -158,7 +158,7 @@ echo "  virtual servers lab-vs1 ${VS[0]}:443, lab-vs2 ${VS[1]}:443, lab-vs3 ${VS
 echo "  local files     $OUT"
 echo
 if (( ! YES )); then
-  read -r -p "Build the lab on $HOST? [y/N] " a
+  read -r -p "Build the lab on $HOST? [y/N] " a || a=""
   [[ "$a" == [yY]* ]] || die "cancelled; nothing was changed"
 fi
 

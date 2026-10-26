@@ -84,9 +84,10 @@ on() {   # on HOST COMMAND...   (one SSH connection per unit)
   [[ -n "$KEY" ]] && o+=(-i "$KEY" -o IdentitiesOnly=yes)
   ssh "${o[@]}" "$BUSER@$h" "$@"
 }
-for h in "${ALL[@]}"; do on "$h" true || die "cannot log in to $BUSER@$h over SSH"; done
+[[ -z "$LOCAL" || -f "$LOCAL/lab-info.txt" ]] || die "--local $LOCAL: not a lab directory (no lab-info.txt); nothing was changed"
+for h in "${ALL[@]}"; do on "$h" true </dev/null || die "cannot log in to $BUSER@$h over SSH"; done
 
-state() { on "$1" "tmsh -q show sys failover 2>/dev/null | head -1 | awk '{print tolower(\$2)}'"; }
+state() { on "$1" "tmsh -q show sys failover 2>/dev/null | head -1 | awk '{print tolower(\$2)}'" </dev/null; }
 ACTIVE="$HOST"
 if [[ "$(state "$HOST")" != active ]]; then
   ACTIVE=""
@@ -180,7 +181,7 @@ if printf '%s\n' "$FILES" | grep -qE '^(STAGE|LOCK)\|' && (( ! STALE )); then
   warn "stale f5-cert-push staging directories or a lock exist (listed above): not removed without --remove-stale"
 fi
 if [[ -n "$LOCAL" ]]; then
-  if [[ -f "$LOCAL/lab-info.txt" ]]; then echo "  local: $LOCAL (the lab directory)"; else die "--local $LOCAL: not a lab directory (no lab-info.txt); not touching it"; fi
+  echo "  local: $LOCAL (the lab directory)"
 fi
 
 TOTAL=$(( $(count "$INV" VS) + $(count "$INV" PROFILE) + $(count "$INV" CERT) + $(count "$INV" KEY) ))
@@ -190,7 +191,7 @@ echo
 if (( TOTAL == 0 && NF == 0 )) && [[ -z "$LOCAL" ]]; then ok "no lab items found: nothing to do"; exit 0; fi
 if (( DRY )); then info "dry run: nothing was changed"; exit 0; fi
 if (( ! YES )); then
-  read -r -p "Remove these lab items? [y/N] " a
+  read -r -p "Remove these lab items? [y/N] " a || a=""
   [[ "$a" == [yY]* ]] || die "cancelled; nothing was changed"
 fi
 
