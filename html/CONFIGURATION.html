@@ -27,12 +27,12 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 footer{margin-top:3em;color:var(--mut);font-size:13px}
 @media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
 @media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
-</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html" class="cur">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a></nav><main><h1 id="configuration-reference">Configuration reference</h1>
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html" class="cur">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a><a href="LAB.html">Lab: hands-on walkthrough</a></nav><main><h1 id="configuration-reference">Configuration reference</h1>
 <p>The configuration file describes your BIG-IPs, your certificates and the deployments that connect
 them. Everything the tool does is driven by it. An annotated starting point is in
 <a href="../f5-cert-push.conf.example"><code>f5-cert-push.conf.example</code></a>.</p>
-<p>Jump to: <a href="#file-format">File format</a> - <a href="#defaults">defaults</a> - <a href="#f5">f5</a> - <a href="#cert">cert</a> -
-<a href="#deploy">deploy</a> - <a href="#profiles-and-entries">Profiles and entries</a> - <a href="#verification-endpoints">Verification</a> -
+<p>Jump to: <a href="#file-format">File format</a> - <a href="#defaults">defaults</a> - <a href="#f5name">f5</a> - <a href="#certname">cert</a> -
+<a href="#deployname">deploy</a> - <a href="#profiles-and-entries">Profiles and entries</a> - <a href="#verification-endpoints">Verification</a> -
 <a href="#object-naming">Object naming</a> - <a href="#precedence">Precedence</a> - <a href="#validation-rules">Validation rules</a> -
 <a href="#recipes">Recipes</a></p>
 <h2 id="file-format">File format</h2>

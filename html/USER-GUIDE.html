@@ -27,7 +27,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 footer{margin-top:3em;color:var(--mut);font-size:13px}
 @media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
 @media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
-</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html" class="cur">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a></nav><main><h1 id="user-guide-updating-certificates-by-hand">User guide: updating certificates by hand</h1>
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html" class="cur">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a><a href="LAB.html">Lab: hands-on walkthrough</a></nav><main><h1 id="user-guide-updating-certificates-by-hand">User guide: updating certificates by hand</h1>
 <p>For the person who runs the tool <strong>manually</strong> from their own Linux machine (or Windows with WSL) when a
 certificate is renewed. Nothing here runs by itself: you start it, you read what it is going to do, you
 confirm the result. For an unattended, cron-based setup see <a href="SETUP.html">SETUP.html</a> and
@@ -45,6 +45,10 @@ confirm the result. For an unattended, cron-based setup see <a href="SETUP.html"
 <li><a href="#10-quick-reference">Quick reference</a></li>
 </ol>
 <hr />
+<blockquote>
+<p><strong>New to the tool?</strong> The <a href="LAB.html">lab</a> builds a disposable practice setup on a lab BIG-IP and walks through
+everything in this guide, hands on.</p>
+</blockquote>
 <h2 id="1-what-you-need">1. What you need</h2>
 <table>
 <thead>

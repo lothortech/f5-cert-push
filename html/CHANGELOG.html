@@ -27,7 +27,34 @@ hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 footer{margin-top:3em;color:var(--mut);font-size:13px}
 @media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
 @media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
-</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html" class="cur">Changelog</a></nav><main><h1 id="changelog">Changelog</h1>
+</style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html" class="cur">Changelog</a><a href="LAB.html">Lab: hands-on walkthrough</a></nav><main><h1 id="changelog">Changelog</h1>
+<h2 id="222">2.2.2</h2>
+<h3 id="hands-on-lab">Hands-on lab</h3>
+<ul>
+<li><strong><code>docs/LAB.md</code></strong>: a first-time walkthrough on a lab BIG-IP or HA pair, from an empty account to renewed
+  certificates: build the lab, create the tool's SSH key, save certificate files received from a CA (including a
+  PFX), discover, draft and edit the configuration, validate, check, deploy, bad certificates, rollback, an
+  out-of-sync pair, a failover, and removing it all.</li>
+<li><strong><code>lab/build-lab.sh</code></strong> builds the lab from any Linux machine with root SSH to the BIG-IP: a throwaway CA, three
+  virtual servers with three client-ssl profiles (one holding an RSA and an ECDSA certificate), two unused
+  certificates, synchronised to the peer; the renewed certificates for the trainee as a CA would send them.
+  It refuses a BIG-IP that is not active, not loaded, already has lab items, or (pair) is not In Sync.</li>
+<li><strong><code>lab/remove-lab.sh</code></strong> removes every lab item at any point of the lab: lab virtual servers, profiles,
+  certificates and keys (including every version the tool installed), backup sets on every unit, the lab SSH
+  key, optionally stale staging directories and a lock, and the local lab directory; it finds the active unit
+  after a failover, reports anything outside the lab that uses a lab item, and synchronises only a group that
+  was In Sync before. <code>--dry-run</code> shows what it would remove.</li>
+</ul>
+<h3 id="fixes-found-while-preparing-the-lab">Fixes found while preparing the lab</h3>
+<ul>
+<li><strong>Dual RSA + ECDSA profiles:</strong> the endpoint check after a deployment now asks for the key type being deployed.
+  A plain probe gets the RSA certificate from a virtual server that serves both, so deploying the ECDSA entry
+  failed its check and was rolled back.</li>
+<li><strong><code>--discover</code></strong> lists the certificates no client-ssl profile uses, and profile entries with long names (the
+  web UI names entries <code>&lt;key&gt;_&lt;cert&gt;_0</code>; these were skipped).</li>
+<li><strong><code>--validate</code></strong> without a selector no longer fails on a certificate used only by disabled deployments (a
+  draft's placeholder paths); it says it did not check it.</li>
+</ul>
 <h2 id="221">2.2.1</h2>
 <p>Fixes for every finding of the fourth independent review (of 2.2.0; <code>G1</code>-<code>G7</code>, summarised in <code>REVIEW.md</code>
 section 7d). Each has a regression test in <code>tests/regress.sh</code> that fails against 2.2.0 and passes now.</p>

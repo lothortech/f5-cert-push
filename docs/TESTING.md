@@ -110,6 +110,17 @@ own connections) and pins nothing outside its temporary directory.
 | **p1-p9** HA pair (only with `F5_TEST_PEER_HOST`) | p1 `--discover` of both units shows the device group, sync status and virtual servers, and `--write-config` writes a valid draft (both units in one deployment, entries named, verify lines); p2 deploy to the active unit (standby listed first): synced, confirmed, standby `IN_SYNC` with the same objects, saved on the standby, no locks left; re-run is `UPTODATE` + `IN_SYNC`; p3 a pending unsynchronised change refuses the deploy with nothing changed and no backup; p4 a failed verification rolls back and leaves the pair In Sync on the old certificate; p5 `--rollback` restores and synchronises; p6 `sync = no` leaves the standby alone and says so; p7 after a **failover** the same file deploys to the new active unit; p8 `SIGTERM` during the switch: rolled back and the pair left In Sync; p9 nine bad certificates (expired, not yet valid, within `min_days_valid`, key from another certificate, chain from another CA, passphrase-protected key, truncated file, certificate and chain in `cert`, empty key) are each refused with the reason, nothing changed on either unit, no backup, pair still In Sync; then a good certificate deploys, syncs (`IN_SYNC`) and is served |
 | **s23** signal during the switch | `SIGTERM` arrives while the profile switch is running on the BIG-IP: the switch finishes, then the run rolls back and verifies (exit 3); both profiles and the virtual server are back on the previous certificate |
 
+## Results for 2.2.2
+
+| Suite | Where | Result |
+|---|---|---|
+| `offline.sh` | webserver-101 (Ubuntu, bash 5.1, OpenSSL 3), as root | 236 passed |
+| `install.sh` | webserver-101, as root | 154 passed |
+| `regress.sh` | webserver-101, as root | 73 passed (the earlier reviews' cases plus H1-H4: long profile entry names, unused certificates in discovery, the key-type endpoint probe, `--validate` with disabled deployments) |
+| `f5.sh` s1-s23 + p1-p9 | lab HA pair of BIG-IP 17.1.3.4 VE (f5a active, f5b standby) | **403 passed, 0 failed** |
+| `lab/build-lab.sh` and `lab/remove-lab.sh` | webserver-101 against the lab pair | build, refusal of a second build, remove, rebuild, remove: all as expected, pair In Sync afterwards |
+| `tools/check-docs.py` | Windows, Python 3 | OK: every document has an up-to-date page and every link resolves |
+
 ## Results for 2.2.1
 
 | Suite | Where | Result |
@@ -231,6 +242,13 @@ like every other remote script). Run it
 yourself: `pip install shellcheck-py` (or your package manager), then
 `shellcheck f5-cert-push.sh f5-cert-install.sh tests/*.sh`. The remote scripts are embedded as text; to check
 them, extract them (`define R_... <<'REMOTE_EOF'` blocks) and run `bash -n` and shellcheck on each.
+
+## Documentation
+
+`python tools/check-docs.py` checks that the HTML pages match the Markdown (what GitHub shows): every document
+has a page, `html/` is exactly what `tools/build-html.py` produces from the current Markdown, and every relative
+link and anchor resolves, in the HTML and in the Markdown. Run it after editing any document. The lab scripts
+(`lab/`) are checked by shellcheck and exercised by running the lab itself ([LAB.md](LAB.md)).
 
 ## Adding a test
 

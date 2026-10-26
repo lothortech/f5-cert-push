@@ -32,6 +32,7 @@ PAGES = [
     ("docs/TESTING.md", "TESTING.html", "Testing"),
     ("REVIEW.md", "REVIEW.html", "Review brief"),
     ("CHANGELOG.md", "CHANGELOG.html", "Changelog"),
+    ("docs/LAB.md", "LAB.html", "Lab: hands-on walkthrough"),
 ]
 BY_SRC = {src: out for src, out, _ in PAGES}
 
@@ -125,6 +126,8 @@ def build():
             extension_configs={"toc": {"slugify": slugify}},
         )
         body = md.convert(text)
+        # links to the scripts (the lab's .sh files) download them instead of opening them
+        body = re.sub(r'<a href="([^"]+\.sh)"', r'<a href="\1" download', body)
         m = re.search(r"<h1[^>]*>(.*?)</h1>", body, re.S)
         heading = re.sub(r"<[^>]+>", "", m.group(1)) if m else title
         nav = "".join(
@@ -142,8 +145,11 @@ def build():
         ) % (html.escape(heading), CSS, nav, body, html.escape(src), JS)
         with open(os.path.join(OUT, out), "w", encoding="utf-8", newline="\n") as f:
             f.write(page)
-        print("wrote html/" + out)
+        print("wrote " + os.path.join(os.path.basename(OUT), out))
 
 
 if __name__ == "__main__":
+    # --out DIR: write the pages somewhere else (tools/check-docs.py compares them with html/)
+    if len(sys.argv) == 3 and sys.argv[1] == "--out":
+        OUT = os.path.abspath(sys.argv[2])
     build()

@@ -29,7 +29,7 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.2.1"
+readonly VERSION="2.2.2"
 readonly PROG="f5-cert-push"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
@@ -1446,13 +1446,25 @@ exit 0
 REMOTE_EOF
 
 define R_ENDPOINT <<'REMOTE_EOF'
-# args: HOST PORT SNI   -> ENDPOINT|sha256hex|chain-depth   (empty fingerprint = no handshake)
-host="$1"; port="$2"; sni="$3"
-set -- -connect "$host:$port" -showcerts
-if [ -n "$sni" ]; then set -- "$@" -servername "$sni"; fi
-pem="$(echo | timeout 15 openssl s_client "$@" 2>/dev/null)"
-depth="$(printf '%s\n' "$pem" | grep -c 'BEGIN CERTIFICATE')"
-fp="$(printf '%s\n' "$pem" | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2- | tr -d ':')"
+# args: HOST PORT SNI KEYTYPE  -> ENDPOINT|sha256hex|chain-depth   (empty fingerprint = no handshake)
+# KEYTYPE rsa|ec asks for that kind of certificate: a profile with an RSA and an
+# ECDSA entry serves either, depending on what the client offers. The most precise
+# options are tried first; older OpenSSL that rejects them falls back.
+host="$1"; port="$2"; sni="$3"; kt="$4"
+case "$kt" in
+  ec)  o1='-cipher aECDSA -sigalgs ECDSA+SHA256:ECDSA+SHA384:ECDSA+SHA512'; o2='-cipher aECDSA' ;;
+  rsa) o1='-cipher aRSA -sigalgs RSA+SHA256:RSA+SHA384:RSA+SHA512:rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512'; o2='-cipher aRSA' ;;
+  *)   o1=''; o2='' ;;
+esac
+fp=""; depth=0
+for opts in "$o1" "$o2" ""; do
+  set -- -connect "$host:$port" -showcerts
+  if [ -n "$sni" ]; then set -- "$@" -servername "$sni"; fi
+  # shellcheck disable=SC2086   # the options are split on purpose
+  pem="$(echo | timeout 15 openssl s_client "$@" $opts 2>/dev/null)"
+  fp="$(printf '%s\n' "$pem" | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2- | tr -d ':')"
+  if [ -n "$fp" ]; then depth="$(printf '%s\n' "$pem" | grep -c 'BEGIN CERTIFICATE')"; break; fi
+done
 echo "ENDPOINT|$fp|$depth"
 REMOTE_EOF
 
@@ -1575,12 +1587,11 @@ REMOTE_EOF
 
 define R_DISCOVER <<'REMOTE_EOF'
 # Every client-ssl profile entry in every partition, the virtual servers and the
-# profiles they use, and the details of every certificate a profile uses.
+# profiles they use, and the details of every certificate object.
 # ("cd /" makes recursive listings span partitions; names then print as Partition/name.)
 #   DP|/Part/profile|entry|cert|chain|key|inherit
 #   VS|/Part/virtual|destination|/Part/profile,...
 #   CERT|name|FINGERPRINT|EXPIRY-EPOCH|CN
-certs=""
 for p in $(printf '%s\n' 'cd /' 'list ltm profile client-ssl one-line recursive' | tmsh -q 2>/dev/null | awk '{print $4}'); do
   o="$(tmsh -q list ltm profile client-ssl "/$p" inherit-certkeychain cert-key-chain 2>/dev/null)"
   inh="$(printf '%s\n' "$o" | awk '$1=="inherit-certkeychain"{print $2}')"
@@ -1591,7 +1602,6 @@ for p in $(printf '%s\n' 'cd /' 'list ltm profile client-ssl one-line recursive'
     /^            chain /  { h = $2 }
     /^            key /    { k = $2 }
     END { flush() }'
-  certs="$certs $(printf '%s\n' "$o" | awk '/^            cert /{print $2}')"
 done
 printf '%s\n' 'cd /' 'list ltm virtual recursive destination profiles' | tmsh -q 2>/dev/null | awk '
   function flush() { if (v != "") print "VS|/" v "|" d "|" pl }
@@ -1601,14 +1611,14 @@ printf '%s\n' 'cd /' 'list ltm virtual recursive destination profiles' | tmsh -q
   inp && /^    \}/ { inp = 0; next }
   inp && /^        [^ ]+ \{/ { pl = pl (pl == "" ? "" : ",") "/" $1 }
   END { flush() }'
-for c in $(printf '%s\n' $certs | sort -u); do
-  [ "$c" = none ] && continue
-  o="$(tmsh -q list sys file ssl-cert "$c" fingerprint expiration-date subject 2>/dev/null)" || continue
-  fp="$(printf '%s\n' "$o" | awk '$1=="fingerprint"{print $2}')"; fp="$(printf '%s' "${fp#*/}" | tr -d ':' | tr 'a-f' 'A-F')"
-  ex="$(printf '%s\n' "$o" | awk '$1=="expiration-date"{print $2}')"
-  cn="$(printf '%s\n' "$o" | sed -n 's/^ *subject .*CN=\([^,"]*\).*/\1/p' | head -1)"
-  echo "CERT|$c|$fp|$ex|$cn"
-done
+# every certificate object (used by a profile or not), in one listing
+printf '%s\n' 'cd /' 'list sys file ssl-cert recursive fingerprint expiration-date subject' | tmsh -q 2>/dev/null | awk '
+  function flush() { if (n != "") print "CERT|/" n "|" f "|" x "|" c }
+  /^sys file ssl-cert / { flush(); n = $4; f = ""; x = ""; c = ""; next }
+  $1 == "fingerprint"     { f = $2; sub(/^[^\/]*\//, "", f); gsub(/:/, "", f); f = toupper(f) }
+  $1 == "expiration-date" { x = $2 }
+  $1 == "subject"         { if (match($0, /CN=[^,"]*/)) c = substr($0, RSTART + 3, RLENGTH - 3) }
+  END { flush() }'
 REMOTE_EOF
 
 #######################################################################
@@ -2668,9 +2678,9 @@ job_verify_endpoints() {
     for attempt in 1 2 3; do
       fp=""; depth=0; rc=0
       if [[ "$J_VFROM" == local ]]; then
-        out="$(endpoint_local "$host" "$port" "$sni")" || rc=$?
+        out="$(endpoint_local "$host" "$port" "$sni" "$(cert_keytype "$J_CERT")")" || rc=$?
       else
-        out="$(f5_sh "${R_ENDPOINT}" "$host" "$port" "$sni")" || rc=$?
+        out="$(f5_sh "${R_ENDPOINT}" "$host" "$port" "$sni" "$(cert_keytype "$J_CERT")")" || rc=$?
       fi
       while IFS='|' read -r tag a b; do
         if [[ "$tag" == ENDPOINT ]]; then fp="$a"; depth="${b:-0}"; fi
@@ -2694,14 +2704,31 @@ job_verify_endpoints() {
   return "$status"
 }
 
-endpoint_local() {   # endpoint_local HOST PORT SNI -> ENDPOINT|fp|depth
-  local host="$1" port="$2" sni="$3" pem depth fp
-  local -a args=(-connect "${host}:${port}" -showcerts)
-  if [[ -n "$sni" ]]; then args+=(-servername "$sni"); fi
-  pem="$(timeout 15 openssl s_client "${args[@]}" </dev/null 2>/dev/null)" || true
-  depth="$(printf '%s\n' "$pem" | grep -c 'BEGIN CERTIFICATE')" || depth=0
-  fp="$(printf '%s\n' "$pem" | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2- | tr -d ':')" || fp=""
+endpoint_local() {   # endpoint_local HOST PORT SNI KEYTYPE -> ENDPOINT|fp|depth   (as R_ENDPOINT)
+  local host="$1" port="$2" sni="$3" kt="${4:-}" pem depth=0 fp="" opts
+  local -a tries=("")
+  case "$kt" in
+    ec)  tries=("-cipher aECDSA -sigalgs ECDSA+SHA256:ECDSA+SHA384:ECDSA+SHA512" "-cipher aECDSA" "") ;;
+    rsa) tries=("-cipher aRSA -sigalgs RSA+SHA256:RSA+SHA384:RSA+SHA512:rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512" "-cipher aRSA" "") ;;
+  esac
+  for opts in "${tries[@]}"; do
+    local -a args=(-connect "${host}:${port}" -showcerts)
+    if [[ -n "$sni" ]]; then args+=(-servername "$sni"); fi
+    # shellcheck disable=SC2206   # the options are split on purpose
+    args+=($opts)
+    pem="$(timeout 15 openssl s_client "${args[@]}" </dev/null 2>/dev/null)" || true
+    fp="$(printf '%s\n' "$pem" | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2- | tr -d ':')" || fp=""
+    if [[ -n "$fp" ]]; then depth="$(printf '%s\n' "$pem" | grep -c 'BEGIN CERTIFICATE')" || depth=0; break; fi
+  done
   printf 'ENDPOINT|%s|%s\n' "$fp" "$depth"
+}
+
+# The kind of certificate being deployed, for the endpoint probe: rsa, ec or "".
+cert_keytype() {
+  case "${CERT_ALGO[$1]:-}" in
+    rsaEncryption|rsassaPss) printf 'rsa' ;;
+    id-ecPublicKey)          printf 'ec' ;;
+  esac
 }
 
 # Restore the state captured before this run. Returns 0 only if the BIG-IP is
@@ -3198,7 +3225,19 @@ action_validate() {
   local c d j
   local -A want=()
   if (( SEL_ALL )) || (( ${#JOBS[@]} == 0 )); then
-    for c in ${CERTS[@]+"${CERTS[@]}"}; do want[$c]=1; done
+    # Every certificate, except one used ONLY by disabled deployments (a draft's
+    # placeholder paths, say): that one is reported, not checked.
+    local -A on=() off=()
+    for d in ${DEPLOYS[@]+"${DEPLOYS[@]}"}; do
+      if [[ "$(eff_bool enabled "deploy:${d}")" == yes ]]; then on[${CFG[deploy:${d}|cert]}]=1; else off[${CFG[deploy:${d}|cert]}]=1; fi
+    done
+    for c in ${CERTS[@]+"${CERTS[@]}"}; do
+      if [[ -n "${off[$c]:-}" && -z "${on[$c]:-}" ]]; then
+        info "not checked: certificate '${c}' is used only by disabled deployments"
+      else
+        want[$c]=1
+      fi
+    done
   else
     for j in "${JOBS[@]}"; do d="${j%%|*}"; want[${CFG[deploy:${d}|cert]}]=1; done
   fi
@@ -3327,7 +3366,7 @@ discover_one() {   # discover_one F5NAME   -> prints the report; appends to D_RO
     [[ "$tag" == DP ]] || continue
     pa="$(norm_name "$a")"; ca="$(norm_name "$c")"; ha="$(norm_name "$d")"; ka="$(norm_name "$e")"
     D_NENT[$f5n|$pa]=$(( ${D_NENT[$f5n|$pa]:-0} + 1 ))
-    if ! safe_obj "$pa" || ! is_name "$b" || ! { [[ "$ca" == none ]] || safe_obj "$ca"; } \
+    if ! safe_obj "$pa" || ! safe_obj "$b" || ! { [[ "$ca" == none ]] || safe_obj "$ca"; } \
        || ! { [[ "$ha" == none ]] || safe_obj "$ha"; } || ! { [[ "$ka" == none ]] || safe_obj "$ka"; }; then
       skipped=$((skipped + 1)); continue
     fi
@@ -3352,6 +3391,25 @@ discover_one() {   # discover_one F5NAME   -> prints the report; appends to D_RO
   if (( ${#rows[@]} == 0 )); then echo "   (no client-ssl profile with its own certificate)"; fi
   if (( n_def > 0 )); then
     printf '   %d profile entr%s use the default certificate or inherit it, and are not listed: %s\n' "$n_def" "$( (( n_def == 1 )) && printf 'y' || printf 'ies')" "$defs" | sanitize | cut -c1-400
+  fi
+  # Certificates that no client-ssl profile uses (as certificate or chain).
+  local -A inuse=()
+  for r in ${rows[@]+"${rows[@]}"}; do IFS='|' read -r _ _ cc hh _ <<<"$r"; inuse[$cc]=1; inuse[$hh]=1; done
+  local -a unused=() kept=()
+  for cc in $(printf '%s\n' "${!exp[@]}" | sort); do
+    [[ -n "${inuse[$cc]:-}" ]] && continue
+    case "$cc" in ca-bundle.crt|default.crt|f5-ca-bundle.crt|f5-irule.crt) continue ;; esac
+    if [[ "$cc" =~ -(cert|chain)-[0-9]{8}-[0-9]{6}\.pem$ ]]; then kept+=("$cc"); else unused+=("$cc"); fi
+  done
+  if (( ${#unused[@]} > 0 )); then
+    echo
+    echo "   certificates not used by any client-ssl profile:"
+    for cc in "${unused[@]}"; do
+      printf '      %-44s %s, expires %s\n' "$cc" "${cn[$cc]:+CN ${cn[$cc]}}" "${exp[$cc]:-?}" | sanitize
+    done
+  fi
+  if (( ${#kept[@]} > 0 )); then
+    printf '   %d older certificate version(s) kept by f5-cert-push for rollback (pruned to "keep")\n' "${#kept[@]}"
   fi
   if (( skipped > 0 )); then warn "skipped ${skipped} profile entr$( (( skipped == 1 )) && printf 'y' || printf 'ies') whose names contain unexpected characters"; fi
   f5_close

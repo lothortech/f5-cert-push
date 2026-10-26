@@ -4,8 +4,8 @@ The configuration file describes your BIG-IPs, your certificates and the deploym
 them. Everything the tool does is driven by it. An annotated starting point is in
 [`f5-cert-push.conf.example`](../f5-cert-push.conf.example).
 
-Jump to: [File format](#file-format) - [defaults](#defaults) - [f5](#f5) - [cert](#cert) -
-[deploy](#deploy) - [Profiles and entries](#profiles-and-entries) - [Verification](#verification-endpoints) -
+Jump to: [File format](#file-format) - [defaults](#defaults) - [f5](#f5name) - [cert](#certname) -
+[deploy](#deployname) - [Profiles and entries](#profiles-and-entries) - [Verification](#verification-endpoints) -
 [Object naming](#object-naming) - [Precedence](#precedence) - [Validation rules](#validation-rules) -
 [Recipes](#recipes)
 

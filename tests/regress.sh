@@ -1331,5 +1331,96 @@ g7_docs() {
 }
 check "G7: the documentation no longer says HA sync is manual" g7_docs
 
+# ---- found in the 2.2.1 CLI walk-through (H1-H3) ------------------------------
+echo "== CLI walk-through (2.2.1, H1-H3)"
+
+h_discover_fixture() {
+  load_push
+  f5_load() { F5_USER=root; F5_HOST=192.0.2.1; F5_PART=Common; }
+  f5_close() { :; }
+  f5_sh() {
+    case "$1" in
+      *'self-device'*) printf '%s\n' 'VERSION|17.1.3.4' 'FAILOVER|active' 'SELF|unit-a' ;;
+      *) printf '%s\n' \
+          'DP|/Common/site-ssl|site|/Common/site.crt|/Common/ca.crt|/Common/site.key|false' \
+          'DP|/Common/gui-ssl|lothortech-wildcard-privkey_lothortech-wildcard-cert-20260821-151651_0|/Common/gui.crt|none|/Common/gui.key|false' \
+          'VS|/Common/vs1|Common/10.1.10.81:https|/Common/site-ssl,/Common/tcp' \
+          'CERT|/Common/site.crt|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|1900000000|site.example' \
+          'CERT|/Common/gui.crt|BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB|1900000000|gui.example' \
+          'CERT|/Common/ca.crt|CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC|1900000000|Issuing CA' \
+          'CERT|/Common/spare.crt|DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD|1900000000|spare.example' \
+          'CERT|/Common/site-cert-20260101-120000.pem|EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE|1900000000|site.example' \
+          'CERT|/Common/default.crt|FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF|1900000000|localhost' ;;
+    esac
+  }
+}
+
+h1_long_entry() {
+  h_discover_fixture
+  local out; out="$(discover_one box 2>&1)"
+  printf '%s\n' "$out" | grep -E 'profile|skipped'
+  [[ "$out" == *"profile gui-ssl"* && "$out" != *"unexpected characters"* ]]
+}
+check "H1: discovery lists a profile entry with a long (web-UI generated) name instead of skipping it" h1_long_entry
+
+h2_unused_certs() {
+  h_discover_fixture
+  local out; out="$(discover_one box 2>&1)"
+  printf '%s\n' "$out" | sed -n '/not used by any/,$p'
+  [[ "$out" == *"certificates not used by any client-ssl profile"* && "$out" == *"spare.crt"*"CN spare.example"* ]] || return 1
+  # in use (as certificate or chain), system certificates and kept versions are not listed as unused
+  local unused; unused="$(printf '%s\n' "$out" | sed -n '/not used by any/,/older certificate/p')"
+  [[ "$unused" != *"site.crt "* && "$unused" != *"ca.crt"* && "$unused" != *"default.crt"* ]] || return 1
+  [[ "$out" == *"1 older certificate version(s) kept"* ]]
+}
+check "H2: discovery lists the certificates that no profile uses (system certificates and kept versions aside)" h2_unused_certs
+
+h3_probe_keytype() {
+  load_push
+  CERT_ALGO[r]=rsaEncryption; CERT_ALGO[e]=id-ecPublicKey; CERT_ALGO[x]=ED25519
+  [[ "$(cert_keytype r)" == rsa && "$(cert_keytype e)" == ec && -z "$(cert_keytype x)" ]] || return 1
+  # the probe asks for the deployed key type first, and falls back to a plain handshake
+  local s="$R_ENDPOINT"
+  [[ "$s" == *'-cipher aECDSA -sigalgs ECDSA+SHA256'* && "$s" == *'for opts in "$o1" "$o2" ""'* ]] || return 1
+  # and the job passes the key type to it
+  declare -f job_verify_endpoints | grep -q 'R_ENDPOINT}" "$host" "$port" "$sni" "$(cert_keytype "$J_CERT")"'
+}
+check "H3: the endpoint check asks for the deployed key type (RSA or ECDSA) on a profile serving both" h3_probe_keytype
+
+h4_validate_disabled() {
+  local d="${TMP}/h4" rc=0 out
+  mkdir -p "$d"
+  mkconf "$d/c.conf" <<EOF
+[defaults]
+backup_dir_local = ${d}/b
+[f5:a]
+host = 192.0.2.1
+[cert:good]
+cert = ${P}/a.pem
+key = ${P}/a.key
+chain = ${P}/a.chain.pem
+[cert:placeholder]
+cert = /path/to/certs/x/cert.pem
+key = /path/to/certs/x/privkey.pem
+[deploy:on]
+f5 = a
+cert = good
+profile = p1
+[deploy:off]
+enabled = no
+f5 = a
+cert = placeholder
+profile = p2
+EOF
+  out="$("$PUSH" --config "$d/c.conf" --validate 2>&1)" || rc=$?
+  printf '%s\n' "$out" | tail -3
+  [[ "$rc" == 0 && "$out" == *"not checked: certificate 'placeholder' is used only by disabled"* ]] || return 1
+  # enabling it makes validation check (and refuse) it
+  sed -i 's/^enabled = no$/enabled = yes/' "$d/c.conf"; rc=0
+  "$PUSH" --config "$d/c.conf" --validate >/dev/null 2>&1 || rc=$?
+  [[ "$rc" == 1 ]]
+}
+check "H4: --validate skips a certificate used only by disabled deployments (a draft placeholder), and says so" h4_validate_disabled
+
 echo
 t_summary

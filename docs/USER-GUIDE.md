@@ -18,6 +18,9 @@ confirm the result. For an unattended, cron-based setup see [SETUP.md](SETUP.md)
 
 ---
 
+> **New to the tool?** The [lab](LAB.md) builds a disposable practice setup on a lab BIG-IP and walks through
+> everything in this guide, hands on.
+
 ## 1. What you need
 
 | Need | Notes |

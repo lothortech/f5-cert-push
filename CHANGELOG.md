@@ -1,5 +1,31 @@
 # Changelog
 
+## 2.2.2
+
+### Hands-on lab
+- **`docs/LAB.md`**: a first-time walkthrough on a lab BIG-IP or HA pair, from an empty account to renewed
+  certificates: build the lab, create the tool's SSH key, save certificate files received from a CA (including a
+  PFX), discover, draft and edit the configuration, validate, check, deploy, bad certificates, rollback, an
+  out-of-sync pair, a failover, and removing it all.
+- **`lab/build-lab.sh`** builds the lab from any Linux machine with root SSH to the BIG-IP: a throwaway CA, three
+  virtual servers with three client-ssl profiles (one holding an RSA and an ECDSA certificate), two unused
+  certificates, synchronised to the peer; the renewed certificates for the trainee as a CA would send them.
+  It refuses a BIG-IP that is not active, not loaded, already has lab items, or (pair) is not In Sync.
+- **`lab/remove-lab.sh`** removes every lab item at any point of the lab: lab virtual servers, profiles,
+  certificates and keys (including every version the tool installed), backup sets on every unit, the lab SSH
+  key, optionally stale staging directories and a lock, and the local lab directory; it finds the active unit
+  after a failover, reports anything outside the lab that uses a lab item, and synchronises only a group that
+  was In Sync before. `--dry-run` shows what it would remove.
+
+### Fixes found while preparing the lab
+- **Dual RSA + ECDSA profiles:** the endpoint check after a deployment now asks for the key type being deployed.
+  A plain probe gets the RSA certificate from a virtual server that serves both, so deploying the ECDSA entry
+  failed its check and was rolled back.
+- **`--discover`** lists the certificates no client-ssl profile uses, and profile entries with long names (the
+  web UI names entries `<key>_<cert>_0`; these were skipped).
+- **`--validate`** without a selector no longer fails on a certificate used only by disabled deployments (a
+  draft's placeholder paths); it says it did not check it.
+
 ## 2.2.1
 
 Fixes for every finding of the fourth independent review (of 2.2.0; `G1`-`G7`, summarised in `REVIEW.md`

@@ -179,6 +179,7 @@ exits 4 when anything is out of date. See [docs/OPERATIONS.md](docs/OPERATIONS.m
 
 | | |
 |---|---|
+| [docs/LAB.md](docs/LAB.md) | **Hands-on lab**: build a disposable lab on a lab BIG-IP or HA pair with [`lab/build-lab.sh`](lab/build-lab.sh), then set up and use the tool from scratch; remove it all with [`lab/remove-lab.sh`](lab/remove-lab.sh) |
 | [docs/USER-GUIDE.md](docs/USER-GUIDE.md) | **For the person running it by hand**: SSH key, saving the certificate files, a small configuration, the renewal routine, rollback |
 | [docs/SETUP.md](docs/SETUP.md) | **Start here for a new install**: Linux server, staging folders, SSH key, BIG-IP prerequisites, first run, checklist |
 | [docs/MANUAL-UPLOAD.md](docs/MANUAL-UPLOAD.md) | Certificates uploaded by people: `f5-cert-install.sh`, setup, operator procedure, cron |
