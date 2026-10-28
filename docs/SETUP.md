@@ -34,39 +34,39 @@ BIG-IP. Day-to-day use is in [MANUAL-UPLOAD.md](MANUAL-UPLOAD.md); the settings 
 
 Everything is in the GitHub repository [lothortech/f5-cert-push](https://github.com/lothortech/f5-cert-push):
 the tool, the documentation (Markdown, and HTML in `html/`), the examples, the lab scripts and the tests. On the
-Linux server, as root, download the **v2.2.3** release in one of these ways. Each gives the same files in
+Linux server, as root, download the **v2.2.4** release in one of these ways. Each gives the same files in
 `~/f5-cert-push` (`/root/f5-cert-push`); section 4.1 installs the scripts from there.
 
 **With curl** (or `wget -qO-` in place of `curl -fsSL`):
 
 ```bash
 mkdir -p ~/f5-cert-push && cd ~/f5-cert-push
-curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.3.tar.gz | tar xz --strip-components=1
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.tar.gz | tar xz --strip-components=1
 ```
 
 **With git:**
 
 ```bash
-git clone --depth 1 --branch v2.2.3 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
+git clone --depth 1 --branch v2.2.4 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
 cd ~/f5-cert-push
 ```
 
 (git notes that it is on a "detached HEAD": expected, as this is a release tag rather than a branch.)
 
 **Without internet access on the server:** on a PC, download
-[f5-cert-push-2.2.3.tar.gz](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.3.tar.gz)
-or [f5-cert-push-2.2.3.zip](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.3.zip), copy it to the server (`scp`, a share), then:
+[f5-cert-push-2.2.4.tar.gz](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.tar.gz)
+or [f5-cert-push-2.2.4.zip](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.zip), copy it to the server (`scp`, a share), then:
 
 ```bash
 mkdir -p ~/f5-cert-push && cd ~/f5-cert-push
-tar xzf /path/to/f5-cert-push-2.2.3.tar.gz --strip-components=1
+tar xzf /path/to/f5-cert-push-2.2.4.tar.gz --strip-components=1
 ```
 
-From the ZIP instead (it unpacks into `f5-cert-push-2.2.3/` and loses the execute bits):
+From the ZIP instead (it unpacks into `f5-cert-push-2.2.4/` and loses the execute bits):
 
 ```bash
-cd ~ && unzip -q /path/to/f5-cert-push-2.2.3.zip
-mkdir -p ~/f5-cert-push && cp -a ~/f5-cert-push-2.2.3/. ~/f5-cert-push/ && rm -rf ~/f5-cert-push-2.2.3
+cd ~ && unzip -q /path/to/f5-cert-push-2.2.4.zip
+mkdir -p ~/f5-cert-push && cp -a ~/f5-cert-push-2.2.4/. ~/f5-cert-push/ && rm -rf ~/f5-cert-push-2.2.4
 cd ~/f5-cert-push && find . -name '*.sh' -exec chmod +x {} +
 ```
 

@@ -47,7 +47,7 @@
 #   --yes           do not ask for confirmation
 set -euo pipefail
 
-VERSION="2.2.3"
+VERSION="2.2.4"
 HM="${HOME:-$(cd ~ 2>/dev/null && pwd || echo .)}"
 HOST="" PORT=22 BUSER=root KEY="" PREFIX=lab KCOMMENT="f5-cert-push-lab" FORCESYNC=0 STALE=0 LOCAL="" DRY=0 YES=0
 CLEANUP=0 TOOLKEY=""

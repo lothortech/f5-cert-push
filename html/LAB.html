@@ -113,44 +113,44 @@ and if that is an internal one, answer <code>n</code> and run it again with <cod
 <tr>
 <td><code>build-lab.sh</code></td>
 <td>Builds the lab on a BIG-IP or HA pair, and sets up the tool's SSH key (section 1)</td>
-<td><a href="../lab/build-lab.sh" download>from this copy</a> · <a href="https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.3/lab/build-lab.sh" download>from GitHub</a></td>
+<td><a href="../lab/build-lab.sh" download>from this copy</a> · <a href="https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.4/lab/build-lab.sh" download>from GitHub</a></td>
 </tr>
 <tr>
 <td><code>remove-lab.sh</code></td>
 <td>Removes every lab item from both units and this machine, at any point: <code>--cleanup</code> (section 16)</td>
-<td><a href="../lab/remove-lab.sh" download>from this copy</a> · <a href="https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.3/lab/remove-lab.sh" download>from GitHub</a></td>
+<td><a href="../lab/remove-lab.sh" download>from this copy</a> · <a href="https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.4/lab/remove-lab.sh" download>from GitHub</a></td>
 </tr>
 </tbody>
 </table>
 <p>They are also in the release (<code>lab/</code>), which section 0 downloads anyway, and both have <code>--help</code>. To fetch
 only the scripts onto a Linux machine:</p>
-<pre><code class="language-bash">curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.3/lab/build-lab.sh
-curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.3/lab/remove-lab.sh
+<pre><code class="language-bash">curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.4/lab/build-lab.sh
+curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.4/lab/remove-lab.sh
 chmod +x build-lab.sh remove-lab.sh
 </code></pre>
 <h2 id="0-download-the-files">0. Download the files</h2>
 <p>Everything is in the GitHub repository <a href="https://github.com/lothortech/f5-cert-push">lothortech/f5-cert-push</a>:
 the tool, the lab scripts, the documentation (Markdown, and HTML in <code>html/</code>), the examples and the tests. Download
-the <strong>v2.2.3</strong> release onto the Linux machine you will run the lab from, in one of these ways. Each gives the same
+the <strong>v2.2.4</strong> release onto the Linux machine you will run the lab from, in one of these ways. Each gives the same
 files in <code>~/f5-cert-push</code>.</p>
 <p><strong>With curl</strong> (or <code>wget -qO-</code> in place of <code>curl -fsSL</code>):</p>
 <pre><code class="language-bash">mkdir -p ~/f5-cert-push &amp;&amp; cd ~/f5-cert-push
-curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.3.tar.gz | tar xz --strip-components=1
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.tar.gz | tar xz --strip-components=1
 </code></pre>
 <p><strong>With git:</strong></p>
-<pre><code class="language-bash">git clone --depth 1 --branch v2.2.3 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
+<pre><code class="language-bash">git clone --depth 1 --branch v2.2.4 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
 cd ~/f5-cert-push
 </code></pre>
 <p>(git notes that it is on a "detached HEAD": expected, as this is a release tag rather than a branch.)</p>
 <p><strong>Without internet access on the Linux machine:</strong> on a PC, download
-<a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.3.tar.gz">f5-cert-push-2.2.3.tar.gz</a>
-or <a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.3.zip">f5-cert-push-2.2.3.zip</a>, copy it across (<code>scp</code>, a share), then:</p>
+<a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.tar.gz">f5-cert-push-2.2.4.tar.gz</a>
+or <a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.zip">f5-cert-push-2.2.4.zip</a>, copy it across (<code>scp</code>, a share), then:</p>
 <pre><code class="language-bash">mkdir -p ~/f5-cert-push &amp;&amp; cd ~/f5-cert-push
-tar xzf /path/to/f5-cert-push-2.2.3.tar.gz --strip-components=1
+tar xzf /path/to/f5-cert-push-2.2.4.tar.gz --strip-components=1
 </code></pre>
-<p>From the ZIP instead (it unpacks into <code>f5-cert-push-2.2.3/</code> and loses the execute bits):</p>
-<pre><code class="language-bash">cd ~ &amp;&amp; unzip -q /path/to/f5-cert-push-2.2.3.zip
-mkdir -p ~/f5-cert-push &amp;&amp; cp -a ~/f5-cert-push-2.2.3/. ~/f5-cert-push/ &amp;&amp; rm -rf ~/f5-cert-push-2.2.3
+<p>From the ZIP instead (it unpacks into <code>f5-cert-push-2.2.4/</code> and loses the execute bits):</p>
+<pre><code class="language-bash">cd ~ &amp;&amp; unzip -q /path/to/f5-cert-push-2.2.4.zip
+mkdir -p ~/f5-cert-push &amp;&amp; cp -a ~/f5-cert-push-2.2.4/. ~/f5-cert-push/ &amp;&amp; rm -rf ~/f5-cert-push-2.2.4
 cd ~/f5-cert-push &amp;&amp; find . -name '*.sh' -exec chmod +x {} +
 </code></pre>
 <p>Check the download (every file against <code>SHA256SUMS</code>; silence means all match) and the version:</p>

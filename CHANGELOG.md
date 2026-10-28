@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased (main)
+## 2.2.4
+
+`f5-cert-push.sh` and `f5-cert-install.sh` are unchanged apart from the version; this release is the lab scripts.
 
 - `lab/build-lab.sh` checks for an existing lab directory (and the tool's key) **before** asking for the
   addresses. It says what is there (when and for which BIG-IP it was built, or that the build stopped half way,

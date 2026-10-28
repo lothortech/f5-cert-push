@@ -232,6 +232,49 @@ own connections) and pins nothing outside its temporary directory.</p>
 </tr>
 </tbody>
 </table>
+<h2 id="results-for-224">Results for 2.2.4</h2>
+<p><code>f5-cert-push.sh</code> and <code>f5-cert-install.sh</code> are unchanged apart from the version (BIG-IP suite: see 2.2.2).</p>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th>Where</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>offline.sh</code></td>
+<td>webserver-101 (Ubuntu, bash 5.1, OpenSSL 3), as root</td>
+<td>236 passed</td>
+</tr>
+<tr>
+<td><code>install.sh</code></td>
+<td>webserver-101, as root</td>
+<td>154 passed</td>
+</tr>
+<tr>
+<td><code>regress.sh</code></td>
+<td>webserver-101, as root</td>
+<td>73 passed</td>
+</tr>
+<tr>
+<td><code>build-lab.sh</code> with an existing lab directory</td>
+<td>webserver-101 (offline)</td>
+<td>refused before the prompts and described: a finished lab (built when, for which BIG-IP, contents, size), a half-built one, one it did not make (never deleted); kept on <code>n</code>, with <code>--yes</code>, and after <code>y</code> when the build then stops (an unreachable BIG-IP)</td>
+</tr>
+<tr>
+<td><code>remove-lab.sh --cleanup</code> with a half-built lab directory</td>
+<td>webserver-101, against the lab pair</td>
+<td>the other unit found, nothing on either unit, the directory removed</td>
+</tr>
+<tr>
+<td><code>tools/check-docs.py</code></td>
+<td>Windows, Python 3</td>
+<td>OK</td>
+</tr>
+</tbody>
+</table>
 <h2 id="results-for-223">Results for 2.2.3</h2>
 <p><code>f5-cert-push.sh</code> and <code>f5-cert-install.sh</code> are unchanged since 2.2.2 apart from the version, so the BIG-IP
 suite (<code>f5.sh</code>) was not rerun; its 2.2.2 result below stands.</p>

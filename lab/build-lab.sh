@@ -54,7 +54,7 @@
 #   -h, --help        this help
 set -euo pipefail
 
-VERSION="2.2.3"
+VERSION="2.2.4"
 HM="${HOME:-$(cd ~ 2>/dev/null && pwd || echo .)}"
 HOST="" PEER="" PORT=22 BUSER=root KEY="" OUT="$HM/f5-cert-push-lab" VSIPS="" DOSYNC=1 YES=0
 TKEY="$HM/.ssh/f5_push_ecdsa" TCOMMENT="f5-cert-push-lab"

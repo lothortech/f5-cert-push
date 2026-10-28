@@ -110,6 +110,19 @@ own connections) and pins nothing outside its temporary directory.
 | **p1-p9** HA pair (only with `F5_TEST_PEER_HOST`) | p1 `--discover` of both units shows the device group, sync status and virtual servers, and `--write-config` writes a valid draft (both units in one deployment, entries named, verify lines); p2 deploy to the active unit (standby listed first): synced, confirmed, standby `IN_SYNC` with the same objects, saved on the standby, no locks left; re-run is `UPTODATE` + `IN_SYNC`; p3 a pending unsynchronised change refuses the deploy with nothing changed and no backup; p4 a failed verification rolls back and leaves the pair In Sync on the old certificate; p5 `--rollback` restores and synchronises; p6 `sync = no` leaves the standby alone and says so; p7 after a **failover** the same file deploys to the new active unit; p8 `SIGTERM` during the switch: rolled back and the pair left In Sync; p9 nine bad certificates (expired, not yet valid, within `min_days_valid`, key from another certificate, chain from another CA, passphrase-protected key, truncated file, certificate and chain in `cert`, empty key) are each refused with the reason, nothing changed on either unit, no backup, pair still In Sync; then a good certificate deploys, syncs (`IN_SYNC`) and is served |
 | **s23** signal during the switch | `SIGTERM` arrives while the profile switch is running on the BIG-IP: the switch finishes, then the run rolls back and verifies (exit 3); both profiles and the virtual server are back on the previous certificate |
 
+## Results for 2.2.4
+
+`f5-cert-push.sh` and `f5-cert-install.sh` are unchanged apart from the version (BIG-IP suite: see 2.2.2).
+
+| Suite | Where | Result |
+|---|---|---|
+| `offline.sh` | webserver-101 (Ubuntu, bash 5.1, OpenSSL 3), as root | 236 passed |
+| `install.sh` | webserver-101, as root | 154 passed |
+| `regress.sh` | webserver-101, as root | 73 passed |
+| `build-lab.sh` with an existing lab directory | webserver-101 (offline) | refused before the prompts and described: a finished lab (built when, for which BIG-IP, contents, size), a half-built one, one it did not make (never deleted); kept on `n`, with `--yes`, and after `y` when the build then stops (an unreachable BIG-IP) |
+| `remove-lab.sh --cleanup` with a half-built lab directory | webserver-101, against the lab pair | the other unit found, nothing on either unit, the directory removed |
+| `tools/check-docs.py` | Windows, Python 3 | OK |
+
 ## Results for 2.2.3
 
 `f5-cert-push.sh` and `f5-cert-install.sh` are unchanged since 2.2.2 apart from the version, so the BIG-IP
