@@ -28,7 +28,7 @@ them is a real address. Use your own in their place:
 | `192.0.2.11` | management IP of the **standby** BIG-IP (`f5b`; none for a standalone BIG-IP) | `--peer` for `remove-lab.sh`, `B=` in section 1 |
 | `198.51.100.0/24` | the BIG-IPs' **external** VLAN (interface 1.2); floating self IP `.5`, unit self IPs `.6` and `.7` | where `build-lab.sh` puts the lab virtual servers |
 | `198.51.100.201`-`.203` | the lab virtual servers `lab-vs1`-`lab-vs3` (port 443) | `VS1=`-`VS3=` in section 1; `build-lab.sh` picks them and writes them to `lab-info.txt` |
-| `203.0.113.0/24` | the **internal** VLAN (interface 1.1) between the two units: config sync, failover, mirroring | nothing in the lab; it is how the pair keeps in sync |
+| `203.0.113.0/24` | the **internal** VLAN (interface 1.1) between the two units: config sync, failover, mirroring. A **separate VLAN and subnet** from the external one (and from management), not routed; unit self IPs `.6` and `.7` | nothing in the lab; it is how the pair keeps in sync |
 
 The tool and the lab scripts only ever connect to the **management** IPs, over SSH (TCP 22), from the Linux
 machine. The PC needs nothing installed: it is where you SSH to the Linux machine from, and where a browser can
