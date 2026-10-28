@@ -32,7 +32,9 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 <h2 id="unreleased-main">Unreleased (main)</h2>
 <ul>
 <li><code>lab/build-lab.sh</code> checks for an existing lab directory (and the tool's key) <strong>before</strong> asking for the
-  addresses, and points at <code>remove-lab.sh --cleanup</code> to clear it.</li>
+  addresses. It says what is there (when and for which BIG-IP it was built, or that the build stopped half way,
+  its contents and size) and how to remove it, and offers to replace it: a directory build-lab.sh made is
+  deleted only once the new build is confirmed; any other is never deleted; with <code>--yes</code> it is not replaced.</li>
 <li><code>lab/remove-lab.sh</code> also removes the directory of a build that stopped half way (no <code>lab-info.txt</code> yet, but
   the lab CA in <code>pki/</code>); any other directory of that name is left alone, with a warning.</li>
 </ul>

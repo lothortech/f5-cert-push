@@ -137,6 +137,10 @@ shows the plan and asks before changing anything. Then it:
 
 It makes **no** f5-cert-push configuration or folders: that is what the rest of the lab is for.
 
+If `~/f5-cert-push-lab` is left from an earlier run, the build says what it holds (when and for which BIG-IP it
+was built, or that a build stopped half way) and offers to replace it; it is deleted only once you confirm the
+new build. If that lab may still be on the BIG-IPs, answer `n` and run `./lab/remove-lab.sh --cleanup` first.
+
 **Load the addresses** the rest of this guide uses (`A`, `B`, `VS1`-`VS3`), and look at the summary. Do this again
 in every new terminal. **Run on: the Linux machine**:
 

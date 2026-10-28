@@ -85,8 +85,29 @@ while (( $# )); do
   esac
 done
 for t in ssh ssh-keygen ssh-keyscan openssl awk sed mktemp; do command -v "$t" >/dev/null 2>&1 || die "required tool not found: $t"; done
+REPLACE=0
 if [[ -e "$OUT" ]]; then
-  die "$OUT already exists (a lab built earlier, or what is left of one). Remove it first: ./lab/remove-lab.sh --cleanup (asks for the BIG-IP if it cannot tell), or give another --out"
+  # Say what is there; offer to replace it only if build-lab.sh made it.
+  echo "$OUT already exists:"
+  if [[ -f "$OUT/lab-info.txt" ]]; then
+    sed -n '1,3s/^/    /p' "$OUT/lab-info.txt"
+    mine=1
+  elif [[ -f "$OUT/pki/ca.cnf" ]]; then
+    echo "    a lab build that stopped half way (lab CA made, no lab-info.txt)"
+    mine=1
+  else
+    echo "    NOT made by build-lab.sh"
+    mine=0
+  fi
+  echo "    contents: $(ls -A "$OUT" 2>/dev/null | head -12 | paste -sd' ' -)$( (( $(ls -A "$OUT" 2>/dev/null | wc -l) > 12 )) && printf ' ...')"
+  echo "    size:     $(du -sh "$OUT" 2>/dev/null | cut -f1)"
+  (( mine )) && echo "  If that lab may still be on a BIG-IP, remove it there too:  ./lab/remove-lab.sh --cleanup"
+  echo "  To delete only this directory yourself:  rm -rf $OUT"
+  (( mine )) || die "not replacing a directory build-lab.sh did not make: check it, delete or move it yourself, or give another --out"
+  (( ! YES )) || die "not replacing it with --yes: remove it first, or give another --out"
+  read -r -p "Delete it and build a new lab there? (it is deleted only once you confirm the build) [y/N] " a || a=""
+  [[ "$a" == [yY]* ]] || die "left as it is; nothing was changed"
+  REPLACE=1
 fi
 # The tool's key: reused if it is the lab key, created later (after the confirmation) if missing.
 if [[ -e "$TKEY" ]]; then
@@ -269,7 +290,7 @@ else
 fi
 echo "  virtual servers lab-vs1 ${VS[0]}:443, lab-vs2 ${VS[1]}:443, lab-vs3 ${VS[2]}:443"
 echo "  tool's SSH key  $TKEY ($TACT), authorised for root on ${UNITS[*]}"
-echo "  local files     $OUT"
+echo "  local files     $OUT$( (( REPLACE )) && printf ' (the existing one is deleted first)')"
 echo
 if (( ! YES )); then
   read -r -p "Build the lab on $HOST? [y/N] " a || a=""
@@ -295,6 +316,7 @@ EOF
 done
 
 # ---- 2. the lab PKI (on this machine) ------------------------------------------------
+if (( REPLACE )); then rm -rf -- "$OUT" && info "deleted the old $OUT"; fi
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 P="$OUT/pki"; R="$OUT/received"; mkdir -p "$P" "$R/bad"
 chmod 700 "$OUT" "$P"

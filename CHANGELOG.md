@@ -3,7 +3,9 @@
 ## Unreleased (main)
 
 - `lab/build-lab.sh` checks for an existing lab directory (and the tool's key) **before** asking for the
-  addresses, and points at `remove-lab.sh --cleanup` to clear it.
+  addresses. It says what is there (when and for which BIG-IP it was built, or that the build stopped half way,
+  its contents and size) and how to remove it, and offers to replace it: a directory build-lab.sh made is
+  deleted only once the new build is confirmed; any other is never deleted; with `--yes` it is not replaced.
 - `lab/remove-lab.sh` also removes the directory of a build that stopped half way (no `lab-info.txt` yet, but
   the lab CA in `pki/`); any other directory of that name is left alone, with a warning.
 
