@@ -5,6 +5,18 @@ to, which pushes them to one or more BIG-IPs from cron. Follow it top to bottom,
 BIG-IP. Day-to-day use is in [MANUAL-UPLOAD.md](MANUAL-UPLOAD.md); the settings are in
 [CONFIGURATION.md](CONFIGURATION.md); SSH troubleshooting is in [OPERATIONS.md](OPERATIONS.md) section 1.
 
+> **The tool needs SSH to every BIG-IP.** f5-cert-push does all its work over SSH: the Linux server logs in to
+> each BIG-IP's **management** address (TCP 22) as **root**, with a key made for the tool only (section 5).
+> Before you start, make sure of three things:
+>
+> 1. **Network:** TCP 22 is open from the Linux server to each management address (firewalls, and the BIG-IP's
+>    own **System > Platform > SSH IP Allow** list).
+> 2. **Root SSH login** is allowed on the BIG-IP, with a key (section 5.2 covers the settings).
+> 3. **Admin access to each BIG-IP, once:** to add the tool's public key you need a root shell on it (console,
+>    or SSH with the root password or your own key). After that, the tool needs nothing but its key.
+>
+> The [lab](LAB.md) works the same way: its section 1 sets up this SSH access before anything else.
+
 0. [Download the files](#0-download-the-files)
 1. [What you are building](#1-what-you-are-building)
 2. [Requirements](#2-requirements)
