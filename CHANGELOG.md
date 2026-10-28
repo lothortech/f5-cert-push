@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased (main)
+
+- `lab/build-lab.sh` checks for an existing lab directory (and the tool's key) **before** asking for the
+  addresses, and points at `remove-lab.sh --cleanup` to clear it.
+- `lab/remove-lab.sh` also removes the directory of a build that stopped half way (no `lab-info.txt` yet, but
+  the lab CA in `pki/`); any other directory of that name is left alone, with a warning.
+
 ## 2.2.3
 
 `f5-cert-push.sh` and `f5-cert-install.sh` are unchanged apart from the version; this release is the lab and

@@ -84,6 +84,19 @@ while (( $# )); do
     *) die "unknown option: $1 (see --help)" ;;
   esac
 done
+for t in ssh ssh-keygen ssh-keyscan openssl awk sed mktemp; do command -v "$t" >/dev/null 2>&1 || die "required tool not found: $t"; done
+if [[ -e "$OUT" ]]; then
+  die "$OUT already exists (a lab built earlier, or what is left of one). Remove it first: ./lab/remove-lab.sh --cleanup (asks for the BIG-IP if it cannot tell), or give another --out"
+fi
+# The tool's key: reused if it is the lab key, created later (after the confirmation) if missing.
+if [[ -e "$TKEY" ]]; then
+  [[ -f "$TKEY.pub" ]] || die "$TKEY exists but $TKEY.pub does not: give --tool-key FILE for another file"
+  [[ "$(awk '{print $NF; exit}' "$TKEY.pub")" == "$TCOMMENT" ]] \
+    || die "$TKEY exists but is not the lab's key (its comment is not $TCOMMENT): give --tool-key FILE for another file"
+  TACT="existing"
+else
+  TACT="new"
+fi
 if [[ -z "$HOST" ]]; then
   (( ! YES )) || die "--host is required with --yes"
   read -r -p "Management IP of the ACTIVE BIG-IP: " HOST || HOST=""
@@ -97,17 +110,6 @@ fi
 [[ "$PEER" != "$HOST" ]] || die "--peer is the same address as --host"
 [[ "$BUSER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "--user: not a plain account name"
 [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || die "--port: not a port number"
-for t in ssh ssh-keygen ssh-keyscan openssl awk sed mktemp; do command -v "$t" >/dev/null 2>&1 || die "required tool not found: $t"; done
-if [[ -e "$OUT" ]]; then die "--out $OUT already exists: remove it (or give another --out); a lab built earlier is removed with remove-lab.sh --local $OUT"; fi
-# The tool's key: reused if it is the lab key, created later (after the confirmation) if missing.
-if [[ -e "$TKEY" ]]; then
-  [[ -f "$TKEY.pub" ]] || die "$TKEY exists but $TKEY.pub does not: give --tool-key FILE for another file"
-  [[ "$(awk '{print $NF; exit}' "$TKEY.pub")" == "$TCOMMENT" ]] \
-    || die "$TKEY exists but is not the lab's key (its comment is not $TCOMMENT): give --tool-key FILE for another file"
-  TACT="existing"
-else
-  TACT="new"
-fi
 UNITS=("$HOST"); [[ -n "$PEER" ]] && UNITS+=("$PEER")
 
 # One SSH connection per unit for everything (a password, if needed, is asked for once per unit).

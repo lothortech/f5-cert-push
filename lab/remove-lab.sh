@@ -41,7 +41,8 @@
 #   --sync          synchronise the device group afterwards even if it was not In Sync
 #                   before (normally it is only synchronised if it was)
 #   --remove-stale  also remove stale f5-cert-push staging directories and lock (see above)
-#   --local DIR     also delete the local lab directory (only if it holds lab-info.txt)
+#   --local DIR     also delete the local lab directory (only if build-lab.sh made it: it holds
+#                   lab-info.txt, or the lab CA of a build that stopped half way)
 #   --dry-run       show what would be removed; change nothing
 #   --yes           do not ask for confirmation
 set -euo pipefail
@@ -50,6 +51,7 @@ VERSION="2.2.3"
 HM="${HOME:-$(cd ~ 2>/dev/null && pwd || echo .)}"
 HOST="" PORT=22 BUSER=root KEY="" PREFIX=lab KCOMMENT="f5-cert-push-lab" FORCESYNC=0 STALE=0 LOCAL="" DRY=0 YES=0
 CLEANUP=0 TOOLKEY=""
+labdir() { [[ -f "$1/lab-info.txt" || -f "$1/pki/ca.cnf" ]]; }   # made by build-lab.sh
 declare -a PEERS=()
 
 die()  { printf 'remove-lab: %s\n' "$*" >&2; exit 1; }
@@ -94,7 +96,8 @@ if (( CLEANUP )); then
     read -r -p "Management IP of the BIG-IP the lab is on (the active unit): " HOST || HOST=""
     [[ -n "$HOST" ]] || die "no address given; nothing was changed"
   fi
-  [[ -f "$LDIR/lab-info.txt" ]] && LOCAL="$LDIR"
+  if labdir "$LDIR"; then LOCAL="$LDIR"
+  elif [[ -e "$LDIR" ]]; then warn "$LDIR is not a lab directory build-lab.sh made: left alone (check it, and delete it yourself)"; fi
   [[ -n "$TOOLKEY" ]] || TOOLKEY="$HM/.ssh/f5_push_ecdsa"
   # only the lab's own key, never another one with the same file name
   [[ -f "$TOOLKEY.pub" && "$(awk '{print $NF; exit}' "$TOOLKEY.pub")" == "$KCOMMENT" ]] || TOOLKEY=""
@@ -115,7 +118,7 @@ on() {   # on HOST COMMAND...   (one SSH connection per unit)
   [[ -n "$KEY" ]] && o+=(-i "$KEY" -o IdentitiesOnly=yes)
   ssh "${o[@]}" "$BUSER@$h" "$@"
 }
-[[ -z "$LOCAL" || -f "$LOCAL/lab-info.txt" ]] || die "--local $LOCAL: not a lab directory (no lab-info.txt); nothing was changed"
+[[ -z "$LOCAL" ]] || labdir "$LOCAL" || die "--local $LOCAL: not a lab directory build-lab.sh made (no lab-info.txt or pki/ca.cnf); nothing was changed"
 for h in "${ALL[@]}"; do on "$h" true </dev/null || die "cannot log in to $BUSER@$h over SSH"; done
 
 # The other units of the pair, from the BIG-IP itself: sync-failover group members and
