@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # remove-lab.sh - remove every f5-cert-push lab item from a BIG-IP (or an HA pair).
 #
-# Safe to run at any point of the lab, including after quitting half way: it looks for
+# Safe to run at any point of the lab, including after quitting halfway: it looks for
 # everything the lab can have created, whoever created it (build-lab.sh, or
 # f5-cert-push while following docs/LAB.md), and removes what it finds:
 #
@@ -42,12 +42,12 @@
 #                   before (normally it is only synchronised if it was)
 #   --remove-stale  also remove stale f5-cert-push staging directories and lock (see above)
 #   --local DIR     also delete the local lab directory (only if build-lab.sh made it: it holds
-#                   lab-info.txt, or the lab CA of a build that stopped half way)
+#                   lab-info.txt, or the lab CA of a build that stopped halfway)
 #   --dry-run       show what would be removed; change nothing
 #   --yes           do not ask for confirmation
 set -euo pipefail
 
-VERSION="2.2.4"
+VERSION="2.3.0"
 HM="${HOME:-$(cd ~ 2>/dev/null && pwd || echo .)}"
 HOST="" PORT=22 BUSER=root KEY="" PREFIX=lab KCOMMENT="f5-cert-push-lab" FORCESYNC=0 STALE=0 LOCAL="" DRY=0 YES=0
 CLEANUP=0 TOOLKEY=""

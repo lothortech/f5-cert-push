@@ -116,18 +116,22 @@ never need access to `/etc/f5-certs`.
    or all of them. Other files are ignored.
 
    ```bash
-   sftp upload@certserver
+   sftp certop@certserver
    sftp> cd incoming/www
    sftp> put www.example.com.crt cert.pem
    sftp> put intermediate.crt chain.pem
    sftp> put www.example.com.key privkey.pem
    ```
 
-2. **Last**, create an empty file named `READY`:
+2. **Last**, upload an empty file named `READY`. Make it on your own machine first (`touch READY`, or an empty
+   text file named `READY` with no extension), then:
 
    ```bash
-   sftp> put /dev/null READY          # or: touch READY
+   sftp> put READY
+   sftp> bye
    ```
+
+   (With a shell on the server instead of SFTP: `touch READY` in the folder.)
 
 3. Within 15 minutes it is installed and pushed. The folder is then empty. If it was rejected, the folder
    still holds your files plus a `FAILED` file that says why; fix the problem and create `READY` again.

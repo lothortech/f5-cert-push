@@ -483,7 +483,8 @@ sections; value formats (hosts, users, ports, paths, names, numbers, booleans, e
 verify syntax); non-printable or non-ASCII characters; and the conflict rules above. Shell metacharacters,
 spaces, <code>..</code>, <code>$</code>, quotes, backticks and newlines are not permitted in any value that reaches ssh or tmsh.</p>
 <h2 id="recipes">Recipes</h2>
-<p><strong>Two BIG-IPs, same certificate, same profile names</strong></p>
+<p><strong>Two separate (standalone) BIG-IPs, same certificate, same profile names</strong> (for an HA pair, see
+<a href="#ha-pairs-and-config-sync">HA pairs</a>: the same file works, and only the active unit is changed)</p>
 <pre><code class="language-ini">[f5:a]
 host = 10.0.0.11
 ssh_key = /root/.ssh/f5_push_ecdsa

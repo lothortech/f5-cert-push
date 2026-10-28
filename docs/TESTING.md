@@ -1,7 +1,8 @@
 # Testing
 
-There are two suites in `tests/`. Together they are the evidence that the tool behaves as documented.
-**Run both after any change to the script.**
+There are four suites in `tests/`: three that need no BIG-IP, and one that runs against a lab BIG-IP (or HA
+pair). Together they are the evidence that the tool behaves as documented. **Run all of them after any change
+to the scripts.**
 
 | Suite | Needs | Changes anything? | Covers |
 |---|---|---|---|
@@ -109,6 +110,22 @@ own connections) and pins nothing outside its temporary directory.
 | **s22** lock taken over | Another "host" takes the BIG-IP lock in the middle of a run: the run is fenced at its next step, changes nothing, fails with exit 1, and does not remove the new owner's lock |
 | **p1-p9** HA pair (only with `F5_TEST_PEER_HOST`) | p1 `--discover` of both units shows the device group, sync status and virtual servers, and `--write-config` writes a valid draft (both units in one deployment, entries named, verify lines); p2 deploy to the active unit (standby listed first): synced, confirmed, standby `IN_SYNC` with the same objects, saved on the standby, no locks left; re-run is `UPTODATE` + `IN_SYNC`; p3 a pending unsynchronised change refuses the deploy with nothing changed and no backup; p4 a failed verification rolls back and leaves the pair In Sync on the old certificate; p5 `--rollback` restores and synchronises; p6 `sync = no` leaves the standby alone and says so; p7 after a **failover** the same file deploys to the new active unit; p8 `SIGTERM` during the switch: rolled back and the pair left In Sync; p9 nine bad certificates (expired, not yet valid, within `min_days_valid`, key from another certificate, chain from another CA, passphrase-protected key, truncated file, certificate and chain in `cert`, empty key) are each refused with the reason, nothing changed on either unit, no backup, pair still In Sync; then a good certificate deploys, syncs (`IN_SYNC`) and is served |
 | **s23** signal during the switch | `SIGTERM` arrives while the profile switch is running on the BIG-IP: the switch finishes, then the run rolls back and verifies (exit 3); both profiles and the virtual server are back on the previous certificate |
+
+## Results for 2.3.0
+
+`f5-cert-push.sh` and `f5-cert-install.sh` behave as in 2.2.4 (version, help text and header comment only), so
+the BIG-IP suite was not rerun; its 2.2.2 result stands. The lab scripts changed only in messages and one line
+of `lab-env.sh`; the complete lab was last run end to end against the pair on 2.2.4 (from webserver-102,
+Ubuntu 24.04, bash 5.2, OpenSSL 3.0.13).
+
+| Suite | Where | Result |
+|---|---|---|
+| `offline.sh` | webserver-101 (Ubuntu 22.04, bash 5.1, OpenSSL 3.0.2), as root | 236 passed |
+| `install.sh` | webserver-101, as root | 154 passed |
+| `regress.sh` | webserver-101, as root | 73 passed |
+| `lab/*.sh` | webserver-101 | `bash -n` and `shellcheck -S warning` clean; the new `lab-env.sh` (with `R`) written and loaded with `source` |
+| Example configurations | webserver-101 | `f5-cert-push.conf.example` and `examples/manual-upload/f5-cert-push.conf` accepted by `--list` |
+| `tools/check-docs.py` | Windows, Python 3 | OK |
 
 ## Results for 2.2.4
 
@@ -243,11 +260,14 @@ the modern-platform tests could not: OpenSSL 1.0.x's `verify -partial_chain` acc
 
 Stated plainly so you can decide how much to trust them:
 
-- **BIG-IP in a standby or offline state**, and a device whose **configuration is not loaded**. The refusals
-  are implemented (`job_gate`) but were not exercised because the test device is a standalone unit. Test them
-  on your own pair before relying on them.
-- **HA synchronisation.** The tool does not sync; it prints a reminder.
-- **BIG-IP versions other than 17.1.3.4.**
+- **A device whose configuration is not loaded** (mid-restart, a failed load). The refusal is implemented
+  (`job_gate`) but could not be produced on the test devices.
+- **Device groups with auto-sync enabled**, sync-only groups, and pairs of more than two units. The HA tests
+  (p1-p9) use a two-unit sync-failover group with **manual** sync.
+- **BIG-IP versions other than 17.1.3.4**, hardware appliances, VIPRION/vCMP and F5OS (rSeries, VELOS)
+  tenants. Only the virtual edition (VE) was tested.
+- **Host operating systems other than Ubuntu 22.04 and 24.04** for the full suites (the offline and
+  regression suites also ran on the BIG-IP's own CentOS-based shell, bash 4.2, OpenSSL 1.0.2).
 - **Chain verification on OpenSSL older than 1.1.0** (deliberately skipped there; see above).
 - **Profiles with a key passphrase** (refused by design; the detection path is not tested against a device).
 - **`server-ssl` profiles** (not supported).

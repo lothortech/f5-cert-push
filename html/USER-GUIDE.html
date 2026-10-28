@@ -51,6 +51,7 @@ confirm the result. For an unattended, cron-based setup see <a href="SETUP.html"
 everything in this guide, hands on.</p>
 </blockquote>
 <h2 id="1-what-you-need">1. What you need</h2>
+<p>Full list, with the tested Linux distributions and BIG-IP versions: <a href="index.html#system-requirements">README, System requirements</a>.</p>
 <table>
 <thead>
 <tr>
@@ -90,8 +91,8 @@ home folder (<code>~</code>), not under <code>/mnt/c</code>, so file permissions
 <h2 id="2-one-time-setup">2. One-time setup</h2>
 <pre><code class="language-bash">mkdir -p ~/f5-cert-push/certs ~/f5-cert-push/backups
 cd ~/f5-cert-push
-curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.tar.gz | tar xz --strip-components=1
-# or, from a downloaded copy: tar xzf /path/to/f5-cert-push-2.2.4.tar.gz --strip-components=1
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.tar.gz | tar xz --strip-components=1
+# or, from a downloaded copy: tar xzf /path/to/f5-cert-push-2.3.0.tar.gz --strip-components=1
 chmod 700 ~/f5-cert-push
 chmod 750 f5-cert-push.sh
 ./f5-cert-push.sh --version
@@ -144,14 +145,22 @@ chmod 600 /var/ssh/root/authorized_keys
 restorecon -v /var/ssh/root/authorized_keys
 </code></pre>
 <p>The <code>restorecon</code> line matters: without it the BIG-IP can silently ignore the key.</p>
-<p>Then, back on <strong>the Linux machine</strong> (log out of the BIG-IP), <strong>trust the BIG-IP's identity</strong> (once) and test the
-login. Replace <code>10.0.0.11</code> with the BIG-IP's management address. <strong>Run on: the Linux machine</strong> (the one that runs f5-cert-push):</p>
-<pre><code class="language-bash">ssh-keyscan -t ecdsa 10.0.0.11 &gt;&gt; ~/.ssh/known_hosts
-ssh-keygen -lf &lt;(ssh-keyscan -t ecdsa 10.0.0.11 2&gt;/dev/null)
+<p>Then, back on <strong>the Linux machine</strong> (type <code>exit</code> to log out of the BIG-IP), <strong>trust the BIG-IP's identity</strong>
+(once per BIG-IP) and test the login. The tool only talks to a BIG-IP whose SSH <strong>host key</strong> you have checked
+and saved; that is what stops it from sending keys to an impostor. Replace <code>10.0.0.11</code> with the BIG-IP's
+management address. <strong>Run on: the Linux machine</strong> (the one that runs f5-cert-push):</p>
+<pre><code class="language-bash">ssh-keyscan -t ecdsa 10.0.0.11 2&gt;/dev/null &gt; ~/bigip-hostkey.txt     # fetch the BIG-IP's host key
+ssh-keygen -lf ~/bigip-hostkey.txt                                    # show its fingerprint
 </code></pre>
-<p>The second command prints a fingerprint. <strong>On the BIG-IP</strong> (bash, as root) run <code>ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub</code>;
-the two fingerprints <strong>must be identical</strong>. If they differ, stop and ask who is answering at that address.
-Then test the login, <strong>on the Linux machine</strong>:</p>
+<p>The second command prints a fingerprint such as <code>256 SHA256:Xy3k... 10.0.0.11 (ECDSA)</code>. Now look at the
+BIG-IP's own fingerprint: <strong>on the BIG-IP</strong> (bash, as root, from the console or the SSH session you used
+above) run <code>ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub</code>. The two <code>SHA256:...</code> values <strong>must be
+identical</strong>. If they differ, stop: something else is answering at that address; ask your network team.</p>
+<p>Only if they match, save the key and delete the temporary file, <strong>on the Linux machine</strong>:</p>
+<pre><code class="language-bash">cat ~/bigip-hostkey.txt &gt;&gt; ~/.ssh/known_hosts &amp;&amp; rm ~/bigip-hostkey.txt
+</code></pre>
+<p>(If <code>ssh-keygen -lf</code> says the file "is not a public key file", the file is empty: the address is wrong, or TCP
+22 to it is blocked.) Then test the login, <strong>on the Linux machine</strong>:</p>
 <pre><code class="language-bash">ssh -i ~/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes root@10.0.0.11 'tmsh show sys version | head -5'
 </code></pre>
 <p>You should see the BIG-IP version and <strong>no password prompt</strong>. If you get "Permission denied (publickey)",
@@ -352,10 +361,12 @@ or the chain does not verify.</p>
 <h2 id="6-write-the-configuration">6. Write the configuration</h2>
 <p>Copy the example and edit it:</p>
 <pre><code class="language-bash">cd ~/f5-cert-push
-cp /path/to/f5-cert-push.conf.example f5-cert-push.conf     # the example is in the tarball you unpacked
-chmod 600 f5-cert-push.conf
+cp f5-cert-push.conf.example f5-cert-push.conf     # the example came with the download (section 2)
+chmod 600 f5-cert-push.conf                         # private: the tool refuses a file others can change
 nano f5-cert-push.conf
 </code></pre>
+<p>The example is long and shows every setting. For a first setup it is easier to delete its contents and type in
+the small configuration below instead (<code>nano</code>: Ctrl+K deletes a line, Ctrl+O saves, Ctrl+X quits).</p>
 <p>A small, complete configuration for <strong>one BIG-IP, one certificate, one profile</strong>. Replace <code>YOURNAME</code> with
 your Linux user name (<code>whoami</code>) and use your own addresses and names:</p>
 <pre><code class="language-ini">[defaults]
@@ -427,11 +438,12 @@ the current folder, which it is here.)</p>
    ./f5-cert-push.sh --validate</code></p>
 <p>Look for: the right certificate (subject and expiry), <code>OK</code>, and no errors. Fix anything it reports first.</p>
 <ol start="3">
-<li><strong>Look at what is on the BIG-IP now. Read-only.</strong></li>
+<li><strong>Compare with what is on the BIG-IP now. Read-only.</strong></li>
 </ol>
 <p><code>bash
    ./f5-cert-push.sh --deploy www --check</code></p>
-<p>It shows the certificate currently in the profile and whether it differs from the new one.</p>
+<p>It says, for each BIG-IP, whether the profile already has the new certificate (<code>UPTODATE</code>) or not
+   (<code>OUTDATED</code>, exit code 4: expected before a renewal).</p>
 <ol start="4">
 <li><strong>Rehearse. Prints every step, changes nothing.</strong></li>
 </ol>
@@ -449,7 +461,8 @@ the current folder, which it is here.)</p>
    If the check fails and <code>auto_rollback = yes</code>, it puts the old certificate back by itself and tells you
    (exit code 3).</p>
 <ol start="6">
-<li><strong>Confirm from outside</strong> (the summary also states this):</li>
+<li><strong>Confirm from outside</strong> (the tool already checked the <code>verify =</code> addresses; this is your own check). The
+   <code>-enddate</code> line should show the new expiry date:</li>
 </ol>
 <p><code>bash
    echo | openssl s_client -connect 10.1.10.10:443 -servername www.example.com 2&gt;/dev/null \
@@ -459,7 +472,7 @@ the current folder, which it is here.)</p>
 <li><strong>Tidy up.</strong> Keep the <code>backups/</code> folder. Remove the key from <code>certs/&lt;name&gt;/</code> if your policy says so.</li>
 </ol>
 <p>Because you run this by hand, there is <strong>no cron job and no automatic push</strong>: the tool does nothing until you
-run step 5. Running step 5 again with the same certificate does nothing ("UP TO DATE").</p>
+run step 5. Running step 5 again with the same certificate does nothing (<code>UPTODATE</code>).</p>
 <p>Several deployments at once: <code>./f5-cert-push.sh --all</code>, or <code>--env prod</code>. Use <code>--deploy NAME</code> while you are
 learning; it touches exactly one thing.</p>
 <h2 id="8-if-something-is-wrong-rolling-back">8. If something is wrong: rolling back</h2>
@@ -535,7 +548,7 @@ does not use config-sync, set <code>sync = no</code> and list only the active un
 <td>You have not trusted the BIG-IP (section 4), or its host key changed. Compare fingerprints before updating <code>known_hosts</code>.</td>
 </tr>
 <tr>
-<td><code>private key does not match</code></td>
+<td><code>the private key does not match the certificate</code></td>
 <td>The key is from a different request than the certificate.</td>
 </tr>
 <tr>
@@ -543,16 +556,16 @@ does not use config-sync, set <code>sync = no</code> and list only the active un
 <td>Wrong or old intermediate. Download the current chain from your CA.</td>
 </tr>
 <tr>
-<td><code>expires within min_days_valid</code></td>
-<td>The new certificate is about to expire; get a longer one.</td>
+<td><code>the certificate expires in N day(s); min_days_valid is ...</code></td>
+<td>The new certificate is about to expire; get a newer one.</td>
 </tr>
 <tr>
-<td><code>... is 'standby', not active</code></td>
-<td>Point the configuration at the active unit (section 9).</td>
+<td><code>this BIG-IP is 'standby', not active</code></td>
+<td>Only the standby is in the deployment. List both units of the pair (section 9).</td>
 </tr>
 <tr>
-<td><code>another run is in progress</code> (exit 6)</td>
-<td>Someone else (or an earlier run) holds the lock. Wait; if it is stuck, see <a href="OPERATIONS.html">OPERATIONS.html</a> section 8.</td>
+<td><code>another run holds the lock</code> (exit 6)</td>
+<td>Someone else (or an earlier run) is using that BIG-IP. Wait; if it is stuck, see <a href="OPERATIONS.html">OPERATIONS.html</a> section 8.</td>
 </tr>
 <tr>
 <td>exit 3</td>
@@ -565,7 +578,7 @@ does not use config-sync, set <code>sync = no</code> and list only the active un
 confirmed (follow the printed instructions and call your BIG-IP administrator; see OPERATIONS.md section 8),
 <code>6</code> another run is in progress, <code>130</code> you interrupted it (Ctrl-C) before anything was changed, or after it
 had finished. Interrupting it in the middle of a change is safe: it finishes the step and puts the previous
-certificate back (exit 3).</p><footer>Generated from <code>docs/USER-GUIDE.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
+certificate back (exit 3). After any command, <code>echo $?</code> shows its exit code.</p><footer>Generated from <code>docs/USER-GUIDE.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
 document.querySelectorAll('pre').forEach(function(p){
   if(!navigator.clipboard){return}
   var b=document.createElement('button');b.className='copy';b.textContent='Copy';

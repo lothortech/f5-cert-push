@@ -9,8 +9,12 @@
 # single tmsh transaction, verifies the result, rolls back automatically if
 # verification fails, and prunes old versions.
 #
-# Documentation: README.md and docs/ (CONFIGURATION, OPERATIONS, SECURITY,
-# TESTING). Run with --help for the command-line summary.
+# Documentation: README.md and docs/ (LAB, USER-GUIDE, SETUP, CONFIGURATION,
+# OPERATIONS, SECURITY, TESTING). Run with --help for the command-line summary.
+#
+# Requirements (full list: README.md, "System requirements"): Linux with bash 4.2+,
+# OpenSSH and OpenSSL 1.1.0+; root SSH key access to BIG-IP (TMOS) LTM, tested on
+# 17.1.3.4 VE, standalone or an active/standby pair in a sync-failover group.
 #
 # Design notes that matter to a reviewer:
 #   * The configuration file is PARSED, never sourced. Every value is validated
@@ -29,7 +33,7 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.2.4"
+readonly VERSION="2.3.0"
 readonly PROG="f5-cert-push"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
@@ -237,7 +241,7 @@ usage() {
 f5-cert-push - deploy TLS certificates to F5 BIG-IP devices, safely.
 
 USAGE
-  f5-cert-push.sh --config FILE SELECTOR [ACTION] [OPTIONS]
+  f5-cert-push.sh [--config FILE] SELECTOR [ACTION] [OPTIONS]
 
 SELECTORS  (what to act on; one or more are required for run/check/rollback)
   --deploy NAME      a [deploy:NAME] section (repeatable)

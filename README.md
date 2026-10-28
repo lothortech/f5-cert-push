@@ -1,5 +1,16 @@
 # f5-cert-push
 
+**Safe, repeatable TLS certificate deployment for F5 BIG-IP**
+
+| | |
+|---|---|
+| Version | 2.3.0 |
+| What it is | A command-line tool (Bash) that installs renewed TLS certificates into the client-ssl profiles of F5 BIG-IP devices over SSH, with backup, verification and automatic rollback |
+| Runs on | A Linux machine (see [System requirements](#system-requirements)); nothing is installed on the BIG-IP |
+| Works with | BIG-IP LTM: a standalone unit, or an active/standby HA pair (tested on 17.1.3.4) |
+| License | MIT |
+| Start with | [docs/LAB.md](docs/LAB.md) (hands-on lab), then [docs/USER-GUIDE.md](docs/USER-GUIDE.md) (manual use) or [docs/SETUP.md](docs/SETUP.md) (unattended server) |
+
 Deploy renewed TLS certificates to one or many **F5 BIG-IP** devices, safely and repeatably.
 
 You describe your BIG-IPs, certificates and deployments once in a configuration file. For each
@@ -27,7 +38,7 @@ It is a single Bash script plus a configuration file (and an optional wrapper, `
 certificates that people upload by hand). Nothing is installed on the BIG-IP.
 
 ```
-   your host                                          BIG-IP
+   Linux machine                                      BIG-IP
   +------------+    ssh (key only)    +-----------------------------------------+
   | f5-cert-   |--------------------->|  /shared/cert-backups/<prefix>/<time>/  |
   | push.sh    |   read state         |  /var/tmp/f5-cert-push.XXXX (staging)   |
@@ -38,25 +49,40 @@ certificates that people upload by hand). Nothing is installed on the BIG-IP.
    backups/<bigip>/<prefix>/<time>/
 ```
 
-## Requirements
+## System requirements
 
-| On the machine that runs the tool | |
-|---|---|
-| OS | Linux |
-| Shell | bash 4.2 or newer |
-| Tools | `ssh`, `openssl`, GNU `date` / `stat` / `sort` / `timeout`, `awk`, `sed`, `grep`, `sha256sum`, `find`, `mktemp`. **OpenSSL 1.1.0 or newer is recommended**: older versions cannot verify a chain reliably, so the chain check is skipped with a warning (see `chain_check`). Everything else works on 1.0.x. |
-| Access | read access to the certificate and key files; an SSH private key trusted by the BIG-IP |
+"Tested" means the full test suites (and, for the BIG-IP, the lab and the BIG-IP suite) passed there.
+"Expected to work" means it meets every requirement below but has not been tested: try it in a lab first.
 
-| On the BIG-IP | |
+### The machine that runs the tool
+
+| | |
 |---|---|
-| Version | Developed and tested against **BIG-IP 17.1.3.4**. The `cert-key-chain` syntax it relies on exists from 11.5, but other versions are untested. |
-| Account | SSH key login as **root**. The tool needs `tmsh` and read access to `/config/filestore` (to back up the old files). |
-| Key types | The BIG-IP's SSH daemon may be restricted (for example FIPS mode accepts only **ECDSA and RSA** keys, not ed25519). Use an ECDSA P-384 key. See [OPERATIONS.md](docs/OPERATIONS.md#1-first-time-setup). |
+| Operating system | **Linux** with GNU tools. **Tested:** Ubuntu 22.04 LTS and Ubuntu 24.04 LTS. **Expected to work:** Debian 11 and 12; RHEL, Rocky Linux and AlmaLinux 8 and 9; SUSE Linux Enterprise 15; Amazon Linux 2023; Ubuntu under WSL 2 on Windows 10/11. **Older systems** with bash 4.2 and OpenSSL 1.0.2 (RHEL/CentOS 7): the tool runs, but cannot verify certificate chains (`chain_check = fail` is refused there). **Not supported:** macOS (bash 3.2), Windows without WSL, BusyBox-only systems such as a plain Alpine. |
+| Shell | bash **4.2 or newer** (every current distribution has 5.x) |
+| OpenSSL | **1.1.0 or newer** (1.1.1 or 3.x recommended). Needed to verify certificate chains, and by the lab. |
+| Other tools | OpenSSH client (`ssh`, `ssh-keygen`, `ssh-keyscan`), GNU coreutils (`date`, `stat`, `sort`, `timeout`, `sha256sum`, `mktemp`, ...), `awk`, `sed`, `grep`, `find`. The upload wrapper `f5-cert-install.sh` also needs `flock`, `shred` and `dd`. All are installed by default on the distributions above. The tool lists anything missing when it starts. |
+| Network | TCP **22** (SSH) from this machine to every BIG-IP's **management** address. Nothing connects back to it. |
+| Access | Read access to the certificate and key files. The unattended setup ([SETUP.md](docs/SETUP.md)) runs as root; manual use ([USER-GUIDE.md](docs/USER-GUIDE.md)) and the lab work as a normal user. |
+
+### The BIG-IP
+
+| | |
+|---|---|
+| Software | **BIG-IP (TMOS) 17.1.3.4: tested.** Other 15.1, 16.1 and 17.x releases are expected to work but are untested. BIG-IP Next is not supported (it has no `tmsh`). |
+| Platform | **Virtual Edition (VE): tested.** Hardware appliances, VIPRION/vCMP guests and F5OS (rSeries, VELOS) tenants run the same software and are expected to work, untested. |
+| Module | **LTM**, with existing **client-ssl profiles** to update. The tool changes the certificate inside a profile; it does not create profiles or virtual servers. |
+| Account | **root**, logging in over SSH with a key, with a bash shell. **Appliance Mode** (which disables root and bash) is not supported. The tool needs `tmsh` and read access to `/config/filestore`. |
+| SSH key type | **ECDSA** (P-384 recommended) or RSA. Many BIG-IPs, FIPS-style settings in particular, refuse ed25519 keys without saying why. |
+| Device state | The unit that is changed must be **active**, with its configuration **fully loaded**. |
+| High availability | **Standalone: tested.** **Active/standby pair** in one **sync-failover** device group: tested with manual sync, including a failover. The pair must be **In Sync** before a run; the tool changes the active unit, runs config-sync and checks the standby. Auto-sync groups: implemented, untested. Active/active, more than two units, sync-only groups, or several sync-failover groups without `sync_group`: use `sync = no` and synchronise yourself. |
+| Partitions | `Common` or any other partition (`partition =`). |
+| Disk | A few KB of free space in `/shared` per backup set. |
 
 ## Quick start
 
 ```bash
-# 1. Put the script and the example config somewhere, restrict the config
+# 1. Copy the example configuration and make it private (the tool refuses a file others can change)
 cp f5-cert-push.conf.example /etc/f5-cert-push.conf
 chmod 600 /etc/f5-cert-push.conf
 $EDITOR /etc/f5-cert-push.conf                      # describe your BIG-IPs, certs, deployments
@@ -118,7 +144,7 @@ You must say what to act on; there is no "run everything" by accident.
 | `--validate` | check the config file and the local certificate files |
 | `--list` | show the deployments the config defines |
 | `--discover [--f5 NAME]` | show each BIG-IP's device groups and sync status, and every client-ssl profile with its certificate, chain, key, expiry and virtual servers |
-| `--discover --write-config FILE` | the same, plus a draft configuration with a deployment for every profile found |
+| `--discover --write-config FILE` | the same, plus a draft configuration (a new file): your configuration, plus a disabled deployment for every profile no deployment covers yet |
 | `--list-backups` | list the backup sets for the selected deployments |
 | `--rollback --set TS` | restore the state captured just before run `TS` |
 
@@ -201,7 +227,7 @@ Short list; the full one is in [docs/OPERATIONS.md](docs/OPERATIONS.md#known-lim
 - Profiles that **inherit** their certificate from a parent (`inherit-certkeychain true`) are refused; update the parent.
 - Developed and tested on BIG-IP **17.1.3.4** VE: standalone, and an active/standby pair with manual
   config-sync (including a failover). The "configuration not loaded" safety gate is implemented but could not
-  be exercised on the test devices.
+  be exercised on the test devices. See [System requirements](#system-requirements) for what is untested.
 
 ## Reading the documentation in a browser
 

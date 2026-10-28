@@ -1,7 +1,7 @@
 # f5-cert-push.conf - configuration for f5-cert-push.sh
 #
 # Copy this file, edit it, then:
-#       chmod 600 f5-cert-push.conf
+#       chmod 600 f5-cert-push.conf          (the tool refuses a file others can change)
 #       ./f5-cert-push.sh --config f5-cert-push.conf --validate
 #       ./f5-cert-push.sh --config f5-cert-push.conf --deploy NAME --dry-run
 #
@@ -46,7 +46,8 @@ backup_dir_local  = /var/backups/f5-cert-push
 # SSH host key checking for every BIG-IP.
 #   yes         the host key must already be in known_hosts (recommended)
 #   accept-new  trust a BIG-IP the first time it is seen, then pin it
-# To pin a key before the first run:  ssh-keyscan -t ecdsa BIGIP_ADDRESS >> ~/.ssh/known_hosts
+# To pin a key before the first run, fetch it, compare its fingerprint with the
+# BIG-IP's own, and only then add it to known_hosts (docs/OPERATIONS.md 1.3).
 strict_host_key_checking = yes
 #known_hosts_file = /root/.ssh/known_hosts
 
@@ -59,7 +60,8 @@ connect_timeout = 15
 remote_timeout  = 300
 
 # The tool also takes a lock on the BIG-IP itself so that two machines cannot push
-# to it at the same time. A lock older than this many minutes is treated as abandoned.
+# to it at the same time. The running tool renews it at every step; a lock not renewed
+# for this many minutes belongs to a run that died, and is taken over.
 remote_lock_stale_minutes = 30
 
 # Refuse to deploy a certificate that expires within this many days.

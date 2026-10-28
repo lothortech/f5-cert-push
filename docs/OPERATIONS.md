@@ -62,9 +62,11 @@ The tool defaults to `strict_host_key_checking = yes`, so the BIG-IP's SSH host 
 Fetch it and **compare the fingerprint with what the BIG-IP itself shows** before trusting it. **Run on: the Linux machine** (the one that runs f5-cert-push):
 
 ```bash
-ssh-keyscan -t ecdsa BIGIP_ADDRESS >> /root/.ssh/known_hosts
-ssh-keygen -lf <(ssh-keyscan -t ecdsa BIGIP_ADDRESS 2>/dev/null)     # fingerprint to compare
-# then ON THE BIG-IP (bash, as root):   ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
+ssh-keyscan -t ecdsa BIGIP_ADDRESS 2>/dev/null > /root/bigip-hostkey.txt   # fetch the host key
+ssh-keygen -lf /root/bigip-hostkey.txt                                      # fingerprint to compare
+# ON THE BIG-IP (bash, as root):   ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
+# only if the two SHA256:... values are identical:
+cat /root/bigip-hostkey.txt >> /root/.ssh/known_hosts && rm /root/bigip-hostkey.txt
 ```
 
 (Or set `strict_host_key_checking = accept-new` for a lab to trust first contact and pin it automatically.)
@@ -402,7 +404,7 @@ a record of its own.
 | You see | Cause and fix |
 |---|---|
 | `Permission denied (publickey...)` | The BIG-IP did not accept the key. Check in this order: the key is in `/var/ssh/root/authorized_keys`; that file has label `ssh_home_t` (`restorecon -v`); the key type is allowed (`grep PubkeyAcceptedKeyTypes /config/ssh/sshd_config`, use ECDSA); you are offering the right key (`ssh_key`). |
-| `/dev/fd/63 is not a public key file` (from `ssh-keygen -lf <(ssh-keyscan ...)`) | `ssh-keyscan` got no answer, so there was nothing to fingerprint: wrong address (an example address left in, or an empty variable), or TCP 22 to the management address is blocked. Run `ssh-keyscan -t ecdsa ADDRESS` alone to see. |
+| `... is not a public key file` (from `ssh-keygen -lf` after `ssh-keyscan`) | `ssh-keyscan` got no answer, so there was nothing to fingerprint: wrong address (an example address left in, or an empty variable), or TCP 22 to the management address is blocked. Run `ssh-keyscan -t ecdsa ADDRESS` alone to see. |
 | `Host key verification failed` | The BIG-IP's host key is not in known_hosts (or changed). Pin it (section 1.3). If it **changed unexpectedly**, stop and find out why. |
 | `refusing to use ... writable by group or others` | `chmod 600` the config file. |
 | `the BIG-IP configuration is not fully loaded (phase ..., last load ...)` | The BIG-IP is mid-restart or its config failed to load (for example after a license change). Fix that first. The tool will not change a BIG-IP in that state. |
@@ -410,7 +412,7 @@ a record of its own.
 | `profile '...' does not exist on the BIG-IP` | Wrong name or partition; `--discover --f5 NAME` lists what exists. |
 | `inherits its certificate from its parent profile` | Update the parent profile, or set `inherit-certkeychain false` on this one. |
 | `has N cert-key-chain entries ... name the entry explicitly` | Use `profile = NAME:ENTRY`. |
-| `the certificate does not match the key` / `private key does not match` | The files are from different issuances; check `cert`/`key` paths. |
+| `the private key does not match the certificate` | The files are from different issuances; check the `cert` and `key` paths. |
 | `passphrase-protected` | Decrypt a copy of the key: `openssl pkey -in KEY -out KEY.plain`, and point `key` at that copy. |
 | `the tmsh transaction failed ... (tmsh transactions are all-or-nothing)` | The BIG-IP rejected the change and nothing changed. The message includes the BIG-IP's reason, commonly: the profile already holds a certificate of the same key type in another entry. |
 | `another run holds the lock` (exit 6) | Another run is in progress, here or on another host (the message says which, and who). If none is, a local lock with a dead PID is removed automatically, and a BIG-IP lock expires after `remote_lock_stale_minutes`; or remove `/var/run/f5-cert-push.lock` on the BIG-IP by hand. |
@@ -454,8 +456,9 @@ Run with `--dry-run` first; it reads everything a deploy would and prints the pl
   selection is for RSA+ECDSA pairs.
 - **Fixed-name objects are overwritten in place** (not atomic), by design and only when requested. They
   are read back afterwards; a failed or partial overwrite fails the deployment and is rolled back.
-- **Tested on BIG-IP 17.1.3.4, standalone.** The standby refusal and "configuration not loaded" refusal are
-  implemented but could not be exercised; see [TESTING.md](TESTING.md).
+- **Tested on BIG-IP 17.1.3.4 VE**, standalone and as an active/standby pair (manual sync, including a
+  failover). Other versions, hardware platforms, auto-sync device groups and the "configuration not loaded"
+  refusal are untested; see [TESTING.md](TESTING.md).
 - **Chain verification needs OpenSSL 1.1.0 or newer** on the host running the tool. With 1.0.x it is skipped (with
   a warning, or refused under `chain_check = fail`).
 - **Root SSH to the BIG-IP is required** (it must read `/config/filestore` for backups).

@@ -3,17 +3,33 @@
 A hands-on lab, from nothing to a renewed certificate on an HA pair. You build a small, disposable lab on a
 **lab** BIG-IP with one script, then set up and use the tool exactly as you would the first time in production:
 install it, create its SSH key, save the certificate files you were sent, discover the BIG-IP, write the
-configuration, deploy, see what it refuses, roll back. One more script removes every lab item again, also if
-you stop half way, so the lab can be run as often as you like.
+configuration, deploy, see what it refuses, roll back. One more script removes every lab item again, even if
+you stop halfway, so you can run the lab as often as you like.
 
-> **Use a lab BIG-IP.** The lab only creates and removes objects named `lab-*`, and the tool only changes the
-> profiles you configure, but an HA pair is synchronised during the lab (config-sync copies the whole
-> configuration). Start with the pair **In Sync**.
+> **Use a lab BIG-IP, not a production one.** The lab only creates and removes objects named `lab-*`, and the
+> tool only changes the profiles you configure. But on an HA pair the lab runs config-sync, which copies the
+> **whole** configuration from one unit to the other, not only the lab's part. Start with the pair **In Sync**.
 
 | | |
 |---|---|
-| Time | about 45 minutes (an extra 10 for the HA-only sections) |
-| Works with | a standalone BIG-IP, or an active/standby pair in a sync-failover device group (both tested on 17.1) |
+| Time | about 45 minutes (10 more for the HA-only sections 14 and 15) |
+| Works with | a standalone BIG-IP, or an active/standby pair in a sync-failover device group (both tested on BIG-IP 17.1.3.4) |
+| You need | a Linux machine (section 1 lists what it needs), the BIG-IPs' management IPs, and their root password (or a root SSH key) |
+
+### Words used in this guide
+
+| Word | Meaning |
+|---|---|
+| **BIG-IP** | The F5 device (hardware or virtual edition, "VE"). |
+| **Management IP** | The BIG-IP's administration address, the one you open the web GUI or SSH on. The tool only ever uses this address. |
+| **Active / standby** | In an HA (high-availability) pair, the **active** unit handles the traffic; the **standby** waits to take over. The tool changes only the active unit. |
+| **Device group, config-sync, In Sync** | The two units of a pair are in a **sync-failover device group**. **Config-sync** copies the configuration from one unit to the other. **In Sync** means both have the same configuration; **Changes Pending** means someone changed one unit and has not synchronised yet. |
+| **Failover** | The standby becomes active (for example when the active unit fails, or by hand). |
+| **Virtual server** | An address and port on the BIG-IP that clients connect to (here, `https://ADDRESS:443`). |
+| **client-ssl profile** | The settings a virtual server uses to talk TLS to clients. It holds the certificate, its key and the chain. This is what the tool updates. |
+| **Certificate, private key, chain** | The certificate is the public part the site presents; the private key is its secret half (never share it); the chain is the CA's intermediate certificate(s) that link it to a trusted root. |
+| **tmsh** | The BIG-IP's command-line configuration shell. Commands like `tmsh list ...` run in the BIG-IP's bash shell. |
+| **Host key** | The SSH key that identifies a server. Checking its **fingerprint** once proves you are talking to the real BIG-IP and not something pretending to be it. |
 
 ### The lab network
 
@@ -43,15 +59,15 @@ and if that is an internal one, answer `n` and run it again with `--vs-ips A,B,C
 
 | Script | What it does | Download |
 |---|---|---|
-| `build-lab.sh` | Builds the lab on a BIG-IP or HA pair, and sets up the tool's SSH key (section 1) | [from this copy](../lab/build-lab.sh) · [from GitHub](https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.4/lab/build-lab.sh) |
-| `remove-lab.sh` | Removes every lab item from both units and this machine, at any point: `--cleanup` (section 16) | [from this copy](../lab/remove-lab.sh) · [from GitHub](https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.4/lab/remove-lab.sh) |
+| `build-lab.sh` | Builds the lab on a BIG-IP or HA pair, and sets up the tool's SSH key (section 1) | [from this copy](../lab/build-lab.sh) · [from GitHub](https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.3.0/lab/build-lab.sh) |
+| `remove-lab.sh` | Removes every lab item from both units and this machine, at any point: `--cleanup` (section 16) | [from this copy](../lab/remove-lab.sh) · [from GitHub](https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.3.0/lab/remove-lab.sh) |
 
 They are also in the release (`lab/`), which section 0 downloads anyway, and both have `--help`. To fetch
 only the scripts onto a Linux machine:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.4/lab/build-lab.sh
-curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.4/lab/remove-lab.sh
+curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.3.0/lab/build-lab.sh
+curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.3.0/lab/remove-lab.sh
 chmod +x build-lab.sh remove-lab.sh
 ```
 
@@ -59,39 +75,39 @@ chmod +x build-lab.sh remove-lab.sh
 
 Everything is in the GitHub repository [lothortech/f5-cert-push](https://github.com/lothortech/f5-cert-push):
 the tool, the lab scripts, the documentation (Markdown, and HTML in `html/`), the examples and the tests. Download
-the **v2.2.4** release onto the Linux machine you will run the lab from, in one of these ways. Each gives the same
-files in `~/f5-cert-push`.
+the **v2.3.0** release onto the Linux machine you will run the lab from, in one of these ways. Each gives the same
+files in `~/f5-cert-push`. **Run on: the Linux machine**, as your normal user (not root).
 
 **With curl** (or `wget -qO-` in place of `curl -fsSL`):
 
 ```bash
 mkdir -p ~/f5-cert-push && cd ~/f5-cert-push
-curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.tar.gz | tar xz --strip-components=1
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.tar.gz | tar xz --strip-components=1
 ```
 
 **With git:**
 
 ```bash
-git clone --depth 1 --branch v2.2.4 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
+git clone --depth 1 --branch v2.3.0 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
 cd ~/f5-cert-push
 ```
 
 (git notes that it is on a "detached HEAD": expected, as this is a release tag rather than a branch.)
 
 **Without internet access on the Linux machine:** on a PC, download
-[f5-cert-push-2.2.4.tar.gz](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.tar.gz)
-or [f5-cert-push-2.2.4.zip](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.zip), copy it across (`scp`, a share), then:
+[f5-cert-push-2.3.0.tar.gz](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.tar.gz)
+or [f5-cert-push-2.3.0.zip](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.zip), copy it across (`scp`, a share), then:
 
 ```bash
 mkdir -p ~/f5-cert-push && cd ~/f5-cert-push
-tar xzf /path/to/f5-cert-push-2.2.4.tar.gz --strip-components=1
+tar xzf /path/to/f5-cert-push-2.3.0.tar.gz --strip-components=1
 ```
 
-From the ZIP instead (it unpacks into `f5-cert-push-2.2.4/` and loses the execute bits):
+From the ZIP instead (it unpacks into `f5-cert-push-2.3.0/` and loses the execute bits):
 
 ```bash
-cd ~ && unzip -q /path/to/f5-cert-push-2.2.4.zip
-mkdir -p ~/f5-cert-push && cp -a ~/f5-cert-push-2.2.4/. ~/f5-cert-push/ && rm -rf ~/f5-cert-push-2.2.4
+cd ~ && unzip -q /path/to/f5-cert-push-2.3.0.zip
+mkdir -p ~/f5-cert-push && cp -a ~/f5-cert-push-2.3.0/. ~/f5-cert-push/ && rm -rf ~/f5-cert-push-2.3.0
 cd ~/f5-cert-push && find . -name '*.sh' -exec chmod +x {} +
 ```
 
@@ -138,19 +154,22 @@ shows the plan and asks before changing anything. Then it:
 It makes **no** f5-cert-push configuration or folders: that is what the rest of the lab is for.
 
 If `~/f5-cert-push-lab` is left from an earlier run, the build says what it holds (when and for which BIG-IP it
-was built, or that a build stopped half way) and offers to replace it; it is deleted only once you confirm the
+was built, or that a build stopped halfway) and offers to replace it; it is deleted only once you confirm the
 new build. If that lab may still be on the BIG-IPs, answer `n` and run `./lab/remove-lab.sh --cleanup` first.
 
-**Load the addresses** the rest of this guide uses (`A`, `B`, `VS1`-`VS3`) into your shell, and look at the
-summary. `lab-env.sh` is not a program: `source` reads its settings into the shell you are typing in (running it,
-or `sudo` with it, does not work: "permission denied" / "command not found"). Do this again in every new
-terminal. **Run on: the Linux machine**:
+**Load the addresses** the rest of this guide uses (`A`, `B`, `VS1`-`VS3`, and `R`, the folder of received
+certificates) into your shell, and look at the summary. `lab-env.sh` is not a program: `source` reads its
+settings into the shell you are typing in (running it, or `sudo` with it, does not work: "permission denied" /
+"command not found"). **Do this again in every new terminal**: the commands in this guide use these names, and
+in a new terminal they are empty. **Run on: the Linux machine**:
 
 ```bash
 source ~/f5-cert-push-lab/lab-env.sh
-echo "A=$A B=$B VS1=$VS1 VS2=$VS2 VS3=$VS3"
+echo "A=$A B=$B VS1=$VS1 VS2=$VS2 VS3=$VS3 R=$R"
 cat ~/f5-cert-push-lab/lab-info.txt
 ```
+
+For a standalone BIG-IP, `B` is empty; that is expected.
 
 ## 2. The tool's SSH access: what the script did for you
 
@@ -160,12 +179,12 @@ guide, section 5). The steps, and where each runs:
 
 | Step | Runs on | By hand it is |
 |---|---|---|
-| Pin each unit's **host key**: the BIG-IP's own key, which proves it is the real BIG-IP | Linux machine (compare on the BIG-IP) | `ssh-keyscan -t ecdsa $A >> ~/.ssh/known_hosts`; on the BIG-IP `ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub` shows the fingerprint to compare |
+| Pin each unit's **host key**: the BIG-IP's own key, which proves it is the real BIG-IP | Linux machine (compare on the BIG-IP) | fetch it with `ssh-keyscan`, show its fingerprint with `ssh-keygen -lf`, compare that with `ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub` on the BIG-IP, and only then add it to `~/.ssh/known_hosts` (User guide, section 4) |
 | Create **the tool's key**, never on the BIG-IP | Linux machine | `ssh-keygen -t ecdsa -b 384 -N '' -C f5-cert-push-lab -f ~/.ssh/f5_push_ecdsa` (ECDSA: BIG-IP refuses ed25519) |
 | Authorise its **public** half on **each** unit (this file is not synchronised by an HA pair) | each BIG-IP, as root | append the `.pub` line to `/var/ssh/root/authorized_keys`, then `chmod 600` and `restorecon` that file |
 
-Try the login exactly as the tool will make it: no password prompt, and one unit says active, the other standby.
-**Run on: the Linux machine**:
+Try the login exactly as the tool will make it. You should see no password prompt; each unit prints its name and
+its state (one says active, the other standby). **Run on: the Linux machine**:
 
 ```bash
 for h in $A $B; do ssh -i ~/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes -o BatchMode=yes root@$h 'uname -n; tmsh show sys failover | head -1'; done
@@ -175,22 +194,27 @@ The comment `f5-cert-push-lab` is how `remove-lab.sh` finds the key on each unit
 
 ## 3. Read the documentation first (2 minutes)
 
-`~/f5-cert-push/html/index.html` is the documentation as web pages (copy the `html/` folder to your desktop
-and open it). Sections 5-6 of the **User guide** are what you do next (its sections 3-4, the SSH key, the build did
-for you: section 2).
+`~/f5-cert-push/html/index.html` is the documentation as web pages (copy the `html/` folder to your PC and
+double-click `index.html`). Sections 5-6 of the **User guide** are what you do next. Its sections 3-4 (the SSH
+key) the build already did for you (section 2 above).
+
+> **From here on, every command runs on the Linux machine**, as your normal user, in a terminal where you ran
+> `source ~/f5-cert-push-lab/lab-env.sh` (section 1). Commands that act on a BIG-IP reach it over SSH by
+> themselves (`ssh ... root@$A '...'`); you never need to log in to the BIG-IP yourself.
 
 ## 4. Save the certificate files you were sent
 
-The tool wants three PEM files per certificate: the certificate, the chain (intermediates) and the private key.
-Make one folder per certificate, private to you:
+The tool wants three files per certificate, in **PEM** format (plain text that starts with `-----BEGIN`): the
+certificate, the chain (intermediates) and the private key. Make one folder per certificate, readable only by
+you:
 
 ```bash
 mkdir -p ~/certs/app1 ~/certs/app2 ~/certs/wildcard ~/certs/wildcard-ec && chmod 700 ~/certs ~/certs/*
-R=~/f5-cert-push-lab/received
+ls $R           # what the "CA" sent: app1  app2  bad  wildcard  wildcard-ec
 ```
 
-app1, the wildcard and the ECDSA wildcard came as PEM files with other names. A `.crt` or `.key` in PEM form
-(text starting `-----BEGIN`) only needs a new name:
+app1, the wildcard and the ECDSA wildcard came as PEM files with other names (`.crt`, `.key`). Those only need a
+new name, so copy each one to the name the tool expects:
 
 ```bash
 cp $R/app1/app1.lab.test.crt ~/certs/app1/cert.pem; cp $R/app1/app1.lab.test.key ~/certs/app1/privkey.pem; cp $R/app1/intermediate.crt ~/certs/app1/chain.pem
@@ -198,7 +222,9 @@ cp $R/wildcard/star.lab.test.crt ~/certs/wildcard/cert.pem; cp $R/wildcard/star.
 cp $R/wildcard-ec/star.lab.test-ecdsa.crt ~/certs/wildcard-ec/cert.pem; cp $R/wildcard-ec/star.lab.test-ecdsa.key ~/certs/wildcard-ec/privkey.pem; cp $R/wildcard-ec/intermediate.crt ~/certs/wildcard-ec/chain.pem
 ```
 
-app2 came as a **PFX** bundle (password `lab`): split it into the three files (User guide, section 5.3):
+app2 came as a **PFX** bundle: one password-protected file holding all three parts (the password is `lab`).
+It must be **converted**, not renamed. These commands take the key, the certificate and the chain out of it
+(User guide, section 5.3), and the last one makes the key files readable only by you:
 
 ```bash
 openssl pkcs12 -in $R/app2/app2.lab.test.pfx -passin pass:lab -nocerts -nodes | openssl pkey -out ~/certs/app2/privkey.pem
@@ -208,6 +234,10 @@ chmod 600 ~/certs/*/privkey.pem
 ```
 
 ## 5. Write the starting configuration: just the BIG-IPs
+
+The configuration file tells the tool which BIG-IPs exist and how to log in to them. Start with only that; the
+tool drafts the rest for you in section 7. This command creates the file, filling in your addresses (`$A`, `$B`)
+and your home folder (`$HOME`):
 
 ```bash
 cat > ~/f5-cert-push/f5-cert-push.conf <<EOF
@@ -230,7 +260,9 @@ chmod 600 ~/f5-cert-push/f5-cert-push.conf
 cd ~/f5-cert-push
 ```
 
-(Standalone BIG-IP: leave out `[f5:bigip-b]`.) The file sits next to the script, so no `--config` is needed.
+(Standalone BIG-IP: delete the `[f5:bigip-b]` section and its two lines afterwards, for example with `nano
+f5-cert-push.conf`.) `chmod 600` makes the file private; the tool refuses a configuration that others can change.
+The file sits next to the script, so no `--config` option is needed. Have a look: `cat f5-cert-push.conf`.
 
 ## 6. Discover what is on the BIG-IPs (read-only)
 
@@ -238,8 +270,9 @@ cd ~/f5-cert-push
 ./f5-cert-push.sh --discover
 ```
 
-For each unit: active or standby; its device groups (`sync-failover`, In Sync); every client-ssl profile with
-its certificate (CN, expiry), chain, key and the virtual server using it. `lab-wild-clientssl` appears twice
+`--discover` only reads; it changes nothing. For each unit it shows: active or standby; its device groups
+(`sync-failover`, In Sync); every client-ssl profile with its certificate (its CN, the name it was issued for,
+and its expiry date), chain, key and the virtual server using it. `lab-wild-clientssl` appears twice
 (entries `ecdsa` and `rsa`). At the end, **certificates not used by any client-ssl profile**: `lab-spare.crt` and
 `lab-legacy.crt`. Anything else already on your BIG-IP is listed too.
 
@@ -254,8 +287,11 @@ less draft.conf
 units in each deployment, `verify` lines from the virtual servers, and every deployment `enabled = no` until you
 review it. It never overwrites a file: run the command again and see it refuse.
 
-Point the four lab certificates at your files and enable **only** the lab deployments (anything else on your
-BIG-IP stays disabled). By hand in an editor, or:
+Now make two changes to `draft.conf`: point the four lab certificates at the files you saved in section 4 (the
+draft has placeholder paths `/path/to/certs/...`), and set `enabled = yes` on **only** the lab deployments
+(anything else on your BIG-IP stays `enabled = no`, so the tool never touches it). You can do it by hand in an
+editor (`nano draft.conf`), or with these commands. The first `sed` replaces the four placeholder paths, the
+second turns on the `[deploy:lab-...]` sections, and the last line makes the draft your configuration:
 
 ```bash
 sed -i -e "s#/path/to/certs/lab-app1/#$HOME/certs/app1/#" -e "s#/path/to/certs/lab-app2/#$HOME/certs/app2/#" -e "s#/path/to/certs/lab-wild/#$HOME/certs/wildcard/#" -e "s#/path/to/certs/lab-wild-ec/#$HOME/certs/wildcard-ec/#" draft.conf
@@ -281,8 +317,9 @@ manage needs nothing at all (Operations guide, section 2, "When the BIG-IP chang
 ./f5-cert-push.sh --list
 ```
 
-`--validate` checks each lab certificate (key match, chain, expiry, key type) and says which certificates it
-did not check (those used only by disabled deployments).
+Neither command connects to a BIG-IP. `--validate` checks each lab certificate (the key matches the
+certificate, the chain is right, it is not expired, the key type) and says which certificates it did not check
+(those used only by disabled deployments). `--list` shows what the configuration defines.
 
 ## 9. Compare with the BIG-IPs (read-only)
 
@@ -290,9 +327,14 @@ did not check (those used only by disabled deployments).
 ./f5-cert-push.sh --check --all; echo "exit $?"
 ```
 
-Exit 4: every lab profile is **OUT OF DATE**, on the standby too.
+`--check` compares what is on each BIG-IP with your files and changes nothing. `echo "exit $?"` prints the
+tool's exit code: `4` means "something is out of date". Here every lab profile is **OUT OF DATE**, on the
+standby too, because you have not deployed the renewals yet.
 
 ## 10. Rehearse, then deploy one certificate
+
+`--dry-run` prints every step a deployment would take and changes nothing. Read it, then the second command
+does it for real:
 
 ```bash
 ./f5-cert-push.sh --deploy lab-app1-bigip-a --dry-run
@@ -302,19 +344,23 @@ Exit 4: every lab profile is **OUT OF DATE**, on the standby too.
 The summary shows `UPDATED ... synchronised to <the standby>` for the active unit and `IN_SYNC` for the standby.
 (The deployment names end in the name of the unit that was active when you drafted them; `--list` shows them.
 This guide assumes bigip-a.)
-Look for yourself:
+
+Look for yourself. The first command asks the active BIG-IP to connect to `lab-vs1` and show the certificate it
+now serves, then shows the pair's sync status; the second shows the standby's copy of the profile:
 
 ```bash
 ssh -i ~/.ssh/f5_push_ecdsa root@$A "echo | openssl s_client -connect $VS1:443 2>/dev/null | openssl x509 -noout -subject -enddate; tmsh show cm sync-status | grep -E 'Status|Sync-Failover'"
 ssh -i ~/.ssh/f5_push_ecdsa root@$B 'tmsh list ltm profile client-ssl lab-app1-clientssl cert-key-chain'
 ```
 
-The new expiry is about 13 months out; the standby's profile uses the same new `lab-app1-cert-<time>.pem`.
+The new expiry date is about 13 months away; the standby's profile uses the same new
+`lab-app1-cert-<time>.pem`, which it received by config-sync.
 
 ## 11. Bad certificates are refused before anything is touched
 
-`received/bad/` holds four bad sets. Try each with a small throwaway configuration (`bad.conf`, rewritten for
-each one), aimed at the lab profile `lab-app1-clientssl`:
+`received/bad/` holds four bad sets. The loop below tries each one: it writes a small throwaway configuration
+(`bad.conf`) aimed at the lab profile `lab-app1-clientssl`, tries to deploy, prints the exit code, and at the end
+deletes `bad.conf`. Paste the whole block at once:
 
 ```bash
 for b in expired wrong-key expires-soon encrypted-key; do
@@ -353,8 +399,10 @@ Each is refused with its reason (`already expired`, `does not match the certific
 ./f5-cert-push.sh --check --all; echo "exit $?"
 ```
 
-app2, the RSA wildcard and the ECDSA wildcard are `UPDATED` and synchronised (app1 is `UPTODATE`); then `--check`
-exits 0. `lab-vs3` serves both renewed wildcards; its check asked for each key type:
+`--all` runs every enabled deployment. app2, the RSA wildcard and the ECDSA wildcard are `UPDATED` and
+synchronised (app1 is `UPTODATE`: done in section 10, so there is nothing to do); then `--check` exits 0.
+`lab-vs3` serves both renewed wildcards: the RSA one to clients that ask for RSA, the ECDSA one to the others.
+This asks for each type in turn:
 
 ```bash
 ssh -i ~/.ssh/f5_push_ecdsa root@$A "for c in aRSA aECDSA; do echo | openssl s_client -connect $VS3:443 -cipher \$c 2>/dev/null | openssl x509 -noout -enddate -text | grep -E 'notAfter|Public Key Algorithm'; done"
@@ -362,11 +410,14 @@ ssh -i ~/.ssh/f5_push_ecdsa root@$A "for c in aRSA aECDSA; do echo | openssl s_c
 
 ## 13. Roll back, and forward again
 
+Every deployment first saved a backup of what it replaced. List them:
+
 ```bash
 ./f5-cert-push.sh --deploy lab-app2-bigip-a --list-backups
 ```
 
-Take the newest timestamp shown for bigip-a:
+Each backup set is named by a timestamp such as `20261028-205712` (date and time, UTC). Put the newest one shown
+for bigip-a in place of `TIMESTAMP` below. The three commands roll back, check, and deploy again:
 
 ```bash
 ./f5-cert-push.sh --deploy lab-app2-bigip-a --f5 bigip-a --rollback --set TIMESTAMP
@@ -379,7 +430,8 @@ command puts the renewal back.
 
 ## 14. An out-of-sync pair is refused (HA pair only)
 
-Make an unsynchronised change on the active unit, then try to deploy:
+Make a change on the active unit without synchronising it (here, a profile description), so the pair is no
+longer In Sync, then try to deploy:
 
 ```bash
 ssh -i ~/.ssh/f5_push_ecdsa root@$A 'tmsh modify ltm profile client-ssl lab-app1-clientssl description "unsynced change"'
@@ -398,13 +450,18 @@ ssh -i ~/.ssh/f5_push_ecdsa root@$A 'tmsh run cm config-sync to-group Sync-Failo
 
 ## 15. After a failover, nothing to edit (HA pair only, optional)
 
+The first command makes the active unit (bigip-a) standby, so bigip-b becomes active. Then the same deployment
+runs, unchanged (`--force` redeploys a certificate that is already current). The last command fails back:
+
 ```bash
 ssh -i ~/.ssh/f5_push_ecdsa root@$A 'tmsh run sys failover standby'
 ./f5-cert-push.sh --deploy lab-wild-bigip-a --force
 ssh -i ~/.ssh/f5_push_ecdsa root@$B 'tmsh run sys failover standby'
 ```
 
-The middle command now deploys to bigip-b (`UPDATED`) and checks bigip-a (`IN_SYNC`); the last fails back.
+The middle command finds that bigip-b is now active, deploys to it (`UPDATED`) and checks bigip-a (`IN_SYNC`):
+nothing in the configuration had to change. (If a command fails with "not active", wait a few seconds for the
+failover to finish and run it again.)
 
 ## 16. Remove the lab
 
@@ -429,7 +486,7 @@ item. If the pair was not In Sync before the removal, it does not synchronise (t
 changes): the other unit then keeps its copy of the lab, and the script says so and exits 1. Check what else is
 pending, then rerun with `--sync` (or sync the pair yourself).
 
-If you quit half way, the same two commands clean up whatever you got to: the deployments you made, their
+If you quit halfway, the same two commands clean up whatever you got to: the deployments you made, their
 backups, a lock left by an interrupted run (add `--remove-stale`, when no f5-cert-push run is going on), and a
 lab left failed over or out of sync.
 

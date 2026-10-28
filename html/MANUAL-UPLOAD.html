@@ -182,16 +182,19 @@ never need access to <code>/etc/f5-certs</code>.</p>
 <p>Alternatives: <code>fullchain.pem</code> (leaf followed by intermediates) instead of <code>cert.pem</code> + <code>chain.pem</code>;
    or all of them. Other files are ignored.</p>
 <p><code>bash
-   sftp upload@certserver
+   sftp certop@certserver
    sftp&gt; cd incoming/www
    sftp&gt; put www.example.com.crt cert.pem
    sftp&gt; put intermediate.crt chain.pem
    sftp&gt; put www.example.com.key privkey.pem</code></p>
 <ol start="2">
-<li><strong>Last</strong>, create an empty file named <code>READY</code>:</li>
+<li><strong>Last</strong>, upload an empty file named <code>READY</code>. Make it on your own machine first (<code>touch READY</code>, or an empty
+   text file named <code>READY</code> with no extension), then:</li>
 </ol>
 <p><code>bash
-   sftp&gt; put /dev/null READY          # or: touch READY</code></p>
+   sftp&gt; put READY
+   sftp&gt; bye</code></p>
+<p>(With a shell on the server instead of SFTP: <code>touch READY</code> in the folder.)</p>
 <ol start="3">
 <li>Within 15 minutes it is installed and pushed. The folder is then empty. If it was rejected, the folder
    still holds your files plus a <code>FAILED</code> file that says why; fix the problem and create <code>READY</code> again.

@@ -24,7 +24,7 @@
 #
 # Everything it creates on the BIG-IP is named lab-* (and everything f5-cert-push creates
 # during the lab is too). Remove it all, the tool's key included, with
-# remove-lab.sh --cleanup, even half way through. It creates no f5-cert-push configuration: that is the
+# remove-lab.sh --cleanup, even halfway through. It creates no f5-cert-push configuration: that is the
 # trainee's job (docs/LAB.md).
 #
 #   ./build-lab.sh                                  (asks for the addresses)
@@ -54,7 +54,7 @@
 #   -h, --help        this help
 set -euo pipefail
 
-VERSION="2.2.4"
+VERSION="2.3.0"
 HM="${HOME:-$(cd ~ 2>/dev/null && pwd || echo .)}"
 HOST="" PEER="" PORT=22 BUSER=root KEY="" OUT="$HM/f5-cert-push-lab" VSIPS="" DOSYNC=1 YES=0
 TKEY="$HM/.ssh/f5_push_ecdsa" TCOMMENT="f5-cert-push-lab"
@@ -93,7 +93,7 @@ if [[ -e "$OUT" ]]; then
     sed -n '1,3s/^/    /p' "$OUT/lab-info.txt"
     mine=1
   elif [[ -f "$OUT/pki/ca.cnf" ]]; then
-    echo "    a lab build that stopped half way (lab CA made, no lab-info.txt)"
+    echo "    a lab build that stopped halfway (lab CA made, no lab-info.txt)"
     mine=1
   else
     echo "    NOT made by build-lab.sh"
@@ -229,7 +229,7 @@ VER="$(val VERSION)"; FO="$(val FAILOVER)"; SELF="$(val SELF)"
 [[ "$(printf '%s\n' "$PROBE" | awk -F'|' '$1=="MCP"{print $2 "|" $3}')" == "running|full-config-load-succeed" ]] || die "the BIG-IP configuration is not fully loaded"
 [[ "$FO" == active ]] || die "$HOST is '$FO', not active: build the lab on the active unit"
 LAB="$(val LABITEMS)"
-(( ${LAB:-0} == 0 )) || die "$HOST already has $LAB lab item(s) (lab-*): remove them first with remove-lab.sh --host $HOST"
+(( ${LAB:-0} == 0 )) || die "$HOST already has $LAB lab item(s) (lab-*): remove them first with ./lab/remove-lab.sh --host $HOST"
 
 # The sync-failover group this unit shares with another device, if any.
 GROUP=""; PEERS=""
@@ -463,6 +463,7 @@ B=$PEER
 VS1=${VS[0]}
 VS2=${VS[1]}
 VS3=${VS[2]}
+R=$R
 TOOLKEY=$TKEY
 EOF
 echo

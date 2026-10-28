@@ -62,26 +62,26 @@ Before you start, make sure of three things:</p>
 <h2 id="0-download-the-files">0. Download the files</h2>
 <p>Everything is in the GitHub repository <a href="https://github.com/lothortech/f5-cert-push">lothortech/f5-cert-push</a>:
 the tool, the documentation (Markdown, and HTML in <code>html/</code>), the examples, the lab scripts and the tests. On the
-Linux server, as root, download the <strong>v2.2.4</strong> release in one of these ways. Each gives the same files in
+Linux server, as root, download the <strong>v2.3.0</strong> release in one of these ways. Each gives the same files in
 <code>~/f5-cert-push</code> (<code>/root/f5-cert-push</code>); section 4.1 installs the scripts from there.</p>
 <p><strong>With curl</strong> (or <code>wget -qO-</code> in place of <code>curl -fsSL</code>):</p>
 <pre><code class="language-bash">mkdir -p ~/f5-cert-push &amp;&amp; cd ~/f5-cert-push
-curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.tar.gz | tar xz --strip-components=1
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.tar.gz | tar xz --strip-components=1
 </code></pre>
 <p><strong>With git:</strong></p>
-<pre><code class="language-bash">git clone --depth 1 --branch v2.2.4 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
+<pre><code class="language-bash">git clone --depth 1 --branch v2.3.0 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
 cd ~/f5-cert-push
 </code></pre>
 <p>(git notes that it is on a "detached HEAD": expected, as this is a release tag rather than a branch.)</p>
 <p><strong>Without internet access on the server:</strong> on a PC, download
-<a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.tar.gz">f5-cert-push-2.2.4.tar.gz</a>
-or <a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.zip">f5-cert-push-2.2.4.zip</a>, copy it to the server (<code>scp</code>, a share), then:</p>
+<a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.tar.gz">f5-cert-push-2.3.0.tar.gz</a>
+or <a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.zip">f5-cert-push-2.3.0.zip</a>, copy it to the server (<code>scp</code>, a share), then:</p>
 <pre><code class="language-bash">mkdir -p ~/f5-cert-push &amp;&amp; cd ~/f5-cert-push
-tar xzf /path/to/f5-cert-push-2.2.4.tar.gz --strip-components=1
+tar xzf /path/to/f5-cert-push-2.3.0.tar.gz --strip-components=1
 </code></pre>
-<p>From the ZIP instead (it unpacks into <code>f5-cert-push-2.2.4/</code> and loses the execute bits):</p>
-<pre><code class="language-bash">cd ~ &amp;&amp; unzip -q /path/to/f5-cert-push-2.2.4.zip
-mkdir -p ~/f5-cert-push &amp;&amp; cp -a ~/f5-cert-push-2.2.4/. ~/f5-cert-push/ &amp;&amp; rm -rf ~/f5-cert-push-2.2.4
+<p>From the ZIP instead (it unpacks into <code>f5-cert-push-2.3.0/</code> and loses the execute bits):</p>
+<pre><code class="language-bash">cd ~ &amp;&amp; unzip -q /path/to/f5-cert-push-2.3.0.zip
+mkdir -p ~/f5-cert-push &amp;&amp; cp -a ~/f5-cert-push-2.3.0/. ~/f5-cert-push/ &amp;&amp; rm -rf ~/f5-cert-push-2.3.0
 cd ~/f5-cert-push &amp;&amp; find . -name '*.sh' -exec chmod +x {} +
 </code></pre>
 <p>Check the download (every file against <code>SHA256SUMS</code>; silence means all match) and the version:</p>
@@ -104,6 +104,8 @@ cd ~/f5-cert-push &amp;&amp; find . -name '*.sh' -exec chmod +x {} +
 <p>Two machines, one network path: the Linux server opens SSH to each BIG-IP's management address. Nothing on the
 BIG-IP connects back, and the BIG-IP needs no agent or add-on.</p>
 <h2 id="2-requirements">2. Requirements</h2>
+<p>The short version is below; the full list, with the tested and supported Linux distributions, BIG-IP
+versions, platforms and HA setups, is in the <a href="index.html#system-requirements">README</a>.</p>
 <p><strong>Linux server</strong></p>
 <table>
 <thead>
@@ -166,7 +168,7 @@ BIG-IP connects back, and the BIG-IP needs no agent or add-on.</p>
 </tr>
 <tr>
 <td>Active, config-loaded device</td>
-<td>The tool refuses a standby or not-loaded unit. For a pair, target the <strong>active</strong> unit and sync (section 6.4).</td>
+<td>The tool changes only an <strong>active</strong> unit whose configuration is fully loaded. For a pair, list both units; the tool finds the active one, changes it and synchronises the standby (section 6.4).</td>
 </tr>
 </tbody>
 </table>
@@ -315,7 +317,8 @@ passwd -l certop                                            # key login only
 install -d -m 700 -o certop -g certop /home/certop/.ssh
 # put the operator's public key in /home/certop/.ssh/authorized_keys (owner certop, mode 600)
 </code></pre>
-<p>In <code>/etc/ssh/sshd_config</code> (then <code>systemctl reload sshd</code>), confine the group to SFTP and to the staging tree:</p>
+<p>In <code>/etc/ssh/sshd_config</code> (then <code>systemctl reload ssh</code> on Debian/Ubuntu, <code>systemctl reload sshd</code> on RHEL and
+its relatives), confine the group to SFTP and to the staging tree:</p>
 <pre><code>Match Group certupload
     ChrootDirectory /srv/f5-certs
     ForceCommand internal-sftp
@@ -375,14 +378,19 @@ restorecon -v /var/ssh/root/authorized_keys
 source address (<strong>System &gt; Platform &gt; SSH IP Allow</strong>), add the Linux server's address.</p>
 <h3 id="53-pin-each-big-ips-host-key">5.3 Pin each BIG-IP's host key</h3>
 <p>The recommended configuration is <code>strict_host_key_checking = yes</code>: cron cannot answer "trust this host?", and
-you do not want it to trust a stranger. Fetch and verify the host key once. <strong>Run on: the Linux server</strong> (the one that runs f5-cert-push), as root:</p>
-<pre><code class="language-bash">ssh-keyscan -t ecdsa 10.0.0.11 &gt;&gt; /root/.ssh/known_hosts
-ssh-keygen -lf &lt;(ssh-keyscan -t ecdsa 10.0.0.11 2&gt;/dev/null)      # fingerprint seen from the network
-# then ON THE BIG-IP (bash, as root), compare with:   ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
+you do not want it to trust a stranger. Fetch the host key once, check it, then save it. <strong>Run on: the Linux
+server</strong> (the one that runs f5-cert-push), as root:</p>
+<pre><code class="language-bash">ssh-keyscan -t ecdsa 10.0.0.11 2&gt;/dev/null &gt; /root/bigip-hostkey.txt     # fetch the BIG-IP's host key
+ssh-keygen -lf /root/bigip-hostkey.txt                                    # its fingerprint, as seen from here
 </code></pre>
-<p>The two fingerprints must match before you keep the entry. Repeat for every BIG-IP address in the config. If a
-BIG-IP is rebuilt or replaced its host key changes and the tool will (correctly) refuse until you update
-<code>known_hosts</code>.</p>
+<p>Then <strong>on the BIG-IP</strong> (bash, as root) run <code>ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub</code>. The two
+<code>SHA256:...</code> fingerprints must be identical. If they differ, stop and find out what is answering at that
+address. Only if they match, save the key, <strong>on the Linux server</strong>:</p>
+<pre><code class="language-bash">cat /root/bigip-hostkey.txt &gt;&gt; /root/.ssh/known_hosts &amp;&amp; rm /root/bigip-hostkey.txt
+</code></pre>
+<p>Repeat for every BIG-IP address in the config (both units of a pair). If a BIG-IP is rebuilt or replaced its
+host key changes, and the tool will (correctly) refuse to connect until you remove the old entry
+(<code>ssh-keygen -R ADDRESS</code>) and repeat these steps.</p>
 <h3 id="54-test-the-login-exactly-as-the-tool-makes-it">5.4 Test the login exactly as the tool makes it</h3>
 <pre><code class="language-bash">ssh -i /root/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes root@10.0.0.11 'tmsh show sys version | head -5'
 </code></pre>
@@ -467,8 +475,8 @@ after the first upload.</p>
 <h3 id="83-do-one-real-upload-by-hand-in-a-test-environment">8.3 Do one real upload by hand, in a test environment</h3>
 <ol>
 <li>As an operator, upload a certificate to a folder whose deployment is <code>env = test</code>, then create <code>READY</code>.</li>
-<li>Rehearse: <code>sudo /opt/f5-cert-push/f5-cert-install.sh --dry-run</code> (validates, changes nothing).</li>
-<li>Do it: <code>sudo /opt/f5-cert-push/f5-cert-install.sh --env test</code>.</li>
+<li>Rehearse, as root: <code>/opt/f5-cert-push/f5-cert-install.sh --dry-run</code> (validates, changes nothing).</li>
+<li>Do it, as root: <code>/opt/f5-cert-push/f5-cert-install.sh --env test</code>.</li>
 <li>Confirm from outside:</li>
 </ol>
 <p><code>bash
@@ -485,8 +493,8 @@ $EDITOR /etc/cron.d/f5-cert-install          # set MAILTO, paths and the interva
 </code></pre>
 <p>A cron file in <code>/etc/cron.d</code> needs the user field (<code>root</code>) and must not be writable by others. The shipped file
 runs the installer every 15 minutes with <code>--quiet</code>, plus an optional daily <code>--check</code> of every BIG-IP to catch
-drift (a profile changed by hand). Confirm that cron ran it: <code>grep f5-cert /var/log/cron</code> (or
-<code>journalctl -u cron</code>), and the log <code>/var/log/f5-cert-push.log</code>.</p>
+drift (a profile changed by hand). Confirm that cron ran it: <code>journalctl -u cron</code> (Debian/Ubuntu) or
+<code>grep f5-cert /var/log/cron</code> (RHEL and its relatives), and the log <code>/var/log/f5-cert-push.log</code>.</p>
 <h2 id="9-checklist">9. Checklist</h2>
 <p><strong>Linux server</strong></p>
 <ul>

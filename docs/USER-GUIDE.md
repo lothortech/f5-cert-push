@@ -23,6 +23,8 @@ confirm the result. For an unattended, cron-based setup see [SETUP.md](SETUP.md)
 
 ## 1. What you need
 
+Full list, with the tested Linux distributions and BIG-IP versions: [README, System requirements](../README.md#system-requirements).
+
 | Need | Notes |
 |---|---|
 | A Linux machine, or Windows 10/11 with **WSL** (Ubuntu) | The script is a bash script and was tested on Linux. macOS ships an old bash (3.2) that is too old; install a current one with Homebrew and treat it as untested. Plain Windows without WSL is not supported. |
@@ -40,8 +42,8 @@ home folder (`~`), not under `/mnt/c`, so file permissions work.
 ```bash
 mkdir -p ~/f5-cert-push/certs ~/f5-cert-push/backups
 cd ~/f5-cert-push
-curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.4.tar.gz | tar xz --strip-components=1
-# or, from a downloaded copy: tar xzf /path/to/f5-cert-push-2.2.4.tar.gz --strip-components=1
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.tar.gz | tar xz --strip-components=1
+# or, from a downloaded copy: tar xzf /path/to/f5-cert-push-2.3.0.tar.gz --strip-components=1
 chmod 700 ~/f5-cert-push
 chmod 750 f5-cert-push.sh
 ./f5-cert-push.sh --version
@@ -115,17 +117,29 @@ restorecon -v /var/ssh/root/authorized_keys
 
 The `restorecon` line matters: without it the BIG-IP can silently ignore the key.
 
-Then, back on **the Linux machine** (log out of the BIG-IP), **trust the BIG-IP's identity** (once) and test the
-login. Replace `10.0.0.11` with the BIG-IP's management address. **Run on: the Linux machine** (the one that runs f5-cert-push):
+Then, back on **the Linux machine** (type `exit` to log out of the BIG-IP), **trust the BIG-IP's identity**
+(once per BIG-IP) and test the login. The tool only talks to a BIG-IP whose SSH **host key** you have checked
+and saved; that is what stops it from sending keys to an impostor. Replace `10.0.0.11` with the BIG-IP's
+management address. **Run on: the Linux machine** (the one that runs f5-cert-push):
 
 ```bash
-ssh-keyscan -t ecdsa 10.0.0.11 >> ~/.ssh/known_hosts
-ssh-keygen -lf <(ssh-keyscan -t ecdsa 10.0.0.11 2>/dev/null)
+ssh-keyscan -t ecdsa 10.0.0.11 2>/dev/null > ~/bigip-hostkey.txt     # fetch the BIG-IP's host key
+ssh-keygen -lf ~/bigip-hostkey.txt                                    # show its fingerprint
 ```
 
-The second command prints a fingerprint. **On the BIG-IP** (bash, as root) run `ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub`;
-the two fingerprints **must be identical**. If they differ, stop and ask who is answering at that address.
-Then test the login, **on the Linux machine**:
+The second command prints a fingerprint such as `256 SHA256:Xy3k... 10.0.0.11 (ECDSA)`. Now look at the
+BIG-IP's own fingerprint: **on the BIG-IP** (bash, as root, from the console or the SSH session you used
+above) run `ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub`. The two `SHA256:...` values **must be
+identical**. If they differ, stop: something else is answering at that address; ask your network team.
+
+Only if they match, save the key and delete the temporary file, **on the Linux machine**:
+
+```bash
+cat ~/bigip-hostkey.txt >> ~/.ssh/known_hosts && rm ~/bigip-hostkey.txt
+```
+
+(If `ssh-keygen -lf` says the file "is not a public key file", the file is empty: the address is wrong, or TCP
+22 to it is blocked.) Then test the login, **on the Linux machine**:
 
 ```bash
 ssh -i ~/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes root@10.0.0.11 'tmsh show sys version | head -5'
@@ -262,10 +276,13 @@ Copy the example and edit it:
 
 ```bash
 cd ~/f5-cert-push
-cp /path/to/f5-cert-push.conf.example f5-cert-push.conf     # the example is in the tarball you unpacked
-chmod 600 f5-cert-push.conf
+cp f5-cert-push.conf.example f5-cert-push.conf     # the example came with the download (section 2)
+chmod 600 f5-cert-push.conf                         # private: the tool refuses a file others can change
 nano f5-cert-push.conf
 ```
+
+The example is long and shows every setting. For a first setup it is easier to delete its contents and type in
+the small configuration below instead (`nano`: Ctrl+K deletes a line, Ctrl+O saves, Ctrl+X quits).
 
 A small, complete configuration for **one BIG-IP, one certificate, one profile**. Replace `YOURNAME` with
 your Linux user name (`whoami`) and use your own addresses and names:
@@ -350,13 +367,14 @@ the current folder, which it is here.)
 
    Look for: the right certificate (subject and expiry), `OK`, and no errors. Fix anything it reports first.
 
-3. **Look at what is on the BIG-IP now. Read-only.**
+3. **Compare with what is on the BIG-IP now. Read-only.**
 
    ```bash
    ./f5-cert-push.sh --deploy www --check
    ```
 
-   It shows the certificate currently in the profile and whether it differs from the new one.
+   It says, for each BIG-IP, whether the profile already has the new certificate (`UPTODATE`) or not
+   (`OUTDATED`, exit code 4: expected before a renewal).
 
 4. **Rehearse. Prints every step, changes nothing.**
 
@@ -378,7 +396,8 @@ the current folder, which it is here.)
    If the check fails and `auto_rollback = yes`, it puts the old certificate back by itself and tells you
    (exit code 3).
 
-6. **Confirm from outside** (the summary also states this):
+6. **Confirm from outside** (the tool already checked the `verify =` addresses; this is your own check). The
+   `-enddate` line should show the new expiry date:
 
    ```bash
    echo | openssl s_client -connect 10.1.10.10:443 -servername www.example.com 2>/dev/null \
@@ -390,7 +409,7 @@ the current folder, which it is here.)
 7. **Tidy up.** Keep the `backups/` folder. Remove the key from `certs/<name>/` if your policy says so.
 
 Because you run this by hand, there is **no cron job and no automatic push**: the tool does nothing until you
-run step 5. Running step 5 again with the same certificate does nothing ("UP TO DATE").
+run step 5. Running step 5 again with the same certificate does nothing (`UPTODATE`).
 
 Several deployments at once: `./f5-cert-push.sh --all`, or `--env prod`. Use `--deploy NAME` while you are
 learning; it touches exactly one thing.
@@ -469,11 +488,11 @@ cd ~/f5-cert-push
 |---|---|
 | `Permission denied (publickey)` | The key is not authorised on the BIG-IP (section 4), or it is not an ECDSA/RSA key. |
 | `Host key verification failed` | You have not trusted the BIG-IP (section 4), or its host key changed. Compare fingerprints before updating `known_hosts`. |
-| `private key does not match` | The key is from a different request than the certificate. |
+| `the private key does not match the certificate` | The key is from a different request than the certificate. |
 | `does not verify against the supplied chain` | Wrong or old intermediate. Download the current chain from your CA. |
-| `expires within min_days_valid` | The new certificate is about to expire; get a longer one. |
-| `... is 'standby', not active` | Point the configuration at the active unit (section 9). |
-| `another run is in progress` (exit 6) | Someone else (or an earlier run) holds the lock. Wait; if it is stuck, see [OPERATIONS.md](OPERATIONS.md) section 8. |
+| `the certificate expires in N day(s); min_days_valid is ...` | The new certificate is about to expire; get a newer one. |
+| `this BIG-IP is 'standby', not active` | Only the standby is in the deployment. List both units of the pair (section 9). |
+| `another run holds the lock` (exit 6) | Someone else (or an earlier run) is using that BIG-IP. Wait; if it is stuck, see [OPERATIONS.md](OPERATIONS.md) section 8. |
 | exit 3 | The change was rolled back automatically. The BIG-IP is back on the old certificate. |
 
 Exit codes: `0` success, `1` a failure (the message says why), `2` usage error, `3` the change was rolled back,
@@ -481,4 +500,4 @@ Exit codes: `0` success, `1` a failure (the message says why), `2` usage error, 
 confirmed (follow the printed instructions and call your BIG-IP administrator; see OPERATIONS.md section 8),
 `6` another run is in progress, `130` you interrupted it (Ctrl-C) before anything was changed, or after it
 had finished. Interrupting it in the middle of a change is safe: it finishes the step and puts the previous
-certificate back (exit 3).
+certificate back (exit 3). After any command, `echo $?` shows its exit code.

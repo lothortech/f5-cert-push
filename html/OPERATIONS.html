@@ -80,9 +80,11 @@ restorecon -v /var/ssh/root/authorized_keys
 <h3 id="13-pin-the-big-ips-host-key">1.3 Pin the BIG-IP's host key</h3>
 <p>The tool defaults to <code>strict_host_key_checking = yes</code>, so the BIG-IP's SSH host key must be known first.
 Fetch it and <strong>compare the fingerprint with what the BIG-IP itself shows</strong> before trusting it. <strong>Run on: the Linux machine</strong> (the one that runs f5-cert-push):</p>
-<pre><code class="language-bash">ssh-keyscan -t ecdsa BIGIP_ADDRESS &gt;&gt; /root/.ssh/known_hosts
-ssh-keygen -lf &lt;(ssh-keyscan -t ecdsa BIGIP_ADDRESS 2&gt;/dev/null)     # fingerprint to compare
-# then ON THE BIG-IP (bash, as root):   ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
+<pre><code class="language-bash">ssh-keyscan -t ecdsa BIGIP_ADDRESS 2&gt;/dev/null &gt; /root/bigip-hostkey.txt   # fetch the host key
+ssh-keygen -lf /root/bigip-hostkey.txt                                      # fingerprint to compare
+# ON THE BIG-IP (bash, as root):   ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
+# only if the two SHA256:... values are identical:
+cat /root/bigip-hostkey.txt &gt;&gt; /root/.ssh/known_hosts &amp;&amp; rm /root/bigip-hostkey.txt
 </code></pre>
 <p>(Or set <code>strict_host_key_checking = accept-new</code> for a lab to trust first contact and pin it automatically.)</p>
 <p>Test the login exactly as the tool will make it:</p>
@@ -520,7 +522,7 @@ a record of its own.</p>
 <td>The BIG-IP did not accept the key. Check in this order: the key is in <code>/var/ssh/root/authorized_keys</code>; that file has label <code>ssh_home_t</code> (<code>restorecon -v</code>); the key type is allowed (<code>grep PubkeyAcceptedKeyTypes /config/ssh/sshd_config</code>, use ECDSA); you are offering the right key (<code>ssh_key</code>).</td>
 </tr>
 <tr>
-<td><code>/dev/fd/63 is not a public key file</code> (from <code>ssh-keygen -lf &lt;(ssh-keyscan ...)</code>)</td>
+<td><code>... is not a public key file</code> (from <code>ssh-keygen -lf</code> after <code>ssh-keyscan</code>)</td>
 <td><code>ssh-keyscan</code> got no answer, so there was nothing to fingerprint: wrong address (an example address left in, or an empty variable), or TCP 22 to the management address is blocked. Run <code>ssh-keyscan -t ecdsa ADDRESS</code> alone to see.</td>
 </tr>
 <tr>
@@ -552,8 +554,8 @@ a record of its own.</p>
 <td>Use <code>profile = NAME:ENTRY</code>.</td>
 </tr>
 <tr>
-<td><code>the certificate does not match the key</code> / <code>private key does not match</code></td>
-<td>The files are from different issuances; check <code>cert</code>/<code>key</code> paths.</td>
+<td><code>the private key does not match the certificate</code></td>
+<td>The files are from different issuances; check the <code>cert</code> and <code>key</code> paths.</td>
 </tr>
 <tr>
 <td><code>passphrase-protected</code></td>
@@ -651,8 +653,9 @@ a record of its own.</p>
   selection is for RSA+ECDSA pairs.</li>
 <li><strong>Fixed-name objects are overwritten in place</strong> (not atomic), by design and only when requested. They
   are read back afterwards; a failed or partial overwrite fails the deployment and is rolled back.</li>
-<li><strong>Tested on BIG-IP 17.1.3.4, standalone.</strong> The standby refusal and "configuration not loaded" refusal are
-  implemented but could not be exercised; see <a href="TESTING.html">TESTING.html</a>.</li>
+<li><strong>Tested on BIG-IP 17.1.3.4 VE</strong>, standalone and as an active/standby pair (manual sync, including a
+  failover). Other versions, hardware platforms, auto-sync device groups and the "configuration not loaded"
+  refusal are untested; see <a href="TESTING.html">TESTING.html</a>.</li>
 <li><strong>Chain verification needs OpenSSL 1.1.0 or newer</strong> on the host running the tool. With 1.0.x it is skipped (with
   a warning, or refused under <code>chain_check = fail</code>).</li>
 <li><strong>Root SSH to the BIG-IP is required</strong> (it must read <code>/config/filestore</code> for backups).</li>

@@ -29,6 +29,41 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 @media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
 @media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
 </style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html" class="cur">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html">Changelog</a><a href="LAB.html">Lab: hands-on walkthrough</a></nav><main><h1 id="f5-cert-push">f5-cert-push</h1>
+<p><strong>Safe, repeatable TLS certificate deployment for F5 BIG-IP</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Version</td>
+<td>2.3.0</td>
+</tr>
+<tr>
+<td>What it is</td>
+<td>A command-line tool (Bash) that installs renewed TLS certificates into the client-ssl profiles of F5 BIG-IP devices over SSH, with backup, verification and automatic rollback</td>
+</tr>
+<tr>
+<td>Runs on</td>
+<td>A Linux machine (see <a href="#system-requirements">System requirements</a>); nothing is installed on the BIG-IP</td>
+</tr>
+<tr>
+<td>Works with</td>
+<td>BIG-IP LTM: a standalone unit, or an active/standby HA pair (tested on 17.1.3.4)</td>
+</tr>
+<tr>
+<td>License</td>
+<td>MIT</td>
+</tr>
+<tr>
+<td>Start with</td>
+<td><a href="LAB.html">docs/LAB.html</a> (hands-on lab), then <a href="USER-GUIDE.html">docs/USER-GUIDE.html</a> (manual use) or <a href="SETUP.html">docs/SETUP.html</a> (unattended server)</td>
+</tr>
+</tbody>
+</table>
 <p>Deploy renewed TLS certificates to one or many <strong>F5 BIG-IP</strong> devices, safely and repeatably.</p>
 <p>You describe your BIG-IPs, certificates and deployments once in a configuration file. For each
 deployment the tool then:</p>
@@ -53,7 +88,7 @@ deployment the tool then:</p>
 </ol>
 <p>It is a single Bash script plus a configuration file (and an optional wrapper, <code>f5-cert-install.sh</code>, for
 certificates that people upload by hand). Nothing is installed on the BIG-IP.</p>
-<pre><code>   your host                                          BIG-IP
+<pre><code>   Linux machine                                      BIG-IP
   +------------+    ssh (key only)    +-----------------------------------------+
   | f5-cert-   |---------------------&gt;|  /shared/cert-backups/&lt;prefix&gt;/&lt;time&gt;/  |
   | push.sh    |   read state         |  /var/tmp/f5-cert-push.XXXX (staging)   |
@@ -63,57 +98,93 @@ certificates that people upload by hand). Nothing is installed on the BIG-IP.</p
   +------------+                      +-----------------------------------------+
    backups/&lt;bigip&gt;/&lt;prefix&gt;/&lt;time&gt;/
 </code></pre>
-<h2 id="requirements">Requirements</h2>
+<h2 id="system-requirements">System requirements</h2>
+<p>"Tested" means the full test suites (and, for the BIG-IP, the lab and the BIG-IP suite) passed there.
+"Expected to work" means it meets every requirement below but has not been tested: try it in a lab first.</p>
+<h3 id="the-machine-that-runs-the-tool">The machine that runs the tool</h3>
 <table>
 <thead>
 <tr>
-<th>On the machine that runs the tool</th>
+<th></th>
 <th></th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>OS</td>
-<td>Linux</td>
+<td>Operating system</td>
+<td><strong>Linux</strong> with GNU tools. <strong>Tested:</strong> Ubuntu 22.04 LTS and Ubuntu 24.04 LTS. <strong>Expected to work:</strong> Debian 11 and 12; RHEL, Rocky Linux and AlmaLinux 8 and 9; SUSE Linux Enterprise 15; Amazon Linux 2023; Ubuntu under WSL 2 on Windows 10/11. <strong>Older systems</strong> with bash 4.2 and OpenSSL 1.0.2 (RHEL/CentOS 7): the tool runs, but cannot verify certificate chains (<code>chain_check = fail</code> is refused there). <strong>Not supported:</strong> macOS (bash 3.2), Windows without WSL, BusyBox-only systems such as a plain Alpine.</td>
 </tr>
 <tr>
 <td>Shell</td>
-<td>bash 4.2 or newer</td>
+<td>bash <strong>4.2 or newer</strong> (every current distribution has 5.x)</td>
 </tr>
 <tr>
-<td>Tools</td>
-<td><code>ssh</code>, <code>openssl</code>, GNU <code>date</code> / <code>stat</code> / <code>sort</code> / <code>timeout</code>, <code>awk</code>, <code>sed</code>, <code>grep</code>, <code>sha256sum</code>, <code>find</code>, <code>mktemp</code>. <strong>OpenSSL 1.1.0 or newer is recommended</strong>: older versions cannot verify a chain reliably, so the chain check is skipped with a warning (see <code>chain_check</code>). Everything else works on 1.0.x.</td>
+<td>OpenSSL</td>
+<td><strong>1.1.0 or newer</strong> (1.1.1 or 3.x recommended). Needed to verify certificate chains, and by the lab.</td>
+</tr>
+<tr>
+<td>Other tools</td>
+<td>OpenSSH client (<code>ssh</code>, <code>ssh-keygen</code>, <code>ssh-keyscan</code>), GNU coreutils (<code>date</code>, <code>stat</code>, <code>sort</code>, <code>timeout</code>, <code>sha256sum</code>, <code>mktemp</code>, ...), <code>awk</code>, <code>sed</code>, <code>grep</code>, <code>find</code>. The upload wrapper <code>f5-cert-install.sh</code> also needs <code>flock</code>, <code>shred</code> and <code>dd</code>. All are installed by default on the distributions above. The tool lists anything missing when it starts.</td>
+</tr>
+<tr>
+<td>Network</td>
+<td>TCP <strong>22</strong> (SSH) from this machine to every BIG-IP's <strong>management</strong> address. Nothing connects back to it.</td>
 </tr>
 <tr>
 <td>Access</td>
-<td>read access to the certificate and key files; an SSH private key trusted by the BIG-IP</td>
+<td>Read access to the certificate and key files. The unattended setup (<a href="SETUP.html">SETUP.html</a>) runs as root; manual use (<a href="USER-GUIDE.html">USER-GUIDE.html</a>) and the lab work as a normal user.</td>
 </tr>
 </tbody>
 </table>
+<h3 id="the-big-ip">The BIG-IP</h3>
 <table>
 <thead>
 <tr>
-<th>On the BIG-IP</th>
+<th></th>
 <th></th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Version</td>
-<td>Developed and tested against <strong>BIG-IP 17.1.3.4</strong>. The <code>cert-key-chain</code> syntax it relies on exists from 11.5, but other versions are untested.</td>
+<td>Software</td>
+<td><strong>BIG-IP (TMOS) 17.1.3.4: tested.</strong> Other 15.1, 16.1 and 17.x releases are expected to work but are untested. BIG-IP Next is not supported (it has no <code>tmsh</code>).</td>
+</tr>
+<tr>
+<td>Platform</td>
+<td><strong>Virtual Edition (VE): tested.</strong> Hardware appliances, VIPRION/vCMP guests and F5OS (rSeries, VELOS) tenants run the same software and are expected to work, untested.</td>
+</tr>
+<tr>
+<td>Module</td>
+<td><strong>LTM</strong>, with existing <strong>client-ssl profiles</strong> to update. The tool changes the certificate inside a profile; it does not create profiles or virtual servers.</td>
 </tr>
 <tr>
 <td>Account</td>
-<td>SSH key login as <strong>root</strong>. The tool needs <code>tmsh</code> and read access to <code>/config/filestore</code> (to back up the old files).</td>
+<td><strong>root</strong>, logging in over SSH with a key, with a bash shell. <strong>Appliance Mode</strong> (which disables root and bash) is not supported. The tool needs <code>tmsh</code> and read access to <code>/config/filestore</code>.</td>
 </tr>
 <tr>
-<td>Key types</td>
-<td>The BIG-IP's SSH daemon may be restricted (for example FIPS mode accepts only <strong>ECDSA and RSA</strong> keys, not ed25519). Use an ECDSA P-384 key. See <a href="OPERATIONS.html#1-first-time-setup">OPERATIONS.html</a>.</td>
+<td>SSH key type</td>
+<td><strong>ECDSA</strong> (P-384 recommended) or RSA. Many BIG-IPs, FIPS-style settings in particular, refuse ed25519 keys without saying why.</td>
+</tr>
+<tr>
+<td>Device state</td>
+<td>The unit that is changed must be <strong>active</strong>, with its configuration <strong>fully loaded</strong>.</td>
+</tr>
+<tr>
+<td>High availability</td>
+<td><strong>Standalone: tested.</strong> <strong>Active/standby pair</strong> in one <strong>sync-failover</strong> device group: tested with manual sync, including a failover. The pair must be <strong>In Sync</strong> before a run; the tool changes the active unit, runs config-sync and checks the standby. Auto-sync groups: implemented, untested. Active/active, more than two units, sync-only groups, or several sync-failover groups without <code>sync_group</code>: use <code>sync = no</code> and synchronise yourself.</td>
+</tr>
+<tr>
+<td>Partitions</td>
+<td><code>Common</code> or any other partition (<code>partition =</code>).</td>
+</tr>
+<tr>
+<td>Disk</td>
+<td>A few KB of free space in <code>/shared</code> per backup set.</td>
 </tr>
 </tbody>
 </table>
 <h2 id="quick-start">Quick start</h2>
-<pre><code class="language-bash"># 1. Put the script and the example config somewhere, restrict the config
+<pre><code class="language-bash"># 1. Copy the example configuration and make it private (the tool refuses a file others can change)
 cp f5-cert-push.conf.example /etc/f5-cert-push.conf
 chmod 600 /etc/f5-cert-push.conf
 $EDITOR /etc/f5-cert-push.conf                      # describe your BIG-IPs, certs, deployments
@@ -215,7 +286,7 @@ documented in <a href="CONFIGURATION.html">docs/CONFIGURATION.html</a>.</p>
 </tr>
 <tr>
 <td><code>--discover --write-config FILE</code></td>
-<td>the same, plus a draft configuration with a deployment for every profile found</td>
+<td>the same, plus a draft configuration (a new file): your configuration, plus a disabled deployment for every profile no deployment covers yet</td>
 </tr>
 <tr>
 <td><code>--list-backups</code></td>
@@ -376,7 +447,7 @@ exits 4 when anything is out of date. See <a href="OPERATIONS.html">docs/OPERATI
 <li>Profiles that <strong>inherit</strong> their certificate from a parent (<code>inherit-certkeychain true</code>) are refused; update the parent.</li>
 <li>Developed and tested on BIG-IP <strong>17.1.3.4</strong> VE: standalone, and an active/standby pair with manual
   config-sync (including a failover). The "configuration not loaded" safety gate is implemented but could not
-  be exercised on the test devices.</li>
+  be exercised on the test devices. See <a href="#system-requirements">System requirements</a> for what is untested.</li>
 </ul>
 <h2 id="reading-the-documentation-in-a-browser">Reading the documentation in a browser</h2>
 <p>Open <code>html/index.html</code> (double-click it). Every guide is also there as a single self-contained page with a

@@ -1,13 +1,42 @@
 # Changelog
 
-## Unreleased (main)
+## 2.3.0
 
-- `build-lab.sh` and `docs/LAB.md` say `source ~/f5-cert-push-lab/lab-env.sh` (not the easy-to-miss `. FILE`)
-  and that the file is loaded into the shell, not run.
+The first release for customers. `f5-cert-push.sh` and `f5-cert-install.sh` behave exactly as in 2.2.4 (only
+their version, help text and header comment changed); this release is a full review of the documentation and
+the lab, for correctness and for readers new to F5 and Linux.
 
-- Docs: how to pick up virtual servers and profiles added on the BIG-IP later (`OPERATIONS.md`, section 2, "When
-  the BIG-IP changes"; a pointer in `USER-GUIDE.md` section 6; the lab's section 7 runs the draft a second time).
-  `--discover --write-config` only ever adds sections for uncovered profiles to a new file.
+### Documentation
+- **README: a title block and a "System requirements" section**: the tested and expected-to-work Linux
+  distributions, bash and OpenSSL versions, BIG-IP versions and platforms, the root/bash access it needs (not
+  Appliance Mode), device state and the supported HA setups. The Setup and User guides link to it.
+- **Host keys are checked before they are trusted.** The User guide (section 4), Setup guide (5.3) and
+  Operations guide (1.3) used to append the BIG-IP's host key to `known_hosts` and only then compare its
+  fingerprint; they now fetch it to a file, compare, and add it only if it matches.
+- `MANUAL-UPLOAD.md`: `sftp put /dev/null READY` fails with OpenSSH's sftp (it refuses a non-regular file);
+  the operator now uploads an empty local `READY` file. The example account is `certop`, as in the Setup guide.
+- Error messages quoted in the User guide and Operations guide now match the tool's real wording.
+- The User guide copies the example configuration from the download folder (it pointed at `/path/to/`).
+- The "known limitations" and "what the suites do not cover" lists no longer say that only a standalone
+  BIG-IP was tested (the HA pair, the standby and a failover have been tested since 2.2.0); they now name what
+  is untested: other BIG-IP versions and platforms, auto-sync groups, other host distributions.
+- `examples/manual-upload/f5-cert-push.conf` lists both units of its HA pair in each deployment.
+- Lab guide: a "Words used in this guide" glossary (active/standby, device group, config-sync, virtual server,
+  client-ssl profile, host key, ...); every step says what its commands do and what to expect; a note that
+  everything from section 3 on runs on the Linux machine, in a terminal where `lab-env.sh` was loaded.
+- Smaller fixes: the service name to reload sshd on Debian/Ubuntu, cron log locations, the `sync = no` and
+  "two BIG-IPs" recipes, "halfway", and the `--write-config` description in the README.
+- Since 2.2.4 (on main): how to pick up virtual servers and profiles added on the BIG-IP later
+  (`OPERATIONS.md`, section 2, "When the BIG-IP changes"; a pointer in `USER-GUIDE.md` section 6; the lab's
+  section 7 runs the draft a second time), and `source ~/f5-cert-push-lab/lab-env.sh` in place of `. FILE`.
+
+### Lab
+- `lab-env.sh` also sets `R`, the folder of received certificates, so the guide's commands work in a new
+  terminal after `source`; the guide no longer sets it by hand.
+- `build-lab.sh` names the full path (`./lab/remove-lab.sh`) when it finds lab items left on a BIG-IP.
+
+### Tool
+- `--help` shows `--config FILE` as optional (it defaults to `./f5-cert-push.conf`, then `/etc/f5-cert-push.conf`).
 
 ## 2.2.4
 

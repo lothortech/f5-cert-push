@@ -274,7 +274,8 @@ spaces, `..`, `$`, quotes, backticks and newlines are not permitted in any value
 
 ## Recipes
 
-**Two BIG-IPs, same certificate, same profile names**
+**Two separate (standalone) BIG-IPs, same certificate, same profile names** (for an HA pair, see
+[HA pairs](#ha-pairs-and-config-sync): the same file works, and only the active unit is changed)
 
 ```ini
 [f5:a]
