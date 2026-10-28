@@ -456,7 +456,8 @@ tool's SSH key: $TKEY (authorised for root on ${UNITS[*]})
 Remove everything:  remove-lab.sh --cleanup   (reads $OUT/lab-env.sh; finds both units)
 EOF
 cat > "$OUT/lab-env.sh" <<EOF
-# Sets the addresses docs/LAB.md uses. Load it in each new terminal:  . $OUT/lab-env.sh
+# The addresses docs/LAB.md uses. Not a program: load it into your shell (in each new terminal) with
+#   source $OUT/lab-env.sh
 A=$HOST
 B=$PEER
 VS1=${VS[0]}
@@ -466,5 +467,6 @@ TOOLKEY=$TKEY
 EOF
 echo
 ok "the lab is ready. Summary in $OUT/lab-info.txt"
-echo "    Load the addresses for the guide's commands:  . $OUT/lab-env.sh"
+echo "    Load the addresses for the guide's commands into this shell (not a program to run):"
+echo "      source $OUT/lab-env.sh"
 echo "    Next: docs/LAB.md, section 2."

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased (main)
+
+- `build-lab.sh` and `docs/LAB.md` say `source ~/f5-cert-push-lab/lab-env.sh` (not the easy-to-miss `. FILE`)
+  and that the file is loaded into the shell, not run.
+
 ## 2.2.4
 
 `f5-cert-push.sh` and `f5-cert-install.sh` are unchanged apart from the version; this release is the lab scripts.

@@ -206,9 +206,11 @@ shows the plan and asks before changing anything. Then it:</p>
 <p>If <code>~/f5-cert-push-lab</code> is left from an earlier run, the build says what it holds (when and for which BIG-IP it
 was built, or that a build stopped half way) and offers to replace it; it is deleted only once you confirm the
 new build. If that lab may still be on the BIG-IPs, answer <code>n</code> and run <code>./lab/remove-lab.sh --cleanup</code> first.</p>
-<p><strong>Load the addresses</strong> the rest of this guide uses (<code>A</code>, <code>B</code>, <code>VS1</code>-<code>VS3</code>), and look at the summary. Do this again
-in every new terminal. <strong>Run on: the Linux machine</strong>:</p>
-<pre><code class="language-bash">. ~/f5-cert-push-lab/lab-env.sh
+<p><strong>Load the addresses</strong> the rest of this guide uses (<code>A</code>, <code>B</code>, <code>VS1</code>-<code>VS3</code>) into your shell, and look at the
+summary. <code>lab-env.sh</code> is not a program: <code>source</code> reads its settings into the shell you are typing in (running it,
+or <code>sudo</code> with it, does not work: "permission denied" / "command not found"). Do this again in every new
+terminal. <strong>Run on: the Linux machine</strong>:</p>
+<pre><code class="language-bash">source ~/f5-cert-push-lab/lab-env.sh
 echo &quot;A=$A B=$B VS1=$VS1 VS2=$VS2 VS3=$VS3&quot;
 cat ~/f5-cert-push-lab/lab-info.txt
 </code></pre>

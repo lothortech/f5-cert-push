@@ -141,11 +141,13 @@ If `~/f5-cert-push-lab` is left from an earlier run, the build says what it hold
 was built, or that a build stopped half way) and offers to replace it; it is deleted only once you confirm the
 new build. If that lab may still be on the BIG-IPs, answer `n` and run `./lab/remove-lab.sh --cleanup` first.
 
-**Load the addresses** the rest of this guide uses (`A`, `B`, `VS1`-`VS3`), and look at the summary. Do this again
-in every new terminal. **Run on: the Linux machine**:
+**Load the addresses** the rest of this guide uses (`A`, `B`, `VS1`-`VS3`) into your shell, and look at the
+summary. `lab-env.sh` is not a program: `source` reads its settings into the shell you are typing in (running it,
+or `sudo` with it, does not work: "permission denied" / "command not found"). Do this again in every new
+terminal. **Run on: the Linux machine**:
 
 ```bash
-. ~/f5-cert-push-lab/lab-env.sh
+source ~/f5-cert-push-lab/lab-env.sh
 echo "A=$A B=$B VS1=$VS1 VS2=$VS2 VS3=$VS3"
 cat ~/f5-cert-push-lab/lab-info.txt
 ```
