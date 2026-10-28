@@ -168,15 +168,22 @@ That is your own access; the tool gets a key of its own, which is what this sect
 the BIG-IP; the private key stays there. Only the one-line <strong>public</strong> key (<code>.pub</code>) is added on each BIG-IP.
 Each command block below says where to run it.</p>
 </blockquote>
+<p><strong>Create the tool's key</strong> first (ECDSA: BIG-IP refuses ed25519). The comment <code>f5-cert-push-lab</code> lets <code>remove-lab.sh</code>
+remove it from the BIG-IP at the end; in production use your own. <strong>Run on: the Linux machine</strong>, as the user you
+run the lab as:</p>
+<pre><code class="language-bash">mkdir -p ~/.ssh &amp;&amp; chmod 700 ~/.ssh
+ssh-keygen -t ecdsa -b 384 -N '' -C f5-cert-push-lab -f ~/.ssh/f5_push_ecdsa
+</code></pre>
 <p><strong>Set your BIG-IP addresses</strong> for the commands in this guide: the management IPs of the active (<code>A</code>) and the
-standby (<code>B</code>) unit; for a standalone BIG-IP, only <code>A</code> (see <a href="#the-lab-network">the lab network</a>).
-<strong>Run on: the Linux machine</strong>:</p>
+standby (<code>B</code>) unit; for a standalone BIG-IP, only <code>A</code>. <strong>Replace the example addresses below with yours</strong> (see
+<a href="#the-lab-network">the lab network</a>). <strong>Run on: the Linux machine</strong>, in the same shell you use for the rest of the lab:</p>
 <pre><code class="language-bash">A=192.0.2.10; B=192.0.2.11
 </code></pre>
-<p><strong>Pin each unit's host key</strong>, so this machine (and later the tool) knows it is talking to the real BIG-IP. It
-prints each unit's fingerprint. <strong>Run on: the Linux machine</strong>:</p>
-<pre><code class="language-bash">mkdir -p ~/.ssh &amp;&amp; chmod 700 ~/.ssh
-for h in $A $B; do k=&quot;$(ssh-keyscan -T 5 -t ecdsa &quot;$h&quot; 2&gt;/dev/null)&quot;; if [ -n &quot;$k&quot; ]; then echo &quot;$k&quot; &gt;&gt; ~/.ssh/known_hosts; ssh-keygen -lf &lt;(echo &quot;$k&quot;); else echo &quot;$h: no answer on TCP 22: check the address (echo \$A \$B) and that this machine can reach it&quot;; fi; done
+<p><strong>Pin each unit's host key.</strong> This is a different key: the one the <strong>BIG-IP</strong> shows to prove who it is, so this
+machine (and later the tool) knows it is talking to the real BIG-IP. Do it before authorising your key, so the
+next step does not stop to ask whether to trust each unit. (The <code>ssh-keygen -lf</code> in it only prints a fingerprint;
+it creates nothing.) <strong>Run on: the Linux machine</strong>:</p>
+<pre><code class="language-bash">for h in $A $B; do k=&quot;$(ssh-keyscan -T 5 -t ecdsa &quot;$h&quot; 2&gt;/dev/null)&quot;; if [ -n &quot;$k&quot; ]; then echo &quot;$k&quot; &gt;&gt; ~/.ssh/known_hosts; ssh-keygen -lf &lt;(echo &quot;$k&quot;); else echo &quot;$h: no answer on TCP 22: check the address (echo \$A \$B) and that this machine can reach it&quot;; fi; done
 </code></pre>
 <p>Each unit prints a line like <code>256 SHA256:gffA... 192.0.2.10 (ECDSA)</code>. If a unit prints <strong>no answer on TCP 22</strong>,
 nothing was saved for it: check <code>echo $A $B</code> (still the example addresses?), and that this machine reaches the
@@ -186,11 +193,6 @@ Linux machine <code>ssh root@$A</code>, then <code>ssh root@$B</code>; at a <cod
 <pre><code class="language-bash">ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
 </code></pre>
 <p>They must be identical. Log out of the BIG-IP again.</p>
-<p><strong>Create the tool's key</strong> (ECDSA: BIG-IP refuses ed25519). The comment <code>f5-cert-push-lab</code> lets <code>remove-lab.sh</code>
-remove it from the BIG-IP at the end; in production use your own. <strong>Run on: the Linux machine</strong>, as the user you
-run the lab as:</p>
-<pre><code class="language-bash">ssh-keygen -t ecdsa -b 384 -N '' -C f5-cert-push-lab -f ~/.ssh/f5_push_ecdsa
-</code></pre>
 <p><strong>Authorise the public key on each unit</strong> (keys are not part of what an HA pair synchronises). This loop logs in
 to each unit with your own root access (it asks for the root password if you have no key for root) and appends
 the key there. <strong>Run on: the Linux machine</strong>:</p>

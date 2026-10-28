@@ -115,19 +115,29 @@ That is your own access; the tool gets a key of its own, which is what this sect
 > the BIG-IP; the private key stays there. Only the one-line **public** key (`.pub`) is added on each BIG-IP.
 > Each command block below says where to run it.
 
+**Create the tool's key** first (ECDSA: BIG-IP refuses ed25519). The comment `f5-cert-push-lab` lets `remove-lab.sh`
+remove it from the BIG-IP at the end; in production use your own. **Run on: the Linux machine**, as the user you
+run the lab as:
+
+```bash
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+ssh-keygen -t ecdsa -b 384 -N '' -C f5-cert-push-lab -f ~/.ssh/f5_push_ecdsa
+```
+
 **Set your BIG-IP addresses** for the commands in this guide: the management IPs of the active (`A`) and the
-standby (`B`) unit; for a standalone BIG-IP, only `A` (see [the lab network](#the-lab-network)).
-**Run on: the Linux machine**:
+standby (`B`) unit; for a standalone BIG-IP, only `A`. **Replace the example addresses below with yours** (see
+[the lab network](#the-lab-network)). **Run on: the Linux machine**, in the same shell you use for the rest of the lab:
 
 ```bash
 A=192.0.2.10; B=192.0.2.11
 ```
 
-**Pin each unit's host key**, so this machine (and later the tool) knows it is talking to the real BIG-IP. It
-prints each unit's fingerprint. **Run on: the Linux machine**:
+**Pin each unit's host key.** This is a different key: the one the **BIG-IP** shows to prove who it is, so this
+machine (and later the tool) knows it is talking to the real BIG-IP. Do it before authorising your key, so the
+next step does not stop to ask whether to trust each unit. (The `ssh-keygen -lf` in it only prints a fingerprint;
+it creates nothing.) **Run on: the Linux machine**:
 
 ```bash
-mkdir -p ~/.ssh && chmod 700 ~/.ssh
 for h in $A $B; do k="$(ssh-keyscan -T 5 -t ecdsa "$h" 2>/dev/null)"; if [ -n "$k" ]; then echo "$k" >> ~/.ssh/known_hosts; ssh-keygen -lf <(echo "$k"); else echo "$h: no answer on TCP 22: check the address (echo \$A \$B) and that this machine can reach it"; fi; done
 ```
 
@@ -143,14 +153,6 @@ ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
 ```
 
 They must be identical. Log out of the BIG-IP again.
-
-**Create the tool's key** (ECDSA: BIG-IP refuses ed25519). The comment `f5-cert-push-lab` lets `remove-lab.sh`
-remove it from the BIG-IP at the end; in production use your own. **Run on: the Linux machine**, as the user you
-run the lab as:
-
-```bash
-ssh-keygen -t ecdsa -b 384 -N '' -C f5-cert-push-lab -f ~/.ssh/f5_push_ecdsa
-```
 
 **Authorise the public key on each unit** (keys are not part of what an HA pair synchronises). This loop logs in
 to each unit with your own root access (it asks for the root password if you have no key for root) and appends
