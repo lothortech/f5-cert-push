@@ -232,6 +232,50 @@ own connections) and pins nothing outside its temporary directory.</p>
 </tr>
 </tbody>
 </table>
+<h2 id="results-for-223">Results for 2.2.3</h2>
+<p><code>f5-cert-push.sh</code> and <code>f5-cert-install.sh</code> are unchanged since 2.2.2 apart from the version, so the BIG-IP
+suite (<code>f5.sh</code>) was not rerun; its 2.2.2 result below stands.</p>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th>Where</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>offline.sh</code></td>
+<td>webserver-101 (Ubuntu, bash 5.1, OpenSSL 3), as root</td>
+<td>236 passed</td>
+</tr>
+<tr>
+<td><code>install.sh</code></td>
+<td>webserver-101, as root</td>
+<td>154 passed</td>
+</tr>
+<tr>
+<td><code>regress.sh</code></td>
+<td>webserver-101, as root</td>
+<td>73 passed</td>
+</tr>
+<tr>
+<td><code>lab/build-lab.sh</code> and <code>lab/remove-lab.sh</code></td>
+<td>webserver-101, as a new user, against the lab pair</td>
+<td>build answering the prompts (host keys confirmed and pinned, tool key created, authorised on and tested against both units, <code>lab-env.sh</code> written); the guide's section 1-2 commands; <code>--cleanup --dry-run</code>; <code>--cleanup</code> (both units and the local files); rebuild reusing the key (<code>--host</code>/<code>--peer</code>/<code>--yes</code>); removal with <code>--host</code> only (the standby found from the device group, its key line removed); <code>--cleanup</code> of the local leftovers; pair In Sync, nothing left</td>
+</tr>
+<tr>
+<td><code>build-lab.sh</code> host keys</td>
+<td>webserver-101, against the lab pair (nothing built)</td>
+<td>a new host key refused without confirmation, with <code>--yes</code> and no <code>--host-fp</code>, or with a wrong <code>--host-fp</code>; pinned after <code>y</code> or a matching <code>--host-fp</code>, before any login; with real root access: keys confirmed, both units logged in, plan shown, build declined, nothing changed</td>
+</tr>
+<tr>
+<td><code>tools/check-docs.py</code></td>
+<td>Windows, Python 3</td>
+<td>OK</td>
+</tr>
+</tbody>
+</table>
 <h2 id="results-for-222">Results for 2.2.2</h2>
 <table>
 <thead>

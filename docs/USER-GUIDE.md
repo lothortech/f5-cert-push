@@ -40,8 +40,8 @@ home folder (`~`), not under `/mnt/c`, so file permissions work.
 ```bash
 mkdir -p ~/f5-cert-push/certs ~/f5-cert-push/backups
 cd ~/f5-cert-push
-curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.2.tar.gz | tar xz --strip-components=1
-# or, from a downloaded copy: tar xzf /path/to/f5-cert-push-2.2.2.tar.gz --strip-components=1
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.3.tar.gz | tar xz --strip-components=1
+# or, from a downloaded copy: tar xzf /path/to/f5-cert-push-2.2.3.tar.gz --strip-components=1
 chmod 700 ~/f5-cert-push
 chmod 750 f5-cert-push.sh
 ./f5-cert-push.sh --version

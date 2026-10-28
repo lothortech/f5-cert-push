@@ -62,26 +62,26 @@ Before you start, make sure of three things:</p>
 <h2 id="0-download-the-files">0. Download the files</h2>
 <p>Everything is in the GitHub repository <a href="https://github.com/lothortech/f5-cert-push">lothortech/f5-cert-push</a>:
 the tool, the documentation (Markdown, and HTML in <code>html/</code>), the examples, the lab scripts and the tests. On the
-Linux server, as root, download the <strong>v2.2.2</strong> release in one of these ways. Each gives the same files in
+Linux server, as root, download the <strong>v2.2.3</strong> release in one of these ways. Each gives the same files in
 <code>~/f5-cert-push</code> (<code>/root/f5-cert-push</code>); section 4.1 installs the scripts from there.</p>
 <p><strong>With curl</strong> (or <code>wget -qO-</code> in place of <code>curl -fsSL</code>):</p>
 <pre><code class="language-bash">mkdir -p ~/f5-cert-push &amp;&amp; cd ~/f5-cert-push
-curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.2.tar.gz | tar xz --strip-components=1
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.3.tar.gz | tar xz --strip-components=1
 </code></pre>
 <p><strong>With git:</strong></p>
-<pre><code class="language-bash">git clone --depth 1 --branch v2.2.2 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
+<pre><code class="language-bash">git clone --depth 1 --branch v2.2.3 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
 cd ~/f5-cert-push
 </code></pre>
 <p>(git notes that it is on a "detached HEAD": expected, as this is a release tag rather than a branch.)</p>
 <p><strong>Without internet access on the server:</strong> on a PC, download
-<a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.2.tar.gz">f5-cert-push-2.2.2.tar.gz</a>
-or <a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.2.zip">f5-cert-push-2.2.2.zip</a>, copy it to the server (<code>scp</code>, a share), then:</p>
+<a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.3.tar.gz">f5-cert-push-2.2.3.tar.gz</a>
+or <a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.3.zip">f5-cert-push-2.2.3.zip</a>, copy it to the server (<code>scp</code>, a share), then:</p>
 <pre><code class="language-bash">mkdir -p ~/f5-cert-push &amp;&amp; cd ~/f5-cert-push
-tar xzf /path/to/f5-cert-push-2.2.2.tar.gz --strip-components=1
+tar xzf /path/to/f5-cert-push-2.2.3.tar.gz --strip-components=1
 </code></pre>
-<p>From the ZIP instead (it unpacks into <code>f5-cert-push-2.2.2/</code> and loses the execute bits):</p>
-<pre><code class="language-bash">cd ~ &amp;&amp; unzip -q /path/to/f5-cert-push-2.2.2.zip
-mkdir -p ~/f5-cert-push &amp;&amp; cp -a ~/f5-cert-push-2.2.2/. ~/f5-cert-push/ &amp;&amp; rm -rf ~/f5-cert-push-2.2.2
+<p>From the ZIP instead (it unpacks into <code>f5-cert-push-2.2.3/</code> and loses the execute bits):</p>
+<pre><code class="language-bash">cd ~ &amp;&amp; unzip -q /path/to/f5-cert-push-2.2.3.zip
+mkdir -p ~/f5-cert-push &amp;&amp; cp -a ~/f5-cert-push-2.2.3/. ~/f5-cert-push/ &amp;&amp; rm -rf ~/f5-cert-push-2.2.3
 cd ~/f5-cert-push &amp;&amp; find . -name '*.sh' -exec chmod +x {} +
 </code></pre>
 <p>Check the download (every file against <code>SHA256SUMS</code>; silence means all match) and the version:</p>

@@ -1,12 +1,16 @@
 # Changelog
 
-## Unreleased (main)
+## 2.2.3
+
+`f5-cert-push.sh` and `f5-cert-install.sh` are unchanged apart from the version; this release is the lab and
+the documentation.
 
 ### Lab
 - **`lab/build-lab.sh` sets up the tool's SSH access.** Run without options, it asks for the management IPs of
   the active and the standby unit, shows both host key fingerprints and pins them in `~/.ssh/known_hosts` only
-  once you confirm them (or they match `--host-fp`; required with `--yes`), and only then logs in to each unit, creates the tool's key `~/.ssh/f5_push_ecdsa` (or reuses the lab's), authorises
-  it for root on every unit and tests a login with it. `--peer` and `--tool-key` give the same non-interactively.
+  once you confirm them (or they match `--host-fp`; required with `--yes`), and only then logs in to each unit.
+  It creates the tool's key `~/.ssh/f5_push_ecdsa` (or reuses the lab's), authorises it for root on every unit
+  and tests a login with it. `--peer` and `--tool-key` give the same non-interactively.
   It writes `lab-env.sh` (`A`, `B`, `VS1`-`VS3`) so the guide's commands need no typed addresses.
 - **`lab/remove-lab.sh --cleanup`** (also the default with no options) removes the lab `lab-env.sh` describes:
   its BIG-IPs, the local lab directory and the tool's lab key, after one confirmation naming both units. The

@@ -110,6 +110,20 @@ own connections) and pins nothing outside its temporary directory.
 | **p1-p9** HA pair (only with `F5_TEST_PEER_HOST`) | p1 `--discover` of both units shows the device group, sync status and virtual servers, and `--write-config` writes a valid draft (both units in one deployment, entries named, verify lines); p2 deploy to the active unit (standby listed first): synced, confirmed, standby `IN_SYNC` with the same objects, saved on the standby, no locks left; re-run is `UPTODATE` + `IN_SYNC`; p3 a pending unsynchronised change refuses the deploy with nothing changed and no backup; p4 a failed verification rolls back and leaves the pair In Sync on the old certificate; p5 `--rollback` restores and synchronises; p6 `sync = no` leaves the standby alone and says so; p7 after a **failover** the same file deploys to the new active unit; p8 `SIGTERM` during the switch: rolled back and the pair left In Sync; p9 nine bad certificates (expired, not yet valid, within `min_days_valid`, key from another certificate, chain from another CA, passphrase-protected key, truncated file, certificate and chain in `cert`, empty key) are each refused with the reason, nothing changed on either unit, no backup, pair still In Sync; then a good certificate deploys, syncs (`IN_SYNC`) and is served |
 | **s23** signal during the switch | `SIGTERM` arrives while the profile switch is running on the BIG-IP: the switch finishes, then the run rolls back and verifies (exit 3); both profiles and the virtual server are back on the previous certificate |
 
+## Results for 2.2.3
+
+`f5-cert-push.sh` and `f5-cert-install.sh` are unchanged since 2.2.2 apart from the version, so the BIG-IP
+suite (`f5.sh`) was not rerun; its 2.2.2 result below stands.
+
+| Suite | Where | Result |
+|---|---|---|
+| `offline.sh` | webserver-101 (Ubuntu, bash 5.1, OpenSSL 3), as root | 236 passed |
+| `install.sh` | webserver-101, as root | 154 passed |
+| `regress.sh` | webserver-101, as root | 73 passed |
+| `lab/build-lab.sh` and `lab/remove-lab.sh` | webserver-101, as a new user, against the lab pair | build answering the prompts (host keys confirmed and pinned, tool key created, authorised on and tested against both units, `lab-env.sh` written); the guide's section 1-2 commands; `--cleanup --dry-run`; `--cleanup` (both units and the local files); rebuild reusing the key (`--host`/`--peer`/`--yes`); removal with `--host` only (the standby found from the device group, its key line removed); `--cleanup` of the local leftovers; pair In Sync, nothing left |
+| `build-lab.sh` host keys | webserver-101, against the lab pair (nothing built) | a new host key refused without confirmation, with `--yes` and no `--host-fp`, or with a wrong `--host-fp`; pinned after `y` or a matching `--host-fp`, before any login; with real root access: keys confirmed, both units logged in, plan shown, build declined, nothing changed |
+| `tools/check-docs.py` | Windows, Python 3 | OK |
+
 ## Results for 2.2.2
 
 | Suite | Where | Result |
