@@ -32,7 +32,8 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 to, which pushes them to one or more BIG-IPs from cron. Follow it top to bottom, once per server and once per
 BIG-IP. Day-to-day use is in <a href="MANUAL-UPLOAD.html">MANUAL-UPLOAD.html</a>; the settings are in
 <a href="CONFIGURATION.html">CONFIGURATION.html</a>; SSH troubleshooting is in <a href="OPERATIONS.html">OPERATIONS.html</a> section 1.</p>
-<ol>
+<ol start="0">
+<li><a href="#0-download-the-files">Download the files</a></li>
 <li><a href="#1-what-you-are-building">What you are building</a></li>
 <li><a href="#2-requirements">Requirements</a></li>
 <li><a href="#3-where-files-live">Where files live</a></li>
@@ -44,6 +45,37 @@ BIG-IP. Day-to-day use is in <a href="MANUAL-UPLOAD.html">MANUAL-UPLOAD.html</a>
 <li><a href="#9-checklist">Checklist</a></li>
 </ol>
 <hr />
+<h2 id="0-download-the-files">0. Download the files</h2>
+<p>Everything is in the GitHub repository <a href="https://github.com/lothortech/f5-cert-push">lothortech/f5-cert-push</a>:
+the tool, the documentation (Markdown, and HTML in <code>html/</code>), the examples, the lab scripts and the tests. On the
+Linux server, as root, download the <strong>v2.2.2</strong> release in one of these ways. Each gives the same files in
+<code>~/f5-cert-push</code> (<code>/root/f5-cert-push</code>); section 4.1 installs the scripts from there.</p>
+<p><strong>With curl</strong> (or <code>wget -qO-</code> in place of <code>curl -fsSL</code>):</p>
+<pre><code class="language-bash">mkdir -p ~/f5-cert-push &amp;&amp; cd ~/f5-cert-push
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.2.tar.gz | tar xz --strip-components=1
+</code></pre>
+<p><strong>With git:</strong></p>
+<pre><code class="language-bash">git clone --depth 1 --branch v2.2.2 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
+cd ~/f5-cert-push
+</code></pre>
+<p>(git notes that it is on a "detached HEAD": expected, as this is a release tag rather than a branch.)</p>
+<p><strong>Without internet access on the server:</strong> on a PC, download
+<a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.2.tar.gz">f5-cert-push-2.2.2.tar.gz</a>
+or <a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.2.zip">f5-cert-push-2.2.2.zip</a>, copy it to the server (<code>scp</code>, a share), then:</p>
+<pre><code class="language-bash">mkdir -p ~/f5-cert-push &amp;&amp; cd ~/f5-cert-push
+tar xzf /path/to/f5-cert-push-2.2.2.tar.gz --strip-components=1
+</code></pre>
+<p>From the ZIP instead (it unpacks into <code>f5-cert-push-2.2.2/</code> and loses the execute bits):</p>
+<pre><code class="language-bash">cd ~ &amp;&amp; unzip -q /path/to/f5-cert-push-2.2.2.zip
+mkdir -p ~/f5-cert-push &amp;&amp; cp -a ~/f5-cert-push-2.2.2/. ~/f5-cert-push/ &amp;&amp; rm -rf ~/f5-cert-push-2.2.2
+cd ~/f5-cert-push &amp;&amp; find . -name '*.sh' -exec chmod +x {} +
+</code></pre>
+<p>Check the download (every file against <code>SHA256SUMS</code>; silence means all match) and the version:</p>
+<pre><code class="language-bash">sha256sum -c --quiet SHA256SUMS &amp;&amp; echo &quot;all files OK&quot;
+./f5-cert-push.sh --version
+</code></pre>
+<p>You now have <code>f5-cert-push.sh</code> and <code>f5-cert-install.sh</code> (the tool), <code>f5-cert-push.conf.example</code>, <code>examples/</code>
+(the configuration for section 7), <code>docs/</code> and <code>html/</code> (this guide and the rest), <code>lab/</code> and <code>tests/</code>.</p>
 <h2 id="1-what-you-are-building">1. What you are building</h2>
 <pre><code> people (SFTP)                Linux server                                   BIG-IP(s)
  -------------     /srv/f5-certs/incoming/&lt;cert&gt;/   (staging, uploaders write here)
@@ -229,10 +261,9 @@ installer then never has to copy a key across devices.</p>
 <h2 id="4-linux-server-setup">4. Linux server setup</h2>
 <p>Run as root.</p>
 <h3 id="41-install-the-tools">4.1 Install the tools</h3>
-<pre><code class="language-bash">tar xzf f5-cert-push-2.2.1.tar.gz &amp;&amp; cd f5-cert-push
+<pre><code class="language-bash">cd ~/f5-cert-push                      # the files downloaded and checked in section 0
 install -d -m 755 /opt/f5-cert-push
 install -m 750 f5-cert-push.sh f5-cert-install.sh /opt/f5-cert-push/
-sha256sum -c SHA256SUMS 2&gt;/dev/null | grep -E 'f5-cert-(push|install)\.sh'   # optional: verify the copy
 </code></pre>
 <h3 id="42-create-the-directories">4.2 Create the directories</h3>
 <pre><code class="language-bash"># Installed store (root only) and local backups

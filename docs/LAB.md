@@ -22,7 +22,7 @@ you stop half way, so the lab can be run as often as you like.
 | `build-lab.sh` | Builds the lab on a BIG-IP or HA pair (section 1) | [from this copy](../lab/build-lab.sh) · [from GitHub](https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.2/lab/build-lab.sh) |
 | `remove-lab.sh` | Removes every lab item, at any point (section 16) | [from this copy](../lab/remove-lab.sh) · [from GitHub](https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.2/lab/remove-lab.sh) |
 
-They are also in the release tarball (`lab/`), which section 1 downloads anyway, and both have `--help`. To fetch
+They are also in the release (`lab/`), which section 0 downloads anyway, and both have `--help`. To fetch
 only the scripts onto a Linux machine:
 
 ```bash
@@ -30,6 +30,56 @@ curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.2/lab
 curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.2/lab/remove-lab.sh
 chmod +x build-lab.sh remove-lab.sh
 ```
+
+## 0. Download the files
+
+Everything is in the GitHub repository [lothortech/f5-cert-push](https://github.com/lothortech/f5-cert-push):
+the tool, the lab scripts, the documentation (Markdown, and HTML in `html/`), the examples and the tests. Download
+the **v2.2.2** release onto the Linux machine you will run the lab from, in one of these ways. Each gives the same
+files in `~/f5-cert-push`.
+
+**With curl** (or `wget -qO-` in place of `curl -fsSL`):
+
+```bash
+mkdir -p ~/f5-cert-push && cd ~/f5-cert-push
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.2.tar.gz | tar xz --strip-components=1
+```
+
+**With git:**
+
+```bash
+git clone --depth 1 --branch v2.2.2 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
+cd ~/f5-cert-push
+```
+
+(git notes that it is on a "detached HEAD": expected, as this is a release tag rather than a branch.)
+
+**Without internet access on the Linux machine:** on a PC, download
+[f5-cert-push-2.2.2.tar.gz](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.2.tar.gz)
+or [f5-cert-push-2.2.2.zip](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.2.zip), copy it across (`scp`, a share), then:
+
+```bash
+mkdir -p ~/f5-cert-push && cd ~/f5-cert-push
+tar xzf /path/to/f5-cert-push-2.2.2.tar.gz --strip-components=1
+```
+
+From the ZIP instead (it unpacks into `f5-cert-push-2.2.2/` and loses the execute bits):
+
+```bash
+cd ~ && unzip -q /path/to/f5-cert-push-2.2.2.zip
+mkdir -p ~/f5-cert-push && cp -a ~/f5-cert-push-2.2.2/. ~/f5-cert-push/ && rm -rf ~/f5-cert-push-2.2.2
+cd ~/f5-cert-push && find . -name '*.sh' -exec chmod +x {} +
+```
+
+Check the download (every file against `SHA256SUMS`; silence means all match) and the version:
+
+```bash
+sha256sum -c --quiet SHA256SUMS && echo "all files OK"
+./f5-cert-push.sh --version
+```
+
+You now have `f5-cert-push.sh` and `f5-cert-install.sh` (the tool), `lab/` (the two lab scripts), `docs/` and
+`html/` (this guide and the rest), `examples/`, `tests/`, and `f5-cert-push.conf.example`.
 
 ## 1. Build the lab
 
@@ -41,14 +91,10 @@ You need:
 - three unused addresses for the lab's virtual servers. By default the script picks `.201`-`.203` (or the next
   free ones) in the subnet of the BIG-IP's first IPv4 `/24` self IP; give `--vs-ips A,B,C` otherwise.
 
-Get the release (any directory; this lab uses `~/f5-cert-push`) and build the lab against the **active** unit:
+From the folder you downloaded in section 0, build the lab against the **active** unit:
 
 ```bash
-mkdir -p ~/f5-cert-push && cd ~/f5-cert-push
-curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.2.2.tar.gz | tar xz --strip-components=1
-./f5-cert-push.sh --version
-```
-```bash
+cd ~/f5-cert-push
 ./lab/build-lab.sh --host 192.0.2.10
 ```
 
