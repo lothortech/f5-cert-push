@@ -47,7 +47,7 @@ nav .t{font-weight:700;margin:0 0 12px}
 nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--fg);text-decoration:none;font-size:14px}
 nav a:hover{background:var(--code)}
 nav a.cur{background:var(--acc);color:#fff}
-main{flex:1;min-width:0;max-width:60rem;padding:28px 36px 80px}
+main{flex:1;min-width:0;max-width:96%;padding:28px 2.5% 80px}
 h1{font-size:2rem;margin:.2em 0 .6em}
 h2{font-size:1.45rem;margin:2em 0 .6em;padding-bottom:.25em;border-bottom:1px solid var(--line)}
 h3{font-size:1.15rem;margin:1.6em 0 .4em}
