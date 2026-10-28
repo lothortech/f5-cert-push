@@ -22,6 +22,7 @@ th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-ali
 th{background:var(--code)}
 blockquote{margin:1em 0;padding:.6em 1em;background:var(--warn);border-left:4px solid var(--warnb);border-radius:4px}
 blockquote p{margin:.3em 0}
+img{max-width:100%;height:auto}
 hr{border:0;border-top:1px solid var(--line);margin:2em 0}
 .copy{position:absolute;top:6px;right:6px;font:12px system-ui;padding:3px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--mut);cursor:pointer}
 footer{margin-top:3em;color:var(--mut);font-size:13px}
@@ -56,6 +57,49 @@ configuration). Start with the pair <strong>In Sync</strong>.</p>
 </tr>
 </tbody>
 </table>
+<h3 id="the-lab-network">The lab network</h3>
+<p><img alt="Lab network: your PC and the Linux machine reach the BIG-IPs' management network through a router; the two BIG-IPs share an external VLAN, where the lab virtual servers live, and an internal VLAN for HA" src="../docs/img/lab-network.svg" /></p>
+<p>The addresses in this guide are <strong>examples</strong> from the ranges reserved for documentation (RFC 5737), so none of
+them is a real address. Use your own in their place:</p>
+<table>
+<thead>
+<tr>
+<th>Example in this guide</th>
+<th>What it is</th>
+<th>Used as</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>192.0.2.10</code></td>
+<td>management IP of the <strong>active</strong> BIG-IP (<code>f5a</code>)</td>
+<td><code>--host</code> for the lab scripts, <code>A=</code> in section 1, <code>host =</code> in the configuration</td>
+</tr>
+<tr>
+<td><code>192.0.2.11</code></td>
+<td>management IP of the <strong>standby</strong> BIG-IP (<code>f5b</code>; none for a standalone BIG-IP)</td>
+<td><code>--peer</code> for <code>remove-lab.sh</code>, <code>B=</code> in section 1</td>
+</tr>
+<tr>
+<td><code>198.51.100.0/24</code></td>
+<td>the BIG-IPs' <strong>external</strong> VLAN (interface 1.2); floating self IP <code>.5</code>, unit self IPs <code>.6</code> and <code>.7</code></td>
+<td>where <code>build-lab.sh</code> puts the lab virtual servers</td>
+</tr>
+<tr>
+<td><code>198.51.100.201</code>-<code>.203</code></td>
+<td>the lab virtual servers <code>lab-vs1</code>-<code>lab-vs3</code> (port 443)</td>
+<td><code>VS1=</code>-<code>VS3=</code> in section 1; <code>build-lab.sh</code> picks them and writes them to <code>lab-info.txt</code></td>
+</tr>
+<tr>
+<td><code>203.0.113.0/24</code></td>
+<td>the <strong>internal</strong> VLAN (interface 1.1) between the two units: config sync, failover, mirroring</td>
+<td>nothing in the lab; it is how the pair keeps in sync</td>
+</tr>
+</tbody>
+</table>
+<p>The tool and the lab scripts only ever connect to the <strong>management</strong> IPs, over SSH (TCP 22), from the Linux
+machine. The PC needs nothing installed: it is where you SSH to the Linux machine from, and where a browser can
+open the BIG-IP GUI and the lab sites.</p>
 <h3 id="the-lab-scripts">The lab scripts</h3>
 <table>
 <thead>
@@ -124,7 +168,8 @@ cd ~/f5-cert-push &amp;&amp; find . -name '*.sh' -exec chmod +x {} +
 <li>three unused addresses for the lab's virtual servers. By default the script picks <code>.201</code>-<code>.203</code> (or the next
   free ones) in the subnet of the BIG-IP's first IPv4 <code>/24</code> self IP; give <code>--vs-ips A,B,C</code> otherwise.</li>
 </ul>
-<p>From the folder you downloaded in section 0, build the lab against the <strong>active</strong> unit:</p>
+<p>From the folder you downloaded in section 0, build the lab against the <strong>active</strong> unit: give its management
+IP (<code>192.0.2.10</code> is the example address from <a href="#the-lab-network">the lab network</a>; use yours).</p>
 <pre><code class="language-bash">cd ~/f5-cert-push
 ./lab/build-lab.sh --host 192.0.2.10
 </code></pre>
@@ -153,7 +198,7 @@ no lab items yet; for a pair, In Sync), shows the plan and asks before changing 
 </code></pre>
 <p><strong>Set these for the commands below</strong>: your BIG-IP addresses (for a standalone BIG-IP, only <code>A</code>) and the lab's
 virtual server addresses from <code>lab-info.txt</code>:</p>
-<pre><code class="language-bash">A=192.0.2.10; B=192.0.2.11; VS1=192.0.2.201; VS2=192.0.2.202; VS3=192.0.2.203
+<pre><code class="language-bash">A=192.0.2.10; B=192.0.2.11; VS1=198.51.100.201; VS2=198.51.100.202; VS3=198.51.100.203
 </code></pre>
 <h2 id="2-read-the-documentation-first-2-minutes">2. Read the documentation first (2 minutes)</h2>
 <p><code>~/f5-cert-push/html/index.html</code> is the documentation as web pages (copy the <code>html/</code> folder to your desktop

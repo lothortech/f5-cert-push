@@ -15,6 +15,25 @@ you stop half way, so the lab can be run as often as you like.
 | Time | about 45 minutes (an extra 10 for the HA-only sections) |
 | Works with | a standalone BIG-IP, or an active/standby pair in a sync-failover device group (both tested on 17.1) |
 
+### The lab network
+
+![Lab network: your PC and the Linux machine reach the BIG-IPs' management network through a router; the two BIG-IPs share an external VLAN, where the lab virtual servers live, and an internal VLAN for HA](img/lab-network.svg)
+
+The addresses in this guide are **examples** from the ranges reserved for documentation (RFC 5737), so none of
+them is a real address. Use your own in their place:
+
+| Example in this guide | What it is | Used as |
+|---|---|---|
+| `192.0.2.10` | management IP of the **active** BIG-IP (`f5a`) | `--host` for the lab scripts, `A=` in section 1, `host =` in the configuration |
+| `192.0.2.11` | management IP of the **standby** BIG-IP (`f5b`; none for a standalone BIG-IP) | `--peer` for `remove-lab.sh`, `B=` in section 1 |
+| `198.51.100.0/24` | the BIG-IPs' **external** VLAN (interface 1.2); floating self IP `.5`, unit self IPs `.6` and `.7` | where `build-lab.sh` puts the lab virtual servers |
+| `198.51.100.201`-`.203` | the lab virtual servers `lab-vs1`-`lab-vs3` (port 443) | `VS1=`-`VS3=` in section 1; `build-lab.sh` picks them and writes them to `lab-info.txt` |
+| `203.0.113.0/24` | the **internal** VLAN (interface 1.1) between the two units: config sync, failover, mirroring | nothing in the lab; it is how the pair keeps in sync |
+
+The tool and the lab scripts only ever connect to the **management** IPs, over SSH (TCP 22), from the Linux
+machine. The PC needs nothing installed: it is where you SSH to the Linux machine from, and where a browser can
+open the BIG-IP GUI and the lab sites.
+
 ### The lab scripts
 
 | Script | What it does | Download |
@@ -91,7 +110,8 @@ You need:
 - three unused addresses for the lab's virtual servers. By default the script picks `.201`-`.203` (or the next
   free ones) in the subnet of the BIG-IP's first IPv4 `/24` self IP; give `--vs-ips A,B,C` otherwise.
 
-From the folder you downloaded in section 0, build the lab against the **active** unit:
+From the folder you downloaded in section 0, build the lab against the **active** unit: give its management
+IP (`192.0.2.10` is the example address from [the lab network](#the-lab-network); use yours).
 
 ```bash
 cd ~/f5-cert-push
@@ -116,7 +136,7 @@ cat ~/f5-cert-push-lab/lab-info.txt
 virtual server addresses from `lab-info.txt`:
 
 ```bash
-A=192.0.2.10; B=192.0.2.11; VS1=192.0.2.201; VS2=192.0.2.202; VS3=192.0.2.203
+A=192.0.2.10; B=192.0.2.11; VS1=198.51.100.201; VS2=198.51.100.202; VS3=198.51.100.203
 ```
 
 ## 2. Read the documentation first (2 minutes)
