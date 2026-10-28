@@ -237,7 +237,13 @@ the right folder and `READY` created last, by a user in `certupload`.
 
 The tool logs in to each BIG-IP as root with a key that is used for nothing else.
 
+> **Where each command runs.** The key pair is created on the **Linux machine** that runs f5-cert-push, never on
+> the BIG-IP; the private key stays there. Only the one-line **public** key (`.pub`) is added on each BIG-IP.
+> Each step below says where to run it.
+
 ### 5.1 Create the key (on the Linux server, as root)
+
+**Run on: the Linux server** (the one that runs f5-cert-push), as root:
 
 ```bash
 ssh-keygen -t ecdsa -b 384 -N '' -C 'f5-cert-push' -f /root/.ssh/f5_push_ecdsa
@@ -255,7 +261,7 @@ back it up the way you back up other secrets. If policy requires a passphrase, l
 
 ### 5.2 Authorise the key on each BIG-IP
 
-On the BIG-IP, as root (console, or an existing admin session, for example `bash` from tmsh):
+Copy the `.pub` line printed in 5.1, then repeat this on **each** BIG-IP. **Run on: the BIG-IP**, as root, in its bash shell: from the Linux server `ssh root@BIGIP_ADDRESS` (or the console); if you land at a `(tmos)#` prompt, type `bash` first:
 
 ```bash
 echo 'ecdsa-sha2-nistp384 AAAA...paste the whole .pub line... f5-cert-push' >> /var/ssh/root/authorized_keys
@@ -278,12 +284,12 @@ source address (**System > Platform > SSH IP Allow**), add the Linux server's ad
 ### 5.3 Pin each BIG-IP's host key
 
 The recommended configuration is `strict_host_key_checking = yes`: cron cannot answer "trust this host?", and
-you do not want it to trust a stranger. Fetch and verify the host key once, from the Linux server:
+you do not want it to trust a stranger. Fetch and verify the host key once. **Run on: the Linux server** (the one that runs f5-cert-push), as root:
 
 ```bash
 ssh-keyscan -t ecdsa 10.0.0.11 >> /root/.ssh/known_hosts
 ssh-keygen -lf <(ssh-keyscan -t ecdsa 10.0.0.11 2>/dev/null)      # fingerprint seen from the network
-# on the BIG-IP, compare with:   ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
+# then ON THE BIG-IP (bash, as root), compare with:   ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
 ```
 
 The two fingerprints must match before you keep the entry. Repeat for every BIG-IP address in the config. If a

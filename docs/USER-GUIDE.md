@@ -69,6 +69,12 @@ security policy allows. The tool keeps its own backup copies under `backups/`.
 
 The tool logs in to the BIG-IP with an SSH key. Create one for this tool only.
 
+> **Where each command runs.** The key pair is created on the **Linux machine** that runs f5-cert-push, never on
+> the BIG-IP; the private key stays there. Only the one-line **public** key (`.pub`) is added on each BIG-IP.
+> Each command block below says where to run it.
+
+**Run on: the Linux machine** (the one that runs f5-cert-push), as yourself:
+
 ```bash
 ssh-keygen -t ecdsa -b 384 -C "f5-cert-push $(whoami)" -f ~/.ssh/f5_push_ecdsa
 ```
@@ -79,7 +85,7 @@ ssh-keygen -t ecdsa -b 384 -C "f5-cert-push $(whoami)" -f ~/.ssh/f5_push_ecdsa
   "Using a passphrase" below.
 - **Use ECDSA (or RSA), not ed25519.** BIG-IP's SSH commonly refuses ed25519 keys without telling you why.
 
-Show the **public** half. This one line is what you give the BIG-IP:
+Show the **public** half (still on the Linux machine). This one line is what you give the BIG-IP:
 
 ```bash
 cat ~/.ssh/f5_push_ecdsa.pub
@@ -99,10 +105,7 @@ and leave the `ssh_key =` line **out** of the configuration.
 
 ## 4. Authorise the key on each BIG-IP
 
-Do this once per BIG-IP. You need a way to run commands as root on it: the console, the web UI's
-**Advanced Shell** or an existing admin SSH session.
-
-On the BIG-IP, run these three lines, pasting your `.pub` line inside the quotes:
+Do this once per BIG-IP. **Run on: the BIG-IP**, as root, in its bash shell: from the Linux machine `ssh root@BIGIP_ADDRESS` (or the console); if you land at a `(tmos)#` prompt, type `bash` first. Run these three lines, pasting your `.pub` line inside the quotes:
 
 ```bash
 echo 'ecdsa-sha2-nistp384 AAAA...your whole public key line... f5-cert-push you' >> /var/ssh/root/authorized_keys
@@ -112,17 +115,17 @@ restorecon -v /var/ssh/root/authorized_keys
 
 The `restorecon` line matters: without it the BIG-IP can silently ignore the key.
 
-Then, back on **your** machine, **trust the BIG-IP's identity** (once) and test the login. Replace
-`10.0.0.11` with the BIG-IP's management address:
+Then, back on **the Linux machine** (log out of the BIG-IP), **trust the BIG-IP's identity** (once) and test the
+login. Replace `10.0.0.11` with the BIG-IP's management address. **Run on: the Linux machine** (the one that runs f5-cert-push):
 
 ```bash
 ssh-keyscan -t ecdsa 10.0.0.11 >> ~/.ssh/known_hosts
 ssh-keygen -lf <(ssh-keyscan -t ecdsa 10.0.0.11 2>/dev/null)
 ```
 
-The second command prints a fingerprint. On the BIG-IP run `ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub`;
+The second command prints a fingerprint. **On the BIG-IP** (bash, as root) run `ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub`;
 the two fingerprints **must be identical**. If they differ, stop and ask who is answering at that address.
-Then test the login:
+Then test the login, **on the Linux machine**:
 
 ```bash
 ssh -i ~/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes root@10.0.0.11 'tmsh show sys version | head -5'

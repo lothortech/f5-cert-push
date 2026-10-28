@@ -206,20 +206,29 @@ and open it). Sections 3-6 of the <strong>User guide</strong> are what you do ne
 <h2 id="3-create-the-tools-ssh-key-and-authorise-it-on-every-unit">3. Create the tool's SSH key and authorise it on every unit</h2>
 <p>The tool logs in as root with its <strong>own</strong> key. Create it (ECDSA: BIG-IP refuses ed25519). The comment
 <code>f5-cert-push-lab</code> lets <code>remove-lab.sh</code> remove it from the BIG-IP at the end; in production use your own.</p>
+<blockquote>
+<p><strong>Where each command runs.</strong> The key pair is created on the <strong>Linux machine</strong> that runs f5-cert-push, never on
+the BIG-IP; the private key stays there. Only the one-line <strong>public</strong> key (<code>.pub</code>) is added on each BIG-IP.
+Each command block below says where to run it.</p>
+</blockquote>
+<p><strong>Run on: the Linux machine</strong> (the one that runs f5-cert-push), as the user you run the lab as:</p>
 <pre><code class="language-bash">ssh-keygen -t ecdsa -b 384 -N '' -C f5-cert-push-lab -f ~/.ssh/f5_push_ecdsa
 </code></pre>
 <p>Authorise the public key on <strong>each</strong> unit (keys are not part of what an HA pair synchronises). Either paste it
-on the BIG-IP as root (console or Advanced Shell, see the User guide, section 4), or, since you already have root
-access from this machine:</p>
+on the BIG-IP as root (see the User guide, section 4), or, since you already have root access from this machine,
+let this loop do it. <strong>Run on: the Linux machine</strong> (the one that runs f5-cert-push); it logs in to each unit with your existing root access and appends the key
+there:</p>
 <pre><code class="language-bash">for h in $A $B; do ssh root@$h 'cat &gt;&gt; /var/ssh/root/authorized_keys &amp;&amp; chmod 600 /var/ssh/root/authorized_keys &amp;&amp; restorecon /var/ssh/root/authorized_keys' &lt; ~/.ssh/f5_push_ecdsa.pub; done
 </code></pre>
-<p>Pin each unit's host key and <strong>compare the fingerprint</strong> with the one on the BIG-IP
-(<code>ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub</code>), then test the login exactly as the tool makes it:</p>
+<p>Pin each unit's host key and <strong>compare the fingerprint</strong> with the one the BIG-IP itself shows, then test the
+login exactly as the tool makes it. <strong>Run on: the Linux machine</strong> (the one that runs f5-cert-push):</p>
 <pre><code class="language-bash">for h in $A $B; do ssh-keyscan -t ecdsa $h 2&gt;/dev/null &gt;&gt; ~/.ssh/known_hosts; ssh-keygen -lf &lt;(ssh-keyscan -t ecdsa $h 2&gt;/dev/null); done
 </code></pre>
 <pre><code class="language-bash">for h in $A $B; do ssh -i ~/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes -o BatchMode=yes root@$h 'uname -n; tmsh show sys failover | head -1'; done
 </code></pre>
-<p>No password prompt; one unit says active, the other standby.</p>
+<p>To see the BIG-IP's own fingerprint for the comparison, run <code>ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub</code>
+<strong>on each BIG-IP</strong> (as root, in bash). The test login should show no password prompt; one unit says active, the
+other standby.</p>
 <h2 id="4-save-the-certificate-files-you-were-sent">4. Save the certificate files you were sent</h2>
 <p>The tool wants three PEM files per certificate: the certificate, the chain (intermediates) and the private key.
 Make one folder per certificate, private to you:</p>

@@ -154,20 +154,27 @@ and open it). Sections 3-6 of the **User guide** are what you do next.
 The tool logs in as root with its **own** key. Create it (ECDSA: BIG-IP refuses ed25519). The comment
 `f5-cert-push-lab` lets `remove-lab.sh` remove it from the BIG-IP at the end; in production use your own.
 
+> **Where each command runs.** The key pair is created on the **Linux machine** that runs f5-cert-push, never on
+> the BIG-IP; the private key stays there. Only the one-line **public** key (`.pub`) is added on each BIG-IP.
+> Each command block below says where to run it.
+
+**Run on: the Linux machine** (the one that runs f5-cert-push), as the user you run the lab as:
+
 ```bash
 ssh-keygen -t ecdsa -b 384 -N '' -C f5-cert-push-lab -f ~/.ssh/f5_push_ecdsa
 ```
 
 Authorise the public key on **each** unit (keys are not part of what an HA pair synchronises). Either paste it
-on the BIG-IP as root (console or Advanced Shell, see the User guide, section 4), or, since you already have root
-access from this machine:
+on the BIG-IP as root (see the User guide, section 4), or, since you already have root access from this machine,
+let this loop do it. **Run on: the Linux machine** (the one that runs f5-cert-push); it logs in to each unit with your existing root access and appends the key
+there:
 
 ```bash
 for h in $A $B; do ssh root@$h 'cat >> /var/ssh/root/authorized_keys && chmod 600 /var/ssh/root/authorized_keys && restorecon /var/ssh/root/authorized_keys' < ~/.ssh/f5_push_ecdsa.pub; done
 ```
 
-Pin each unit's host key and **compare the fingerprint** with the one on the BIG-IP
-(`ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub`), then test the login exactly as the tool makes it:
+Pin each unit's host key and **compare the fingerprint** with the one the BIG-IP itself shows, then test the
+login exactly as the tool makes it. **Run on: the Linux machine** (the one that runs f5-cert-push):
 
 ```bash
 for h in $A $B; do ssh-keyscan -t ecdsa $h 2>/dev/null >> ~/.ssh/known_hosts; ssh-keygen -lf <(ssh-keyscan -t ecdsa $h 2>/dev/null); done
@@ -176,7 +183,9 @@ for h in $A $B; do ssh-keyscan -t ecdsa $h 2>/dev/null >> ~/.ssh/known_hosts; ss
 for h in $A $B; do ssh -i ~/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes -o BatchMode=yes root@$h 'uname -n; tmsh show sys failover | head -1'; done
 ```
 
-No password prompt; one unit says active, the other standby.
+To see the BIG-IP's own fingerprint for the comparison, run `ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub`
+**on each BIG-IP** (as root, in bash). The test login should show no password prompt; one unit says active, the
+other standby.
 
 ## 4. Save the certificate files you were sent
 

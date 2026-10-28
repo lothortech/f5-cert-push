@@ -21,6 +21,12 @@ Give the tool its own SSH key so it can be revoked without affecting anyone else
 the BIG-IP's SSH daemon is commonly restricted (FIPS-style settings accept only ECDSA and RSA), and an
 ed25519 key is then silently ignored.
 
+> **Where each command runs.** The key pair is created on the **Linux machine** that runs f5-cert-push, never on
+> the BIG-IP; the private key stays there. Only the one-line **public** key (`.pub`) is added on each BIG-IP.
+> Each command block below says where to run it.
+
+**Run on: the Linux machine** (the one that runs f5-cert-push), as the account that runs it:
+
 ```bash
 ssh-keygen -t ecdsa -b 384 -N '' -C 'f5-cert-push' -f /root/.ssh/f5_push_ecdsa
 chmod 600 /root/.ssh/f5_push_ecdsa
@@ -33,7 +39,7 @@ cat /root/.ssh/f5_push_ecdsa.pub           # one line starting ecdsa-sha2-nistp3
 
 ### 1.2 Authorise the key on each BIG-IP
 
-On the BIG-IP (console or an existing admin session), as root:
+Repeat this on **each** BIG-IP. **Run on: the BIG-IP**, as root, in its bash shell: from the Linux machine `ssh root@BIGIP_ADDRESS` (or the console); if you land at a `(tmos)#` prompt, type `bash` first:
 
 ```bash
 echo 'ecdsa-sha2-nistp384 AAAA...paste the .pub line... f5-cert-push' >> /var/ssh/root/authorized_keys
@@ -53,12 +59,12 @@ Notes learned the hard way:
 ### 1.3 Pin the BIG-IP's host key
 
 The tool defaults to `strict_host_key_checking = yes`, so the BIG-IP's SSH host key must be known first.
-Fetch it and **compare the fingerprint with what the BIG-IP itself shows** before trusting it:
+Fetch it and **compare the fingerprint with what the BIG-IP itself shows** before trusting it. **Run on: the Linux machine** (the one that runs f5-cert-push):
 
 ```bash
 ssh-keyscan -t ecdsa BIGIP_ADDRESS >> /root/.ssh/known_hosts
 ssh-keygen -lf <(ssh-keyscan -t ecdsa BIGIP_ADDRESS 2>/dev/null)     # fingerprint to compare
-# on the BIG-IP:   ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
+# then ON THE BIG-IP (bash, as root):   ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
 ```
 
 (Or set `strict_host_key_checking = accept-new` for a lab to trust first contact and pin it automatically.)

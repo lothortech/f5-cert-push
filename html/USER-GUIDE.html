@@ -112,6 +112,12 @@ and delete the key files from <code>certs/</code> once the BIG-IP is updated and
 security policy allows. The tool keeps its own backup copies under <code>backups/</code>.</p>
 <h2 id="3-create-the-ssh-key">3. Create the SSH key</h2>
 <p>The tool logs in to the BIG-IP with an SSH key. Create one for this tool only.</p>
+<blockquote>
+<p><strong>Where each command runs.</strong> The key pair is created on the <strong>Linux machine</strong> that runs f5-cert-push, never on
+the BIG-IP; the private key stays there. Only the one-line <strong>public</strong> key (<code>.pub</code>) is added on each BIG-IP.
+Each command block below says where to run it.</p>
+</blockquote>
+<p><strong>Run on: the Linux machine</strong> (the one that runs f5-cert-push), as yourself:</p>
 <pre><code class="language-bash">ssh-keygen -t ecdsa -b 384 -C &quot;f5-cert-push $(whoami)&quot; -f ~/.ssh/f5_push_ecdsa
 </code></pre>
 <ul>
@@ -121,7 +127,7 @@ security policy allows. The tool keeps its own backup copies under <code>backups
   "Using a passphrase" below.</li>
 <li><strong>Use ECDSA (or RSA), not ed25519.</strong> BIG-IP's SSH commonly refuses ed25519 keys without telling you why.</li>
 </ul>
-<p>Show the <strong>public</strong> half. This one line is what you give the BIG-IP:</p>
+<p>Show the <strong>public</strong> half (still on the Linux machine). This one line is what you give the BIG-IP:</p>
 <pre><code class="language-bash">cat ~/.ssh/f5_push_ecdsa.pub
 </code></pre>
 <p>It looks like <code>ecdsa-sha2-nistp384 AAAAE2VjZHNhLXNoYTItbmlzdHAzODQ... f5-cert-push you</code>. Never share the file
@@ -132,22 +138,20 @@ ssh-add ~/.ssh/f5_push_ecdsa
 </code></pre>
 <p>and leave the <code>ssh_key =</code> line <strong>out</strong> of the configuration.</p>
 <h2 id="4-authorise-the-key-on-each-big-ip">4. Authorise the key on each BIG-IP</h2>
-<p>Do this once per BIG-IP. You need a way to run commands as root on it: the console, the web UI's
-<strong>Advanced Shell</strong> or an existing admin SSH session.</p>
-<p>On the BIG-IP, run these three lines, pasting your <code>.pub</code> line inside the quotes:</p>
+<p>Do this once per BIG-IP. <strong>Run on: the BIG-IP</strong>, as root, in its bash shell: from the Linux machine <code>ssh root@BIGIP_ADDRESS</code> (or the console); if you land at a <code>(tmos)#</code> prompt, type <code>bash</code> first. Run these three lines, pasting your <code>.pub</code> line inside the quotes:</p>
 <pre><code class="language-bash">echo 'ecdsa-sha2-nistp384 AAAA...your whole public key line... f5-cert-push you' &gt;&gt; /var/ssh/root/authorized_keys
 chmod 600 /var/ssh/root/authorized_keys
 restorecon -v /var/ssh/root/authorized_keys
 </code></pre>
 <p>The <code>restorecon</code> line matters: without it the BIG-IP can silently ignore the key.</p>
-<p>Then, back on <strong>your</strong> machine, <strong>trust the BIG-IP's identity</strong> (once) and test the login. Replace
-<code>10.0.0.11</code> with the BIG-IP's management address:</p>
+<p>Then, back on <strong>the Linux machine</strong> (log out of the BIG-IP), <strong>trust the BIG-IP's identity</strong> (once) and test the
+login. Replace <code>10.0.0.11</code> with the BIG-IP's management address. <strong>Run on: the Linux machine</strong> (the one that runs f5-cert-push):</p>
 <pre><code class="language-bash">ssh-keyscan -t ecdsa 10.0.0.11 &gt;&gt; ~/.ssh/known_hosts
 ssh-keygen -lf &lt;(ssh-keyscan -t ecdsa 10.0.0.11 2&gt;/dev/null)
 </code></pre>
-<p>The second command prints a fingerprint. On the BIG-IP run <code>ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub</code>;
+<p>The second command prints a fingerprint. <strong>On the BIG-IP</strong> (bash, as root) run <code>ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub</code>;
 the two fingerprints <strong>must be identical</strong>. If they differ, stop and ask who is answering at that address.
-Then test the login:</p>
+Then test the login, <strong>on the Linux machine</strong>:</p>
 <pre><code class="language-bash">ssh -i ~/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes root@10.0.0.11 'tmsh show sys version | head -5'
 </code></pre>
 <p>You should see the BIG-IP version and <strong>no password prompt</strong>. If you get "Permission denied (publickey)",
