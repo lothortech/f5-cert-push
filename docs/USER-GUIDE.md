@@ -325,6 +325,11 @@ and `[f5:]` sections, then let the tool draft the rest from what is on the BIG-I
 a pair in one deployment, `verify` lines from the virtual servers). Fill in the certificate file paths, delete
 what you do not want managed, set `enabled = yes` on the rest, and use it as your configuration.
 
+**Later, when someone adds a profile or a virtual server on the BIG-IP:** run the same command again (to a new
+file name). It keeps your configuration exactly as it is and adds sections only for profiles no deployment covers
+yet; a new virtual server on a profile you already manage needs nothing. Details: OPERATIONS.md, section 2,
+["When the BIG-IP changes"](OPERATIONS.md#when-the-big-ip-changes-new-virtual-servers-or-profiles).
+
 Many certificates, many BIG-IPs and several environments (`env = prod` / `env = test`) are all just more
 sections; every setting is in [CONFIGURATION.md](CONFIGURATION.md) and a full example is in
 `f5-cert-push.conf.example`.

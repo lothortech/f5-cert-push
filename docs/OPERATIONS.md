@@ -189,6 +189,32 @@ A signal never leaves a BIG-IP changed but unverified:
 
 An interrupted run that reported nothing worse exits 130.
 
+### When the BIG-IP changes: new virtual servers or profiles
+
+The configuration lists **profiles**, not virtual servers. `--discover` only reads; `--discover --write-config`
+never changes your configuration: it writes a **new** file (it refuses an existing one) holding your
+configuration unchanged, plus a `[cert:]` and a `[deploy:]` section for each client-ssl profile entry that **no
+deployment covers yet** (an `enabled = no` deployment counts as covered). Those new deployments are written
+`enabled = no`. If nothing is new, it says so and writes no file.
+
+| What was added on the BIG-IP | What to do |
+|---|---|
+| A virtual server using a profile you already manage | Nothing: the next deployment updates it, because the certificate is on the profile. Optionally add `verify = ADDRESS:443 HOSTNAME` to that deployment, so it is checked after each deployment too. |
+| A profile using a certificate you already manage (another profile with the same wildcard, say) | Add `profile = NEW-PROFILE` to that certificate's existing `[deploy:]` section. (The draft would suggest a separate `[cert:]` and `[deploy:]` for it instead.) |
+| A profile with a new certificate | Draft it, look at what is new, fill in the certificate paths, enable it, validate it, then use the new file (or copy the new sections into your file). |
+
+```bash
+./f5-cert-push.sh --discover --write-config /root/new.conf
+diff /etc/f5-cert-push.conf /root/new.conf          # only the new sections
+$EDITOR /root/new.conf                              # paths, enabled = yes
+./f5-cert-push.sh --config /root/new.conf --validate
+```
+
+The draft names new sections so they never clash with yours: if its suggested `[cert:]` is for a certificate you
+already have a section for (it adds `-2` to the name), point the new deployment's `cert =` at your existing
+section and delete the suggested one. `--validate` also refuses a profile that two deployments would both manage. A scheduled `--check` (section 3.2)
+does not notice new profiles; run `--discover` when the BIG-IP's configuration has changed.
+
 ---
 
 ## 3. Automating renewals and monitoring

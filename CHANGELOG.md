@@ -5,6 +5,10 @@
 - `build-lab.sh` and `docs/LAB.md` say `source ~/f5-cert-push-lab/lab-env.sh` (not the easy-to-miss `. FILE`)
   and that the file is loaded into the shell, not run.
 
+- Docs: how to pick up virtual servers and profiles added on the BIG-IP later (`OPERATIONS.md`, section 2, "When
+  the BIG-IP changes"; a pointer in `USER-GUIDE.md` section 6; the lab's section 7 runs the draft a second time).
+  `--discover --write-config` only ever adds sections for uncovered profiles to a new file.
+
 ## 2.2.4
 
 `f5-cert-push.sh` and `f5-cert-install.sh` are unchanged apart from the version; this release is the lab scripts.

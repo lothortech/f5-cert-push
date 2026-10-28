@@ -31,8 +31,15 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 </style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html" class="cur">Changelog</a><a href="LAB.html">Lab: hands-on walkthrough</a></nav><main><h1 id="changelog">Changelog</h1>
 <h2 id="unreleased-main">Unreleased (main)</h2>
 <ul>
-<li><code>build-lab.sh</code> and <code>docs/LAB.md</code> say <code>source ~/f5-cert-push-lab/lab-env.sh</code> (not the easy-to-miss <code>. FILE</code>)
-  and that the file is loaded into the shell, not run.</li>
+<li>
+<p><code>build-lab.sh</code> and <code>docs/LAB.md</code> say <code>source ~/f5-cert-push-lab/lab-env.sh</code> (not the easy-to-miss <code>. FILE</code>)
+  and that the file is loaded into the shell, not run.</p>
+</li>
+<li>
+<p>Docs: how to pick up virtual servers and profiles added on the BIG-IP later (<code>OPERATIONS.md</code>, section 2, "When
+  the BIG-IP changes"; a pointer in <code>USER-GUIDE.md</code> section 6; the lab's section 7 runs the draft a second time).
+  <code>--discover --write-config</code> only ever adds sections for uncovered profiles to a new file.</p>
+</li>
 </ul>
 <h2 id="224">2.2.4</h2>
 <p><code>f5-cert-push.sh</code> and <code>f5-cert-install.sh</code> are unchanged apart from the version; this release is the lab scripts.</p>

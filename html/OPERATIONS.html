@@ -302,6 +302,43 @@ even if the rollback is verified (the step might still complete later).</p>
 </tbody>
 </table>
 <p>An interrupted run that reported nothing worse exits 130.</p>
+<h3 id="when-the-big-ip-changes-new-virtual-servers-or-profiles">When the BIG-IP changes: new virtual servers or profiles</h3>
+<p>The configuration lists <strong>profiles</strong>, not virtual servers. <code>--discover</code> only reads; <code>--discover --write-config</code>
+never changes your configuration: it writes a <strong>new</strong> file (it refuses an existing one) holding your
+configuration unchanged, plus a <code>[cert:]</code> and a <code>[deploy:]</code> section for each client-ssl profile entry that <strong>no
+deployment covers yet</strong> (an <code>enabled = no</code> deployment counts as covered). Those new deployments are written
+<code>enabled = no</code>. If nothing is new, it says so and writes no file.</p>
+<table>
+<thead>
+<tr>
+<th>What was added on the BIG-IP</th>
+<th>What to do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A virtual server using a profile you already manage</td>
+<td>Nothing: the next deployment updates it, because the certificate is on the profile. Optionally add <code>verify = ADDRESS:443 HOSTNAME</code> to that deployment, so it is checked after each deployment too.</td>
+</tr>
+<tr>
+<td>A profile using a certificate you already manage (another profile with the same wildcard, say)</td>
+<td>Add <code>profile = NEW-PROFILE</code> to that certificate's existing <code>[deploy:]</code> section. (The draft would suggest a separate <code>[cert:]</code> and <code>[deploy:]</code> for it instead.)</td>
+</tr>
+<tr>
+<td>A profile with a new certificate</td>
+<td>Draft it, look at what is new, fill in the certificate paths, enable it, validate it, then use the new file (or copy the new sections into your file).</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-bash">./f5-cert-push.sh --discover --write-config /root/new.conf
+diff /etc/f5-cert-push.conf /root/new.conf          # only the new sections
+$EDITOR /root/new.conf                              # paths, enabled = yes
+./f5-cert-push.sh --config /root/new.conf --validate
+</code></pre>
+<p>The draft names new sections so they never clash with yours: if its suggested <code>[cert:]</code> is for a certificate you
+already have a section for (it adds <code>-2</code> to the name), point the new deployment's <code>cert =</code> at your existing
+section and delete the suggested one. <code>--validate</code> also refuses a profile that two deployments would both manage. A scheduled <code>--check</code> (section 3.2)
+does not notice new profiles; run <code>--discover</code> when the BIG-IP's configuration has changed.</p>
 <hr />
 <h2 id="3-automating-renewals-and-monitoring">3. Automating renewals and monitoring</h2>
 <h3 id="31-from-certbot">3.1 From certbot</h3>

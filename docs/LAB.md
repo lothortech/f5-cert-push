@@ -263,6 +263,17 @@ sed -i '/^\[deploy:lab-/,/^enabled/ s/^enabled = no/enabled = yes/' draft.conf
 mv draft.conf f5-cert-push.conf && chmod 600 f5-cert-push.conf
 ```
 
+Now run the draft once more, against the configuration you just made:
+
+```bash
+./f5-cert-push.sh --discover --write-config draft2.conf
+```
+
+It says every profile entry found is already covered by a deployment, and writes no file: a draft only ever adds
+sections for profiles **no** deployment covers yet (a disabled one counts), and keeps your configuration as it is.
+That is how you pick up a profile someone adds on the BIG-IP later; a new virtual server on a profile you already
+manage needs nothing at all (Operations guide, section 2, "When the BIG-IP changes").
+
 ## 8. Check the files and the configuration (no network)
 
 ```bash

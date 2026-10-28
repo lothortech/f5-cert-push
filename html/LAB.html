@@ -312,6 +312,13 @@ BIG-IP stays disabled). By hand in an editor, or:</p>
 sed -i '/^\[deploy:lab-/,/^enabled/ s/^enabled = no/enabled = yes/' draft.conf
 mv draft.conf f5-cert-push.conf &amp;&amp; chmod 600 f5-cert-push.conf
 </code></pre>
+<p>Now run the draft once more, against the configuration you just made:</p>
+<pre><code class="language-bash">./f5-cert-push.sh --discover --write-config draft2.conf
+</code></pre>
+<p>It says every profile entry found is already covered by a deployment, and writes no file: a draft only ever adds
+sections for profiles <strong>no</strong> deployment covers yet (a disabled one counts), and keeps your configuration as it is.
+That is how you pick up a profile someone adds on the BIG-IP later; a new virtual server on a profile you already
+manage needs nothing at all (Operations guide, section 2, "When the BIG-IP changes").</p>
 <h2 id="8-check-the-files-and-the-configuration-no-network">8. Check the files and the configuration (no network)</h2>
 <pre><code class="language-bash">./f5-cert-push.sh --validate
 ./f5-cert-push.sh --list

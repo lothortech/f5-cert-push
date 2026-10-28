@@ -404,6 +404,10 @@ and <code>[f5:]</code> sections, then let the tool draft the rest from what is o
 <p><code>draft.conf</code> is your file plus a <code>[cert:]</code> and a <code>[deploy:]</code> section for every profile it found (both units of
 a pair in one deployment, <code>verify</code> lines from the virtual servers). Fill in the certificate file paths, delete
 what you do not want managed, set <code>enabled = yes</code> on the rest, and use it as your configuration.</p>
+<p><strong>Later, when someone adds a profile or a virtual server on the BIG-IP:</strong> run the same command again (to a new
+file name). It keeps your configuration exactly as it is and adds sections only for profiles no deployment covers
+yet; a new virtual server on a profile you already manage needs nothing. Details: OPERATIONS.md, section 2,
+<a href="OPERATIONS.html#when-the-big-ip-changes-new-virtual-servers-or-profiles">"When the BIG-IP changes"</a>.</p>
 <p>Many certificates, many BIG-IPs and several environments (<code>env = prod</code> / <code>env = test</code>) are all just more
 sections; every setting is in <a href="CONFIGURATION.html">CONFIGURATION.html</a> and a full example is in
 <code>f5-cert-push.conf.example</code>.</p>
