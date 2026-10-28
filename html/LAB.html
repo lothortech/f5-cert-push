@@ -175,10 +175,13 @@ run the lab as:</p>
 ssh-keygen -t ecdsa -b 384 -N '' -C f5-cert-push-lab -f ~/.ssh/f5_push_ecdsa
 </code></pre>
 <p><strong>Set your BIG-IP addresses</strong> for the commands in this guide: the management IPs of the active (<code>A</code>) and the
-standby (<code>B</code>) unit; for a standalone BIG-IP, only <code>A</code>. <strong>Replace the example addresses below with yours</strong> (see
-<a href="#the-lab-network">the lab network</a>). <strong>Run on: the Linux machine</strong>, in the same shell you use for the rest of the lab:</p>
-<pre><code class="language-bash">A=192.0.2.10; B=192.0.2.11
+standby (<code>B</code>) unit; for a standalone BIG-IP, only <code>A</code>. <strong>Replace each <code>&lt;...&gt;</code> placeholder, brackets included, with
+your address</strong>, for example <code>A=192.0.2.10; B=192.0.2.11</code> (see <a href="#the-lab-network">the lab network</a>). <strong>Run on: the
+Linux machine</strong>, in the same shell you use for the rest of the lab (variables do not carry over to a new terminal):</p>
+<pre><code class="language-bash">A=&lt;IP of the active BIG-IP&gt;; B=&lt;IP of the standby BIG-IP&gt;
+echo &quot;A=$A B=$B&quot;
 </code></pre>
+<p>(Run as it stands, with the placeholders still in, the first line stops with a <code>syntax error</code>: nothing is set.)</p>
 <p><strong>Pin each unit's host key.</strong> This is a different key: the one the <strong>BIG-IP</strong> shows to prove who it is, so this
 machine (and later the tool) knows it is talking to the real BIG-IP. Do it before authorising your key, so the
 next step does not stop to ask whether to trust each unit. (The <code>ssh-keygen -lf</code> in it only prints a fingerprint;
@@ -235,9 +238,14 @@ loaded, no lab items yet; for a pair, In Sync), shows the plan and asks before c
 <p>It makes <strong>no</strong> f5-cert-push configuration or folders: that is what the rest of the lab is for.</p>
 <pre><code class="language-bash">cat ~/f5-cert-push-lab/lab-info.txt
 </code></pre>
-<p><strong>Set these for the commands below</strong>: the lab's virtual server addresses, from <code>lab-info.txt</code>:</p>
-<pre><code class="language-bash">VS1=198.51.100.201; VS2=198.51.100.202; VS3=198.51.100.203
+<p><strong>Set these for the commands below</strong>: the lab's virtual server addresses, read from <code>lab-info.txt</code> (nothing to
+type):</p>
+<pre><code class="language-bash">VS1=$(grep -o 'lab-vs1 [0-9.]*' ~/f5-cert-push-lab/lab-info.txt | cut -d' ' -f2)
+VS2=$(grep -o 'lab-vs2 [0-9.]*' ~/f5-cert-push-lab/lab-info.txt | cut -d' ' -f2)
+VS3=$(grep -o 'lab-vs3 [0-9.]*' ~/f5-cert-push-lab/lab-info.txt | cut -d' ' -f2)
+echo &quot;VS1=$VS1 VS2=$VS2 VS3=$VS3&quot;
 </code></pre>
+<p>The <code>echo</code> shows the three addresses <code>lab-info.txt</code> lists (<code>198.51.100.201</code>-<code>.203</code> in this guide's example).</p>
 <h2 id="3-read-the-documentation-first-2-minutes">3. Read the documentation first (2 minutes)</h2>
 <p><code>~/f5-cert-push/html/index.html</code> is the documentation as web pages (copy the <code>html/</code> folder to your desktop
 and open it). Sections 5-6 of the <strong>User guide</strong> are what you do next (its sections 3-4, the SSH key, you

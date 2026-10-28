@@ -125,12 +125,16 @@ ssh-keygen -t ecdsa -b 384 -N '' -C f5-cert-push-lab -f ~/.ssh/f5_push_ecdsa
 ```
 
 **Set your BIG-IP addresses** for the commands in this guide: the management IPs of the active (`A`) and the
-standby (`B`) unit; for a standalone BIG-IP, only `A`. **Replace the example addresses below with yours** (see
-[the lab network](#the-lab-network)). **Run on: the Linux machine**, in the same shell you use for the rest of the lab:
+standby (`B`) unit; for a standalone BIG-IP, only `A`. **Replace each `<...>` placeholder, brackets included, with
+your address**, for example `A=192.0.2.10; B=192.0.2.11` (see [the lab network](#the-lab-network)). **Run on: the
+Linux machine**, in the same shell you use for the rest of the lab (variables do not carry over to a new terminal):
 
 ```bash
-A=192.0.2.10; B=192.0.2.11
+A=<IP of the active BIG-IP>; B=<IP of the standby BIG-IP>
+echo "A=$A B=$B"
 ```
+
+(Run as it stands, with the placeholders still in, the first line stops with a `syntax error`: nothing is set.)
 
 **Pin each unit's host key.** This is a different key: the one the **BIG-IP** shows to prove who it is, so this
 machine (and later the tool) knows it is talking to the real BIG-IP. Do it before authorising your key, so the
@@ -200,11 +204,17 @@ It makes **no** f5-cert-push configuration or folders: that is what the rest of 
 cat ~/f5-cert-push-lab/lab-info.txt
 ```
 
-**Set these for the commands below**: the lab's virtual server addresses, from `lab-info.txt`:
+**Set these for the commands below**: the lab's virtual server addresses, read from `lab-info.txt` (nothing to
+type):
 
 ```bash
-VS1=198.51.100.201; VS2=198.51.100.202; VS3=198.51.100.203
+VS1=$(grep -o 'lab-vs1 [0-9.]*' ~/f5-cert-push-lab/lab-info.txt | cut -d' ' -f2)
+VS2=$(grep -o 'lab-vs2 [0-9.]*' ~/f5-cert-push-lab/lab-info.txt | cut -d' ' -f2)
+VS3=$(grep -o 'lab-vs3 [0-9.]*' ~/f5-cert-push-lab/lab-info.txt | cut -d' ' -f2)
+echo "VS1=$VS1 VS2=$VS2 VS3=$VS3"
 ```
+
+The `echo` shows the three addresses `lab-info.txt` lists (`198.51.100.201`-`.203` in this guide's example).
 
 ## 3. Read the documentation first (2 minutes)
 
