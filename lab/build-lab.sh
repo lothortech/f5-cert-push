@@ -301,4 +301,4 @@ renewed certificates for the trainee: $R
 Remove everything:  remove-lab.sh --host $HOST${PEERS:+ --peer OTHER-UNIT-ADDRESS} --local $OUT
 EOF
 echo
-ok "the lab is ready. Summary in $OUT/lab-info.txt; next: docs/LAB.md, section 2."
+ok "the lab is ready. Summary in $OUT/lab-info.txt; next: docs/LAB.md, section 3."
