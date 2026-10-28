@@ -17,7 +17,7 @@ you stop half way, so the lab can be run as often as you like.
 
 ### The lab network
 
-![Lab network: your PC and the Linux machine reach the BIG-IPs' management network through a router; the two BIG-IPs share an external VLAN, where the lab virtual servers live, and an internal VLAN for HA](img/lab-network.svg)
+![Lab network: your PC and the Linux machine reach the BIG-IPs' management network through a router; the lab virtual servers live on the BIG-IPs' external VLAN](img/lab-network.svg)
 
 The addresses in this guide are **examples** from the ranges reserved for documentation (RFC 5737), so none of
 them is a real address. Use your own in their place:
@@ -28,11 +28,16 @@ them is a real address. Use your own in their place:
 | `192.0.2.11` | management IP of the **standby** BIG-IP (`f5b`; none for a standalone BIG-IP) | `--peer` for `remove-lab.sh`, `B=` in section 1 |
 | `198.51.100.0/24` | the BIG-IPs' **external** VLAN (interface 1.2); floating self IP `.5`, unit self IPs `.6` and `.7` | where `build-lab.sh` puts the lab virtual servers |
 | `198.51.100.201`-`.203` | the lab virtual servers `lab-vs1`-`lab-vs3` (port 443) | `VS1=`-`VS3=` in section 1; `build-lab.sh` picks them and writes them to `lab-info.txt` |
-| `203.0.113.0/24` | the **internal** VLAN (interface 1.1) between the two units: config sync, failover, mirroring. A **separate VLAN and subnet** from the external one (and from management), not routed; unit self IPs `.6` and `.7` | nothing in the lab; it is how the pair keeps in sync |
 
 The tool and the lab scripts only ever connect to the **management** IPs, over SSH (TCP 22), from the Linux
 machine. The PC needs nothing installed: it is where you SSH to the Linux machine from, and where a browser can
 open the BIG-IP GUI and the lab sites.
+
+**The internal VLAN (the server side) is not affected.** Neither the lab scripts nor f5-cert-push create, change
+or remove VLANs, self IPs, routes, pools or backend servers. The lab's virtual servers have no pool: they only
+present a certificate, which is all the lab needs. When `build-lab.sh` shows its plan, check that the virtual
+server addresses are on the external (client-side) subnet: it takes them from the BIG-IP's first `/24` self IP,
+and if that is an internal one, answer `n` and run it again with `--vs-ips A,B,C`.
 
 ### The lab scripts
 
