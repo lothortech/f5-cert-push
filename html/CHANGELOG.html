@@ -33,8 +33,8 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 <h3 id="lab">Lab</h3>
 <ul>
 <li><strong><code>lab/build-lab.sh</code> sets up the tool's SSH access.</strong> Run without options, it asks for the management IPs of
-  the active and the standby unit, pins both host keys in <code>~/.ssh/known_hosts</code> (checked against each unit's own
-  key file), logs in to each unit, creates the tool's key <code>~/.ssh/f5_push_ecdsa</code> (or reuses the lab's), authorises
+  the active and the standby unit, shows both host key fingerprints and pins them in <code>~/.ssh/known_hosts</code> only
+  once you confirm them (or they match <code>--host-fp</code>; required with <code>--yes</code>), and only then logs in to each unit, creates the tool's key <code>~/.ssh/f5_push_ecdsa</code> (or reuses the lab's), authorises
   it for root on every unit and tests a login with it. <code>--peer</code> and <code>--tool-key</code> give the same non-interactively.
   It writes <code>lab-env.sh</code> (<code>A</code>, <code>B</code>, <code>VS1</code>-<code>VS3</code>) so the guide's commands need no typed addresses.</li>
 <li><strong><code>lab/remove-lab.sh --cleanup</code></strong> (also the default with no options) removes the lab <code>lab-env.sh</code> describes:

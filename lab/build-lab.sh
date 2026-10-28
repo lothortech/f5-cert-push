@@ -5,10 +5,11 @@
 # as root (key or password; with a password you are asked once per unit). Without
 # --host it asks for the management IPs of the active and the standby unit. It:
 #
-#   1. pins each unit's SSH host key in ~/.ssh/known_hosts (and checks it against the
-#      unit's own key file), logs in, and checks the BIG-IP: active, configuration
-#      loaded, no lab items yet, and (for an HA pair) its sync-failover device group
-#      In Sync, with --peer the other member of it;
+#   1. shows each unit's SSH host key fingerprint and, once you confirm it matches the
+#      one the BIG-IP shows on its console, pins it in ~/.ssh/known_hosts; only then
+#      logs in, and checks the BIG-IP: active, configuration loaded, no lab items yet,
+#      and (for an HA pair) its sync-failover device group In Sync, with --peer the
+#      other member of it;
 #   2. sets up the SSH key f5-cert-push will use: creates ~/.ssh/f5_push_ecdsa (comment
 #      f5-cert-push-lab) unless it exists, authorises it for root on every unit, and
 #      tests a login with it;
@@ -33,6 +34,10 @@
 #   --host H          the BIG-IP (for a pair: the ACTIVE unit)   (asked for if not given)
 #   --peer H          the other unit of an HA pair (the standby); the tool's key is
 #                     authorised there too                       (asked for with --host)
+#   --host-fp FP      the expected host key fingerprint (SHA256:...) of a unit, as the
+#                     BIG-IP shows it (ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub);
+#                     repeatable. A new host key that matches one is not asked about;
+#                     with --yes, every new host key must match one
 #   --tool-key FILE   the key f5-cert-push will use (default ~/.ssh/f5_push_ecdsa;
 #                     created if missing, and must have the comment f5-cert-push-lab)
 #   --user U          SSH user (default root: tmsh and the filestore are needed)
@@ -53,6 +58,7 @@ VERSION="2.2.2"
 HM="${HOME:-$(cd ~ 2>/dev/null && pwd || echo .)}"
 HOST="" PEER="" PORT=22 BUSER=root KEY="" OUT="$HM/f5-cert-push-lab" VSIPS="" DOSYNC=1 YES=0
 TKEY="$HM/.ssh/f5_push_ecdsa" TCOMMENT="f5-cert-push-lab"
+declare -a HOSTFP=()
 
 die()  { printf 'build-lab: %s\n' "$*" >&2; exit 1; }
 info() { printf '[*] %s\n' "$*"; }
@@ -65,6 +71,7 @@ while (( $# )); do
     --host) HOST="${2:?}"; shift 2 ;;
     --peer) PEER="${2:?}"; shift 2 ;;
     --tool-key) TKEY="${2:?}"; shift 2 ;;
+    --host-fp) HOSTFP+=("${2:?}"); shift 2 ;;
     --user) BUSER="${2:?}"; shift 2 ;;
     --port) PORT="${2:?}"; shift 2 ;;
     --key)  KEY="${2:?}"; shift 2 ;;
@@ -111,36 +118,60 @@ cleanup() {
   rm -rf "$CMD"
 }
 trap cleanup EXIT
-SSHO=(-p "$PORT" -o ControlMaster=auto -o ControlPersist=600 -o ConnectTimeout=15 -o LogLevel=ERROR)
+SSHO=(-p "$PORT" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HM/.ssh/known_hosts" -o ControlMaster=auto -o ControlPersist=600 -o ConnectTimeout=15 -o LogLevel=ERROR)
 [[ -n "$KEY" ]] && SSHO+=(-i "$KEY" -o IdentitiesOnly=yes)
 on() { local h="$1"; shift; ssh "${SSHO[@]}" -o ControlPath="$CMD/cm-$h" "$BUSER@$h" "$@"; }
 f5() { on "$HOST" "$@"; }
 
-# Host keys: pin each unit's in ~/.ssh/known_hosts (as docs/LAB.md does by hand), so the
-# logins below, and f5-cert-push later, know they talk to the real BIG-IP.
+# Host keys: before any login (a password must only go to the real BIG-IP), each unit's
+# key must already be in ~/.ssh/known_hosts, or you confirm its fingerprint (or give it
+# with --host-fp) and it is pinned there, as docs/LAB.md describes doing by hand.
 KH="$HM/.ssh/known_hosts"
-mkdir -p "$HM/.ssh"; chmod 700 "$HM/.ssh"
-declare -A HKFP=()
+declare -A HKFP=() HKLINE=()
+NEWK=()
 for h in "${UNITS[@]}"; do
   kn="$h"; [[ "$PORT" == 22 ]] || kn="[$h]:$PORT"
   k="$(ssh-keyscan -T 10 -p "$PORT" -t ecdsa "$h" 2>/dev/null | grep -v '^#')" || k=""
   [[ -n "$k" ]] || die "$h: no answer on TCP $PORT (check the address, and that this machine can reach it); nothing was changed"
-  HKFP[$h]="$(ssh-keygen -lf <(printf '%s\n' "$k") | awk '{print $2; exit}')"
-  blob="$(printf '%s\n' "$k" | awk '{print $3; exit}')"
-  if ssh-keygen -F "$kn" -f "$KH" 2>/dev/null | grep -q ' ecdsa-sha2-'; then
-    ssh-keygen -F "$kn" -f "$KH" 2>/dev/null | grep -qF " $blob" \
-      || die "$h: its host key is not the one in $KH. If the BIG-IP was rebuilt, remove the old entry (ssh-keygen -R $kn) and run this again; otherwise find out why"
+  HKFP[$h]="$(ssh-keygen -lf <(printf '%s
+' "$k") | awk '{print $2; exit}')"
+  blob="$(printf '%s
+' "$k" | awk '{print $3; exit}')"
+  if [[ -f "$KH" ]] && ssh-keygen -F "$kn" -f "$KH" 2>/dev/null | grep -q ' ecdsa-sha2-'; then
+    ssh-keygen -F "$kn" -f "$KH" 2>/dev/null | grep -qF " $blob"       || die "$h: its host key (${HKFP[$h]}) is not the one in $KH. If the BIG-IP was rebuilt, remove the old entry (ssh-keygen -R $kn) and run this again; otherwise find out why"
   else
-    printf '%s\n' "$k" >> "$KH"
-    info "pinned the host key of $h (${HKFP[$h]}) in $KH"
+    NEWK+=("$h"); HKLINE[$h]="$k"
   fi
 done
+if (( ${#NEWK[@]} )); then
+  ASK=()
+  for h in "${NEWK[@]}"; do
+    [[ " ${HOSTFP[*]-} " == *" ${HKFP[$h]} "* ]] || ASK+=("$h")
+  done
+  if (( ${#ASK[@]} )); then
+    echo
+    echo "  New SSH host keys (not in $KH yet):"
+    for h in "${ASK[@]}"; do printf '    %-18s %s
+' "$h" "${HKFP[$h]}"; done
+    if (( YES )); then
+      die "with --yes, confirm each new host key with --host-fp (after comparing it with the BIG-IP's own); nothing was changed"
+    fi
+    echo "  Compare each with the fingerprint the BIG-IP itself shows, from its console (or an SSH"
+    echo "  session you already trust), as root in bash:  ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub"
+    read -r -p "Do they match? Trust them and continue? [y/N] " a || a=""
+    [[ "$a" == [yY]* ]] || die "host keys not trusted; nothing was changed"
+  fi
+  mkdir -p "$HM/.ssh"; chmod 700 "$HM/.ssh"
+  for h in "${NEWK[@]}"; do
+    printf '%s
+' "${HKLINE[$h]}" >> "$KH"
+    info "pinned the host key of $h (${HKFP[$h]}) in $KH"
+  done
+fi
 
 for h in "${UNITS[@]}"; do
   info "connecting to $BUSER@$h"
   on "$h" true </dev/null || die "cannot log in to $BUSER@$h over SSH"
-  own="$(on "$h" 'ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub' </dev/null | awk '{print $2; exit}')" || own=""
-  [[ "$own" == "${HKFP[$h]}" ]] || die "$h: the host key it answers with (${HKFP[$h]}) is not its own key file's (${own:-unreadable}); stop and find out why"
 done
 
 # ---- 1. the BIG-IP --------------------------------------------------------------
@@ -240,7 +271,7 @@ echo "  local files     $OUT"
 echo
 if (( ! YES )); then
   read -r -p "Build the lab on $HOST? [y/N] " a || a=""
-  [[ "$a" == [yY]* ]] || die "cancelled; nothing was changed (apart from host keys pinned in $KH)"
+  [[ "$a" == [yY]* ]] || die "cancelled; nothing was changed (apart from the host keys you confirmed, pinned in $KH)"
 fi
 
 # ---- the tool's SSH key ------------------------------------------------------------------
@@ -256,7 +287,7 @@ printf '%s\n' "$*" >> "$f" && chmod 600 "$f" && restorecon "$f" && echo added
 EOF
 )" || die "could not authorise the tool's key on $h"
   if [[ "$res" == added ]]; then ok "authorised the tool's key for root on $h"; else info "the tool's key was already authorised on $h"; fi
-  t="$(ssh -p "$PORT" -i "$TKEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ControlPath=none -o ConnectTimeout=15 -o LogLevel=ERROR \
+  t="$(ssh -p "$PORT" -i "$TKEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KH" -o ControlPath=none -o ConnectTimeout=15 -o LogLevel=ERROR \
         "root@$h" 'tmsh -q show sys failover | head -1' </dev/null)" || die "logging in to $h with the tool's key failed"
   ok "login with the tool's key works on $h: $t"
 done

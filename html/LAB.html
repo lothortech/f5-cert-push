@@ -169,7 +169,10 @@ free ones) in the subnet of the BIG-IP's first IPv4 <code>/24</code> self IP; gi
 ./lab/build-lab.sh
 </code></pre>
 <p>It asks for the <strong>management IP of the active BIG-IP</strong>, then of the <strong>standby</strong> one (press Enter for a standalone
-BIG-IP), and logs in to each with <strong>your own</strong> root access: with a password, you type it once per unit (an HA
+BIG-IP). Before it logs in anywhere, it shows each unit's SSH <strong>host key fingerprint</strong> and asks whether it matches
+the one the BIG-IP itself shows: on the BIG-IP's console (or an SSH session you already trust), as root in bash,
+<code>ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub</code>. This is what tells you that you are typing your password into
+the real BIG-IP. Then it logs in to each with <strong>your own</strong> root access: with a password, you type it once per unit (an HA
 pair synchronises the root password, so it is the same on both). Add <code>--key FILE</code> if that access uses a specific
 key. It checks the BIG-IPs (active and standby, configuration loaded, no lab items yet; for a pair, In Sync),
 shows the plan and asks before changing anything. Then it:</p>
@@ -183,7 +186,7 @@ shows the plan and asks before changing anything. Then it:</p>
 <tbody>
 <tr>
 <td>SSH, on this machine</td>
-<td>pins each unit's <strong>host key</strong> in <code>~/.ssh/known_hosts</code> (after checking it against the unit's own key file), and creates the <strong>tool's key</strong> <code>~/.ssh/f5_push_ecdsa</code> (comment <code>f5-cert-push-lab</code>; an existing lab key is reused)</td>
+<td>pins each unit's <strong>host key</strong> in <code>~/.ssh/known_hosts</code> (once you confirmed its fingerprint), and creates the <strong>tool's key</strong> <code>~/.ssh/f5_push_ecdsa</code> (comment <code>f5-cert-push-lab</code>; an existing lab key is reused)</td>
 </tr>
 <tr>
 <td>SSH, on each BIG-IP</td>

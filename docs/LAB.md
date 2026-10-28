@@ -120,14 +120,17 @@ cd ~/f5-cert-push
 ```
 
 It asks for the **management IP of the active BIG-IP**, then of the **standby** one (press Enter for a standalone
-BIG-IP), and logs in to each with **your own** root access: with a password, you type it once per unit (an HA
+BIG-IP). Before it logs in anywhere, it shows each unit's SSH **host key fingerprint** and asks whether it matches
+the one the BIG-IP itself shows: on the BIG-IP's console (or an SSH session you already trust), as root in bash,
+`ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub`. This is what tells you that you are typing your password into
+the real BIG-IP. Then it logs in to each with **your own** root access: with a password, you type it once per unit (an HA
 pair synchronises the root password, so it is the same on both). Add `--key FILE` if that access uses a specific
 key. It checks the BIG-IPs (active and standby, configuration loaded, no lab items yet; for a pair, In Sync),
 shows the plan and asks before changing anything. Then it:
 
 | Does | |
 |---|---|
-| SSH, on this machine | pins each unit's **host key** in `~/.ssh/known_hosts` (after checking it against the unit's own key file), and creates the **tool's key** `~/.ssh/f5_push_ecdsa` (comment `f5-cert-push-lab`; an existing lab key is reused) |
+| SSH, on this machine | pins each unit's **host key** in `~/.ssh/known_hosts` (once you confirmed its fingerprint), and creates the **tool's key** `~/.ssh/f5_push_ecdsa` (comment `f5-cert-push-lab`; an existing lab key is reused) |
 | SSH, on each BIG-IP | authorises the tool's public key for root in `/var/ssh/root/authorized_keys`, then tests a login with it |
 | on the BIG-IP | `lab-vs1`, `lab-vs2`, `lab-vs3` (port 443) using the client-ssl profiles `lab-app1-clientssl`, `lab-app2-clientssl` and `lab-wild-clientssl`; the last holds **two** certificates, an RSA (`rsa` entry) and an ECDSA (`ecdsa` entry) one for `*.lab.test`. Plus `lab-spare.crt` and `lab-legacy.crt`, used by no profile. Today's certificates expire in 60 days. For a pair, the device group is synchronised. |
 | on this machine | `~/f5-cert-push-lab/`: the lab CA, `lab-info.txt` (addresses and names), `lab-env.sh` (the addresses for this guide's commands), and `received/`: the **renewed** certificates, as a CA sends them (`received/app1/app1.lab.test.crt` + `.key` + `intermediate.crt`, `received/app2/app2.lab.test.pfx`, ...), and some bad ones in `received/bad/`. |
