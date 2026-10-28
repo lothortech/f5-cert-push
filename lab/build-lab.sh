@@ -1,42 +1,58 @@
 #!/usr/bin/env bash
 # build-lab.sh - build the f5-cert-push training lab on a BIG-IP (or an HA pair).
 #
-# Run it on any Linux machine that can reach the BIG-IP's management address over SSH
-# as root (key or password; you are asked for a password at most once). It:
+# Run it on any Linux machine that can reach the BIG-IPs' management addresses over SSH
+# as root (key or password; with a password you are asked once per unit). Without
+# --host it asks for the management IPs of the active and the standby unit. It:
 #
-#   1. checks the BIG-IP: active, configuration loaded, no lab items yet, and (for an
-#      HA pair) its sync-failover device group In Sync;
-#   2. makes a throwaway lab CA and certificates on THIS machine, in --out DIR;
-#   3. installs the "current" certificates on the BIG-IP, creates three client-ssl
+#   1. pins each unit's SSH host key in ~/.ssh/known_hosts (and checks it against the
+#      unit's own key file), logs in, and checks the BIG-IP: active, configuration
+#      loaded, no lab items yet, and (for an HA pair) its sync-failover device group
+#      In Sync, with --peer the other member of it;
+#   2. sets up the SSH key f5-cert-push will use: creates ~/.ssh/f5_push_ecdsa (comment
+#      f5-cert-push-lab) unless it exists, authorises it for root on every unit, and
+#      tests a login with it;
+#   3. makes a throwaway lab CA and certificates on THIS machine, in --out DIR;
+#   4. installs the "current" certificates on the BIG-IP, creates three client-ssl
 #      profiles (one holding an RSA and an ECDSA certificate) and three virtual servers,
 #      plus two certificates that no profile uses;
-#   4. synchronises the device group (HA pair) and checks what each virtual server serves;
-#   5. leaves the "renewed" certificates for the trainee in DIR/received/, the way a CA
-#      delivers them (one of them as a .pfx), plus some bad ones in DIR/received/bad/.
+#   5. synchronises the device group (HA pair) and checks what each virtual server serves;
+#   6. leaves the "renewed" certificates for the trainee in DIR/received/, the way a CA
+#      delivers them (one of them as a .pfx), plus some bad ones in DIR/received/bad/,
+#      and DIR/lab-env.sh, which sets A, B and VS1-VS3 for the guide's commands.
 #
 # Everything it creates on the BIG-IP is named lab-* (and everything f5-cert-push creates
-# during the lab is too). Remove it all with remove-lab.sh, even half way through.
-# It creates no f5-cert-push configuration: that is the trainee's job (docs/LAB.md).
+# during the lab is too). Remove it all, the tool's key included, with
+# remove-lab.sh --cleanup, even half way through. It creates no f5-cert-push configuration: that is the
+# trainee's job (docs/LAB.md).
 #
-#   ./build-lab.sh --host 192.0.2.10 [--key ~/.ssh/admin_key] [--out ~/f5-cert-push-lab]
+#   ./build-lab.sh                                  (asks for the addresses)
+#   ./build-lab.sh --host 192.0.2.10 --peer 192.0.2.11 [--key ~/.ssh/admin_key]
 #
 # Options:
-#   --host H          the BIG-IP (for a pair: the ACTIVE unit)            (required)
+#   --host H          the BIG-IP (for a pair: the ACTIVE unit)   (asked for if not given)
+#   --peer H          the other unit of an HA pair (the standby); the tool's key is
+#                     authorised there too                       (asked for with --host)
+#   --tool-key FILE   the key f5-cert-push will use (default ~/.ssh/f5_push_ecdsa;
+#                     created if missing, and must have the comment f5-cert-push-lab)
 #   --user U          SSH user (default root: tmsh and the filestore are needed)
 #   --port P          SSH port (default 22)
-#   --key FILE        SSH private key (default: your ssh defaults, or a password)
+#   --key FILE        YOUR SSH private key for root (default: your ssh defaults, or
+#                     a password)
 #   --out DIR         where to put the lab CA and the trainee's certificates
 #                     (default ~/f5-cert-push-lab; must not exist yet)
 #   --vs-ips A,B,C    three unused addresses for the virtual servers (default: .201-.203,
 #                     or the next free ones, in the subnet of the BIG-IP's first IPv4
 #                     self IP, which must be a /24 for the automatic choice)
 #   --no-sync         do not synchronise an HA pair (objects stay on this unit only)
-#   --yes             do not ask for confirmation
+#   --yes             do not ask for confirmation (then --host is required)
 #   -h, --help        this help
 set -euo pipefail
 
 VERSION="2.2.2"
-HOST="" PORT=22 BUSER=root KEY="" OUT="${HOME:-$(cd ~ 2>/dev/null && pwd || echo .)}/f5-cert-push-lab" VSIPS="" DOSYNC=1 YES=0
+HM="${HOME:-$(cd ~ 2>/dev/null && pwd || echo .)}"
+HOST="" PEER="" PORT=22 BUSER=root KEY="" OUT="$HM/f5-cert-push-lab" VSIPS="" DOSYNC=1 YES=0
+TKEY="$HM/.ssh/f5_push_ecdsa" TCOMMENT="f5-cert-push-lab"
 
 die()  { printf 'build-lab: %s\n' "$*" >&2; exit 1; }
 info() { printf '[*] %s\n' "$*"; }
@@ -47,6 +63,8 @@ usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit "
 while (( $# )); do
   case "$1" in
     --host) HOST="${2:?}"; shift 2 ;;
+    --peer) PEER="${2:?}"; shift 2 ;;
+    --tool-key) TKEY="${2:?}"; shift 2 ;;
     --user) BUSER="${2:?}"; shift 2 ;;
     --port) PORT="${2:?}"; shift 2 ;;
     --key)  KEY="${2:?}"; shift 2 ;;
@@ -59,22 +77,71 @@ while (( $# )); do
     *) die "unknown option: $1 (see --help)" ;;
   esac
 done
-[[ -n "$HOST" ]] || { warn "--host is required"; usage 1; }
+if [[ -z "$HOST" ]]; then
+  (( ! YES )) || die "--host is required with --yes"
+  read -r -p "Management IP of the ACTIVE BIG-IP: " HOST || HOST=""
+  [[ -n "$HOST" ]] || die "no address given; nothing was changed"
+  if [[ -z "$PEER" ]]; then
+    read -r -p "Management IP of the STANDBY BIG-IP (press Enter for a standalone BIG-IP): " PEER || PEER=""
+  fi
+fi
 [[ "$HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:_-]*$ ]] || die "--host: not a host name or address: $HOST"
+[[ -z "$PEER" || "$PEER" =~ ^[A-Za-z0-9][A-Za-z0-9.:_-]*$ ]] || die "--peer: not a host name or address: $PEER"
+[[ "$PEER" != "$HOST" ]] || die "--peer is the same address as --host"
 [[ "$BUSER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "--user: not a plain account name"
 [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || die "--port: not a port number"
-for t in ssh openssl awk sed mktemp; do command -v "$t" >/dev/null 2>&1 || die "required tool not found: $t"; done
+for t in ssh ssh-keygen ssh-keyscan openssl awk sed mktemp; do command -v "$t" >/dev/null 2>&1 || die "required tool not found: $t"; done
 if [[ -e "$OUT" ]]; then die "--out $OUT already exists: remove it (or give another --out); a lab built earlier is removed with remove-lab.sh --local $OUT"; fi
+# The tool's key: reused if it is the lab key, created later (after the confirmation) if missing.
+if [[ -e "$TKEY" ]]; then
+  [[ -f "$TKEY.pub" ]] || die "$TKEY exists but $TKEY.pub does not: give --tool-key FILE for another file"
+  [[ "$(awk '{print $NF; exit}' "$TKEY.pub")" == "$TCOMMENT" ]] \
+    || die "$TKEY exists but is not the lab's key (its comment is not $TCOMMENT): give --tool-key FILE for another file"
+  TACT="existing"
+else
+  TACT="new"
+fi
+UNITS=("$HOST"); [[ -n "$PEER" ]] && UNITS+=("$PEER")
 
-# One SSH connection for everything (a password, if needed, is asked for once).
+# One SSH connection per unit for everything (a password, if needed, is asked for once per unit).
 CMD="$(mktemp -d "${TMPDIR:-/tmp}/build-lab.XXXXXXXX")"; chmod 700 "$CMD"
-trap 'ssh -o ControlPath="$CMD/cm" -O exit "$BUSER@$HOST" >/dev/null 2>&1 || true; rm -rf "$CMD"' EXIT
-SSHO=(-p "$PORT" -o ControlMaster=auto -o ControlPath="$CMD/cm" -o ControlPersist=600 -o ConnectTimeout=15 -o LogLevel=ERROR)
+cleanup() {
+  local h
+  for h in "${UNITS[@]}"; do ssh -o ControlPath="$CMD/cm-$h" -O exit "$BUSER@$h" >/dev/null 2>&1 || true; done
+  rm -rf "$CMD"
+}
+trap cleanup EXIT
+SSHO=(-p "$PORT" -o ControlMaster=auto -o ControlPersist=600 -o ConnectTimeout=15 -o LogLevel=ERROR)
 [[ -n "$KEY" ]] && SSHO+=(-i "$KEY" -o IdentitiesOnly=yes)
-f5() { ssh "${SSHO[@]}" "$BUSER@$HOST" "$@"; }
+on() { local h="$1"; shift; ssh "${SSHO[@]}" -o ControlPath="$CMD/cm-$h" "$BUSER@$h" "$@"; }
+f5() { on "$HOST" "$@"; }
 
-info "connecting to $BUSER@$HOST"
-f5 true </dev/null || die "cannot log in to $BUSER@$HOST over SSH"
+# Host keys: pin each unit's in ~/.ssh/known_hosts (as docs/LAB.md does by hand), so the
+# logins below, and f5-cert-push later, know they talk to the real BIG-IP.
+KH="$HM/.ssh/known_hosts"
+mkdir -p "$HM/.ssh"; chmod 700 "$HM/.ssh"
+declare -A HKFP=()
+for h in "${UNITS[@]}"; do
+  kn="$h"; [[ "$PORT" == 22 ]] || kn="[$h]:$PORT"
+  k="$(ssh-keyscan -T 10 -p "$PORT" -t ecdsa "$h" 2>/dev/null | grep -v '^#')" || k=""
+  [[ -n "$k" ]] || die "$h: no answer on TCP $PORT (check the address, and that this machine can reach it); nothing was changed"
+  HKFP[$h]="$(ssh-keygen -lf <(printf '%s\n' "$k") | awk '{print $2; exit}')"
+  blob="$(printf '%s\n' "$k" | awk '{print $3; exit}')"
+  if ssh-keygen -F "$kn" -f "$KH" 2>/dev/null | grep -q ' ecdsa-sha2-'; then
+    ssh-keygen -F "$kn" -f "$KH" 2>/dev/null | grep -qF " $blob" \
+      || die "$h: its host key is not the one in $KH. If the BIG-IP was rebuilt, remove the old entry (ssh-keygen -R $kn) and run this again; otherwise find out why"
+  else
+    printf '%s\n' "$k" >> "$KH"
+    info "pinned the host key of $h (${HKFP[$h]}) in $KH"
+  fi
+done
+
+for h in "${UNITS[@]}"; do
+  info "connecting to $BUSER@$h"
+  on "$h" true </dev/null || die "cannot log in to $BUSER@$h over SSH"
+  own="$(on "$h" 'ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub' </dev/null | awk '{print $2; exit}')" || own=""
+  [[ "$own" == "${HKFP[$h]}" ]] || die "$h: the host key it answers with (${HKFP[$h]}) is not its own key file's (${own:-unreadable}); stop and find out why"
+done
 
 # ---- 1. the BIG-IP --------------------------------------------------------------
 PROBE="$(f5 'bash -s' <<'EOF'
@@ -117,6 +184,18 @@ while IFS='|' read -r tag g t m; do
   [[ -z "$GROUP" ]] || die "$HOST is in several sync-failover groups ($GROUP, $g): this script handles one"
   GROUP="$g"; PEERS="$(printf '%s\n' "${m//,/ }" | tr ' ' '\n' | grep -vx "$SELF" | paste -sd, -)"
 done <<<"$PROBE"
+PFO=""
+if [[ -n "$PEER" ]]; then
+  [[ -n "$GROUP" ]] || die "--peer $PEER given, but $HOST shares no sync-failover device group with another device"
+  pinfo="$(on "$PEER" 'bash -s' <<'EOF'
+printf '%s|%s\n' "$(tmsh -q list cm device one-line 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "self-device" && $(i+1) == "true") { print $3; exit }}')" \
+  "$(tmsh -q show sys failover 2>/dev/null | head -1 | awk '{print tolower($2)}')"
+EOF
+)" || die "cannot read $PEER"
+  PSELF="${pinfo%%|*}"; PFO="${pinfo#*|}"
+  [[ ",$PEERS," == *",$PSELF,"* ]] || die "$PEER is ${PSELF:-unknown}, which is not in device group $GROUP with $HOST ($PEERS)"
+  [[ "$PFO" != active ]] || die "$PEER is active as well as $HOST: check the pair first"
+fi
 GSTAT=""
 if [[ -n "$GROUP" ]]; then
   GSTAT="$(printf '%s\n' "$PROBE" | awk -F'|' -v g="$GROUP" '$1 == "DGSTATUS" && $2 == g {print $3; exit}')"
@@ -150,17 +229,37 @@ done
 echo
 echo "  BIG-IP          $HOST ($SELF), BIG-IP $VER, $FO"
 if [[ -n "$GROUP" ]]; then
-  echo "  HA pair         device group $GROUP with $PEERS: ${GSTAT}$( (( DOSYNC )) || printf ' (NOT synchronised: --no-sync)')"
+  echo "  HA pair         device group $GROUP with $PEERS${PEER:+ ($PEER, $PFO)}: ${GSTAT}$( (( DOSYNC )) || printf ' (NOT synchronised: --no-sync)')"
+  [[ -n "$PEER" ]] || warn "no --peer: the tool's key is authorised on $HOST only (give --peer for the other unit)"
 else
   echo "  HA pair         none (standalone, or no sync-failover group shared with another device)"
 fi
 echo "  virtual servers lab-vs1 ${VS[0]}:443, lab-vs2 ${VS[1]}:443, lab-vs3 ${VS[2]}:443"
+echo "  tool's SSH key  $TKEY ($TACT), authorised for root on ${UNITS[*]}"
 echo "  local files     $OUT"
 echo
 if (( ! YES )); then
   read -r -p "Build the lab on $HOST? [y/N] " a || a=""
-  [[ "$a" == [yY]* ]] || die "cancelled; nothing was changed"
+  [[ "$a" == [yY]* ]] || die "cancelled; nothing was changed (apart from host keys pinned in $KH)"
 fi
+
+# ---- the tool's SSH key ------------------------------------------------------------------
+if [[ "$TACT" == new ]]; then
+  ssh-keygen -q -t ecdsa -b 384 -N '' -C "$TCOMMENT" -f "$TKEY" </dev/null || die "could not create $TKEY"
+  ok "created the tool's key $TKEY"
+fi
+for h in "${UNITS[@]}"; do
+  res="$(on "$h" 'bash -s' -- "$(cat "$TKEY.pub")" <<'EOF'
+f=/var/ssh/root/authorized_keys
+if [ -f "$f" ] && awk -v b="$2" '$2 == b {x = 1} END {exit !x}' "$f"; then echo present; exit 0; fi
+printf '%s\n' "$*" >> "$f" && chmod 600 "$f" && restorecon "$f" && echo added
+EOF
+)" || die "could not authorise the tool's key on $h"
+  if [[ "$res" == added ]]; then ok "authorised the tool's key for root on $h"; else info "the tool's key was already authorised on $h"; fi
+  t="$(ssh -p "$PORT" -i "$TKEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ControlPath=none -o ConnectTimeout=15 -o LogLevel=ERROR \
+        "root@$h" 'tmsh -q show sys failover | head -1' </dev/null)" || die "logging in to $h with the tool's key failed"
+  ok "login with the tool's key works on $h: $t"
+done
 
 # ---- 2. the lab PKI (on this machine) ------------------------------------------------
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
@@ -298,7 +397,19 @@ renewed certificates for the trainee: $R
   wildcard/    star.lab.test.crt, star.lab.test.key, intermediate.crt          (RSA)
   wildcard-ec/ star.lab.test-ecdsa.crt, star.lab.test-ecdsa.key, intermediate.crt (ECDSA)
   bad/         expired, wrong-key, expires-soon (3 days), encrypted-key (passphrase: lab)
-Remove everything:  remove-lab.sh --host $HOST${PEERS:+ --peer OTHER-UNIT-ADDRESS} --local $OUT
+tool's SSH key: $TKEY (authorised for root on ${UNITS[*]})
+Remove everything:  remove-lab.sh --cleanup   (reads $OUT/lab-env.sh; finds both units)
+EOF
+cat > "$OUT/lab-env.sh" <<EOF
+# Sets the addresses docs/LAB.md uses. Load it in each new terminal:  . $OUT/lab-env.sh
+A=$HOST
+B=$PEER
+VS1=${VS[0]}
+VS2=${VS[1]}
+VS3=${VS[2]}
+TOOLKEY=$TKEY
 EOF
 echo
-ok "the lab is ready. Summary in $OUT/lab-info.txt; next: docs/LAB.md, section 3."
+ok "the lab is ready. Summary in $OUT/lab-info.txt"
+echo "    Load the addresses for the guide's commands:  . $OUT/lab-env.sh"
+echo "    Next: docs/LAB.md, section 2."

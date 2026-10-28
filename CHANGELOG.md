@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased (main)
+
+### Lab
+- **`lab/build-lab.sh` sets up the tool's SSH access.** Run without options, it asks for the management IPs of
+  the active and the standby unit, pins both host keys in `~/.ssh/known_hosts` (checked against each unit's own
+  key file), logs in to each unit, creates the tool's key `~/.ssh/f5_push_ecdsa` (or reuses the lab's), authorises
+  it for root on every unit and tests a login with it. `--peer` and `--tool-key` give the same non-interactively.
+  It writes `lab-env.sh` (`A`, `B`, `VS1`-`VS3`) so the guide's commands need no typed addresses.
+- **`lab/remove-lab.sh --cleanup`** (also the default with no options) removes the lab `lab-env.sh` describes:
+  its BIG-IPs, the local lab directory and the tool's lab key, after one confirmation naming both units. The
+  other unit of a pair is now found from the device group (members' management IPs), so a forgotten `--peer`
+  no longer leaves the lab SSH key on the standby.
+- `docs/LAB.md`: section 0 downloads the release; section 1 is the build (SSH included); section 2 explains the
+  SSH steps and where each runs; a network diagram with documentation-range example addresses.
+
 ## 2.2.2
 
 ### Hands-on lab

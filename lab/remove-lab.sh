@@ -15,16 +15,24 @@
 #     - with --remove-stale: f5-cert-push staging directories older than 2 hours, and a
 #       f5-cert-push lock on the BIG-IP (only use it when no f5-cert-push run is going on)
 #   on this machine, with --local DIR: the lab directory build-lab.sh made
+#   on this machine, with --cleanup: also the lab directory and the tool's lab SSH key
 #
+# The other units of the pair are found by themselves: the device group's members and
+# their management addresses are read from the BIG-IP (--peer adds or overrides them).
 # It reports, and leaves alone, anything outside the lab that still uses a lab item
 # (for example a lab certificate attached to one of your own profiles).
 #
+#   ./remove-lab.sh                       (= --cleanup: the lab build-lab.sh made here)
+#   ./remove-lab.sh --cleanup [--dry-run]
 #   ./remove-lab.sh --host 192.0.2.10 [--peer 192.0.2.11] [--key FILE] [--dry-run]
 #
 # Options:
-#   --host H        a unit of the BIG-IP / pair (if it is the standby and --peer is the
-#                   active unit, they are swapped)                        (required)
-#   --peer H        the other unit(s) of the pair (repeatable): their files are cleaned too
+#   --cleanup       remove the lab described by ~/f5-cert-push-lab/lab-env.sh (written by
+#                   build-lab.sh): its BIG-IP(s), that directory, and the tool's lab key
+#                   (~/.ssh/f5_push_ecdsa); asks for the active unit if the file is gone
+#   --host H        a unit of the BIG-IP / pair (if it is the standby, the active unit
+#                   is found among the other units)
+#   --peer H        another unit of the pair (repeatable); normally found by itself
 #   --user U        SSH user (default root)       --port P   SSH port (default 22)
 #   --key FILE      SSH private key
 #   --prefix P      lab object prefix (default lab)
@@ -39,7 +47,9 @@
 set -euo pipefail
 
 VERSION="2.2.2"
+HM="${HOME:-$(cd ~ 2>/dev/null && pwd || echo .)}"
 HOST="" PORT=22 BUSER=root KEY="" PREFIX=lab KCOMMENT="f5-cert-push-lab" FORCESYNC=0 STALE=0 LOCAL="" DRY=0 YES=0
+CLEANUP=0 TOOLKEY=""
 declare -a PEERS=()
 
 die()  { printf 'remove-lab: %s\n' "$*" >&2; exit 1; }
@@ -50,6 +60,7 @@ usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit "
 
 while (( $# )); do
   case "$1" in
+    --cleanup) CLEANUP=1; shift ;;
     --host) HOST="${2:?}"; shift 2 ;;
     --peer) PEERS+=("${2:?}"); shift 2 ;;
     --user) BUSER="${2:?}"; shift 2 ;;
@@ -67,7 +78,27 @@ while (( $# )); do
     *) die "unknown option: $1 (see --help)" ;;
   esac
 done
-[[ -n "$HOST" ]] || { warn "--host is required"; usage 1; }
+[[ -n "$HOST" ]] || CLEANUP=1
+if (( CLEANUP )); then
+  # The lab build-lab.sh made on this machine: its addresses are in lab-env.sh.
+  LDIR="${LOCAL:-$HM/f5-cert-push-lab}"; ENVF="$LDIR/lab-env.sh"
+  if [[ -f "$ENVF" ]]; then
+    ev() { sed -n "s|^$1=\([A-Za-z0-9.:_/-]*\)\$|\1|p" "$ENVF" | head -1; }
+    [[ -n "$HOST" ]] || HOST="$(ev A)"
+    b="$(ev B)"; [[ -n "$b" && "$b" != "$HOST" ]] && PEERS+=("$b")
+    TOOLKEY="$(ev TOOLKEY)"
+    [[ -n "$HOST" ]] && info "the lab in $LDIR: ${HOST}${b:+ and $b}"
+  fi
+  if [[ -z "$HOST" ]]; then
+    (( ! YES )) || die "no $ENVF: give --host with --yes"
+    read -r -p "Management IP of the BIG-IP the lab is on (the active unit): " HOST || HOST=""
+    [[ -n "$HOST" ]] || die "no address given; nothing was changed"
+  fi
+  [[ -f "$LDIR/lab-info.txt" ]] && LOCAL="$LDIR"
+  [[ -n "$TOOLKEY" ]] || TOOLKEY="$HM/.ssh/f5_push_ecdsa"
+  # only the lab's own key, never another one with the same file name
+  [[ -f "$TOOLKEY.pub" && "$(awk '{print $NF; exit}' "$TOOLKEY.pub")" == "$KCOMMENT" ]] || TOOLKEY=""
+fi
 for h in "$HOST" ${PEERS[@]+"${PEERS[@]}"}; do [[ "$h" =~ ^[A-Za-z0-9][A-Za-z0-9.:_-]*$ ]] || die "not a host name or address: $h"; done
 [[ "$PREFIX" =~ ^[A-Za-z0-9][A-Za-z0-9_]{0,15}$ ]] || die "--prefix: letters, digits and _ only"
 [[ -z "$KCOMMENT" || "$KCOMMENT" =~ ^[A-Za-z0-9][A-Za-z0-9@._-]{2,63}$ ]] || die "--key-comment: letters, digits and @ . _ - only"
@@ -86,6 +117,31 @@ on() {   # on HOST COMMAND...   (one SSH connection per unit)
 }
 [[ -z "$LOCAL" || -f "$LOCAL/lab-info.txt" ]] || die "--local $LOCAL: not a lab directory (no lab-info.txt); nothing was changed"
 for h in "${ALL[@]}"; do on "$h" true </dev/null || die "cannot log in to $BUSER@$h over SSH"; done
+
+# The other units of the pair, from the BIG-IP itself: sync-failover group members and
+# their management addresses (so their files are cleaned even without --peer).
+FOUND="$(on "$HOST" 'bash -s' <<'EOF' || true
+self="$(tmsh -q list cm device one-line 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "self-device" && $(i+1) == "true") { print $3; exit }}')"
+for g in $(tmsh -q list cm device-group one-line 2>/dev/null | awk '$1 == "cm" && $2 == "device-group" {print $3}'); do
+  tmsh -q list cm device-group "$g" devices type 2>/dev/null | awk -v S="$self" '
+    $1 == "type" { t = $2 }
+    /^    devices \{/ { d = 1; next }
+    d && /^    \}/ { d = 0; next }
+    d && /^        [^ ]+ \{ \}$/ { m[++n] = $1 }
+    END { if (t != "sync-failover") exit; for (i = 1; i <= n; i++) if (m[i] == S) f = 1
+          if (f && n > 1) for (i = 1; i <= n; i++) if (m[i] != S) print m[i] }'
+done | sort -u | while read -r d; do
+  echo "PEER|$d|$(tmsh -q list cm device "$d" management-ip 2>/dev/null | awk '$1 == "management-ip" {print $2; exit}')"
+done
+EOF
+)"
+while IFS='|' read -r tag dev ip; do
+  [[ "$tag" == PEER && -n "$ip" ]] || continue
+  [[ " ${ALL[*]} " == *" $ip "* ]] && continue
+  info "found the other unit of the pair: $dev ($ip)"
+  if on "$ip" true </dev/null; then PEERS+=("$ip"); ALL+=("$ip")
+  else warn "cannot log in to $BUSER@$ip ($dev): its files are not cleaned; give it with --peer if it has another address"; fi
+done <<<"$FOUND"
 
 state() { on "$1" "tmsh -q show sys failover 2>/dev/null | head -1 | awk '{print tolower(\$2)}'" </dev/null; }
 ACTIVE="$HOST"
@@ -199,15 +255,20 @@ fi
 if [[ -n "$LOCAL" ]]; then
   echo "  local: $LOCAL (the lab directory)"
 fi
+if [[ -n "$TOOLKEY" ]]; then
+  echo "  local: $TOOLKEY and .pub (the tool's lab SSH key)"
+fi
 
 TOTAL=$(( $(count "$INV" VS) + $(count "$INV" PROFILE) + $(count "$INV" CERT) + $(count "$INV" KEY) ))
 NF=$(printf '%s\n' "$FILES" | grep -cE '^(BACKUP|SSHKEY)\|' || true)
 (( STALE )) && NF=$(( NF + $(printf '%s\n' "$FILES" | grep -cE '^(STAGE|LOCK)\|' || true) ))
 echo
-if (( TOTAL == 0 && NF == 0 && PEERCFG == 0 )) && [[ -z "$LOCAL" ]]; then ok "no lab items found: nothing to do"; exit 0; fi
+if (( TOTAL == 0 && NF == 0 && PEERCFG == 0 )) && [[ -z "$LOCAL$TOOLKEY" ]]; then ok "no lab items found: nothing to do"; exit 0; fi
 if (( DRY )); then info "dry run: nothing was changed"; exit 0; fi
 if (( ! YES )); then
-  read -r -p "Remove these lab items? [y/N] " a || a=""
+  if (( ${#ALL[@]} > 1 )); then where="both BIG-IPs (${ALL[*]})"; (( ${#ALL[@]} > 2 )) && where="all ${#ALL[@]} BIG-IPs (${ALL[*]})"
+  else where="the BIG-IP $HOST"; fi
+  read -r -p "Remove these lab items from $where${LOCAL:+ and this machine}? [y/N] " a || a=""
   [[ "$a" == [yY]* ]] || die "cancelled; nothing was changed"
 fi
 
@@ -273,6 +334,7 @@ for h in "${ALL[@]}"; do
   c="$(files_on "$h" | grep -cE '^(BACKUP|SSHKEY)\|' || true)"; fl=$((fl + c))
 done
 if [[ -n "$LOCAL" ]]; then rm -rf -- "$LOCAL" && ok "removed the local lab directory $LOCAL"; fi
+if [[ -n "$TOOLKEY" ]]; then rm -f -- "$TOOLKEY" "$TOOLKEY.pub" && ok "removed the tool's lab SSH key $TOOLKEY"; fi
 if (( ${left:-1} == 0 && fl == 0 && pl == 0 )); then
   ok "all lab items are gone"
 elif (( ${left:-1} == 0 && fl == 0 )); then

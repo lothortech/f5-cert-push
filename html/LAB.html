@@ -73,12 +73,12 @@ them is a real address. Use your own in their place:</p>
 <tr>
 <td><code>192.0.2.10</code></td>
 <td>management IP of the <strong>active</strong> BIG-IP (<code>f5a</code>)</td>
-<td><code>--host</code> for the lab scripts, <code>A=</code> in section 1, <code>host =</code> in the configuration</td>
+<td>what you give <code>build-lab.sh</code> first; <code>A</code> in <code>lab-env.sh</code> (section 1), <code>host =</code> in the configuration</td>
 </tr>
 <tr>
 <td><code>192.0.2.11</code></td>
 <td>management IP of the <strong>standby</strong> BIG-IP (<code>f5b</code>; none for a standalone BIG-IP)</td>
-<td><code>--peer</code> for <code>remove-lab.sh</code>, <code>B=</code> in section 1</td>
+<td>what you give <code>build-lab.sh</code> second; <code>B</code> in <code>lab-env.sh</code> (<code>remove-lab.sh --cleanup</code> reads it)</td>
 </tr>
 <tr>
 <td><code>198.51.100.0/24</code></td>
@@ -88,7 +88,7 @@ them is a real address. Use your own in their place:</p>
 <tr>
 <td><code>198.51.100.201</code>-<code>.203</code></td>
 <td>the lab virtual servers <code>lab-vs1</code>-<code>lab-vs3</code> (port 443)</td>
-<td><code>VS1=</code>-<code>VS3=</code> in section 2; <code>build-lab.sh</code> picks them and writes them to <code>lab-info.txt</code></td>
+<td><code>VS1</code>-<code>VS3</code> in <code>lab-env.sh</code>; <code>build-lab.sh</code> picks them and writes them to <code>lab-info.txt</code></td>
 </tr>
 </tbody>
 </table>
@@ -112,12 +112,12 @@ and if that is an internal one, answer <code>n</code> and run it again with <cod
 <tbody>
 <tr>
 <td><code>build-lab.sh</code></td>
-<td>Builds the lab on a BIG-IP or HA pair (section 2)</td>
+<td>Builds the lab on a BIG-IP or HA pair, and sets up the tool's SSH key (section 1)</td>
 <td><a href="../lab/build-lab.sh" download>from this copy</a> · <a href="https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.2/lab/build-lab.sh" download>from GitHub</a></td>
 </tr>
 <tr>
 <td><code>remove-lab.sh</code></td>
-<td>Removes every lab item, at any point (section 16)</td>
+<td>Removes every lab item from both units and this machine, at any point: <code>--cleanup</code> (section 16)</td>
 <td><a href="../lab/remove-lab.sh" download>from this copy</a> · <a href="https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.2.2/lab/remove-lab.sh" download>from GitHub</a></td>
 </tr>
 </tbody>
@@ -159,97 +159,92 @@ cd ~/f5-cert-push &amp;&amp; find . -name '*.sh' -exec chmod +x {} +
 </code></pre>
 <p>You now have <code>f5-cert-push.sh</code> and <code>f5-cert-install.sh</code> (the tool), <code>lab/</code> (the two lab scripts), <code>docs/</code> and
 <code>html/</code> (this guide and the rest), <code>examples/</code>, <code>tests/</code>, and <code>f5-cert-push.conf.example</code>.</p>
-<h2 id="1-create-the-tools-ssh-key-and-authorise-it-on-every-unit">1. Create the tool's SSH key and authorise it on every unit</h2>
+<h2 id="1-build-the-lab-it-also-sets-up-the-tools-ssh-access">1. Build the lab (it also sets up the tool's SSH access)</h2>
 <p>You need a Linux machine (bash 4.2+, <code>openssl</code>, <code>ssh</code>, <code>tar</code>; OpenSSL 1.1 or newer for this lab) that can reach
-the BIG-IP management addresses on TCP 22, with <strong>root SSH access to the BIG-IP</strong> (a key, or the root password).
-That is your own access; the tool gets a key of its own, which is what this section makes.</p>
-<blockquote>
-<p><strong>Where each command runs.</strong> The key pair is created on the <strong>Linux machine</strong> that runs f5-cert-push, never on
-the BIG-IP; the private key stays there. Only the one-line <strong>public</strong> key (<code>.pub</code>) is added on each BIG-IP.
-Each command block below says where to run it.</p>
-</blockquote>
-<p><strong>Create the tool's key</strong> first (ECDSA: BIG-IP refuses ed25519). The comment <code>f5-cert-push-lab</code> lets <code>remove-lab.sh</code>
-remove it from the BIG-IP at the end; in production use your own. <strong>Run on: the Linux machine</strong>, as the user you
-run the lab as:</p>
-<pre><code class="language-bash">mkdir -p ~/.ssh &amp;&amp; chmod 700 ~/.ssh
-ssh-keygen -t ecdsa -b 384 -N '' -C f5-cert-push-lab -f ~/.ssh/f5_push_ecdsa
-</code></pre>
-<p><strong>Set your BIG-IP addresses</strong> for the commands in this guide: the management IPs of the active (<code>A</code>) and the
-standby (<code>B</code>) unit; for a standalone BIG-IP, only <code>A</code>. <strong>Replace each <code>&lt;...&gt;</code> placeholder, brackets included, with
-your address</strong>, for example <code>A=192.0.2.10; B=192.0.2.11</code> (see <a href="#the-lab-network">the lab network</a>). <strong>Run on: the
-Linux machine</strong>, in the same shell you use for the rest of the lab (variables do not carry over to a new terminal):</p>
-<pre><code class="language-bash">A=&lt;IP of the active BIG-IP&gt;; B=&lt;IP of the standby BIG-IP&gt;
-echo &quot;A=$A B=$B&quot;
-</code></pre>
-<p>(Run as it stands, with the placeholders still in, the first line stops with a <code>syntax error</code>: nothing is set.)</p>
-<p><strong>Pin each unit's host key.</strong> This is a different key: the one the <strong>BIG-IP</strong> shows to prove who it is, so this
-machine (and later the tool) knows it is talking to the real BIG-IP. Do it before authorising your key, so the
-next step does not stop to ask whether to trust each unit. (The <code>ssh-keygen -lf</code> in it only prints a fingerprint;
-it creates nothing.) <strong>Run on: the Linux machine</strong>:</p>
-<pre><code class="language-bash">for h in $A $B; do k=&quot;$(ssh-keyscan -T 5 -t ecdsa &quot;$h&quot; 2&gt;/dev/null)&quot;; if [ -n &quot;$k&quot; ]; then echo &quot;$k&quot; &gt;&gt; ~/.ssh/known_hosts; ssh-keygen -lf &lt;(echo &quot;$k&quot;); else echo &quot;$h: no answer on TCP 22: check the address (echo \$A \$B) and that this machine can reach it&quot;; fi; done
-</code></pre>
-<p>Each unit prints a line like <code>256 SHA256:gffA... 192.0.2.10 (ECDSA)</code>. If a unit prints <strong>no answer on TCP 22</strong>,
-nothing was saved for it: check <code>echo $A $B</code> (still the example addresses?), and that this machine reaches the
-management address on TCP 22 (<code>ssh root@$A</code>, firewalls, the BIG-IP's SSH IP Allow list), then run it again.</p>
-<p>Compare each with the fingerprint the BIG-IP itself shows. <strong>Run on: each BIG-IP</strong>, as root, in bash (from the
-Linux machine <code>ssh root@$A</code>, then <code>ssh root@$B</code>; at a <code>(tmos)#</code> prompt type <code>bash</code> first):</p>
-<pre><code class="language-bash">ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub
-</code></pre>
-<p>They must be identical. Log out of the BIG-IP again.</p>
-<p><strong>Authorise the public key on each unit</strong> (keys are not part of what an HA pair synchronises). This loop logs in
-to each unit with your own root access (it asks for the root password if you have no key for root) and appends
-the key there. <strong>Run on: the Linux machine</strong>:</p>
-<pre><code class="language-bash">for h in $A $B; do ssh root@$h 'cat &gt;&gt; /var/ssh/root/authorized_keys &amp;&amp; chmod 600 /var/ssh/root/authorized_keys &amp;&amp; restorecon /var/ssh/root/authorized_keys' &lt; ~/.ssh/f5_push_ecdsa.pub; done
-</code></pre>
-<p>(Or paste the <code>.pub</code> line on each BIG-IP yourself, as root: User guide, section 4.)</p>
-<p><strong>Test the login exactly as the tool makes it.</strong> <strong>Run on: the Linux machine</strong>:</p>
-<pre><code class="language-bash">for h in $A $B; do ssh -i ~/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes -o BatchMode=yes root@$h 'uname -n; tmsh show sys failover | head -1'; done
-</code></pre>
-<p>No password prompt; one unit says active, the other standby.</p>
-<h2 id="2-build-the-lab">2. Build the lab</h2>
-<p>You need three unused addresses for the lab's virtual servers. By default the script picks <code>.201</code>-<code>.203</code> (or the
-next free ones) in the subnet of the BIG-IP's first IPv4 <code>/24</code> self IP; give <code>--vs-ips A,B,C</code> otherwise.</p>
-<p>From the folder you downloaded in section 0, build the lab against the <strong>active</strong> unit (<code>$A</code>, set in section 1).
-<strong>Run on: the Linux machine</strong>:</p>
+the BIG-IP management addresses on TCP 22, with <strong>root SSH access to the BIG-IP</strong> (a key, or the root password),
+and three unused addresses for the lab's virtual servers. By default the script picks <code>.201</code>-<code>.203</code> (or the next
+free ones) in the subnet of the BIG-IP's first IPv4 <code>/24</code> self IP; give <code>--vs-ips A,B,C</code> otherwise.</p>
+<p>From the folder you downloaded in section 0. <strong>Run on: the Linux machine</strong>:</p>
 <pre><code class="language-bash">cd ~/f5-cert-push
-./lab/build-lab.sh --host $A
+./lab/build-lab.sh
 </code></pre>
-<p>It logs in with <strong>your own</strong> root access (the root password is asked at most once; add <code>--key FILE</code> if that
-access uses a specific key), not with the tool's key from section 1. It checks the BIG-IP (active, configuration
-loaded, no lab items yet; for a pair, In Sync), shows the plan and asks before changing anything. Then it:</p>
+<p>It asks for the <strong>management IP of the active BIG-IP</strong>, then of the <strong>standby</strong> one (press Enter for a standalone
+BIG-IP), and logs in to each with <strong>your own</strong> root access: with a password, you type it once per unit (an HA
+pair synchronises the root password, so it is the same on both). Add <code>--key FILE</code> if that access uses a specific
+key. It checks the BIG-IPs (active and standby, configuration loaded, no lab items yet; for a pair, In Sync),
+shows the plan and asks before changing anything. Then it:</p>
 <table>
 <thead>
 <tr>
-<th>Creates</th>
+<th>Does</th>
 <th></th>
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>SSH, on this machine</td>
+<td>pins each unit's <strong>host key</strong> in <code>~/.ssh/known_hosts</code> (after checking it against the unit's own key file), and creates the <strong>tool's key</strong> <code>~/.ssh/f5_push_ecdsa</code> (comment <code>f5-cert-push-lab</code>; an existing lab key is reused)</td>
+</tr>
+<tr>
+<td>SSH, on each BIG-IP</td>
+<td>authorises the tool's public key for root in <code>/var/ssh/root/authorized_keys</code>, then tests a login with it</td>
+</tr>
 <tr>
 <td>on the BIG-IP</td>
 <td><code>lab-vs1</code>, <code>lab-vs2</code>, <code>lab-vs3</code> (port 443) using the client-ssl profiles <code>lab-app1-clientssl</code>, <code>lab-app2-clientssl</code> and <code>lab-wild-clientssl</code>; the last holds <strong>two</strong> certificates, an RSA (<code>rsa</code> entry) and an ECDSA (<code>ecdsa</code> entry) one for <code>*.lab.test</code>. Plus <code>lab-spare.crt</code> and <code>lab-legacy.crt</code>, used by no profile. Today's certificates expire in 60 days. For a pair, the device group is synchronised.</td>
 </tr>
 <tr>
 <td>on this machine</td>
-<td><code>~/f5-cert-push-lab/</code>: the lab CA, <code>lab-info.txt</code> (addresses and names), and <code>received/</code>: the <strong>renewed</strong> certificates, as a CA sends them (<code>received/app1/app1.lab.test.crt</code> + <code>.key</code> + <code>intermediate.crt</code>, <code>received/app2/app2.lab.test.pfx</code>, ...), and some bad ones in <code>received/bad/</code>.</td>
+<td><code>~/f5-cert-push-lab/</code>: the lab CA, <code>lab-info.txt</code> (addresses and names), <code>lab-env.sh</code> (the addresses for this guide's commands), and <code>received/</code>: the <strong>renewed</strong> certificates, as a CA sends them (<code>received/app1/app1.lab.test.crt</code> + <code>.key</code> + <code>intermediate.crt</code>, <code>received/app2/app2.lab.test.pfx</code>, ...), and some bad ones in <code>received/bad/</code>.</td>
 </tr>
 </tbody>
 </table>
 <p>It makes <strong>no</strong> f5-cert-push configuration or folders: that is what the rest of the lab is for.</p>
-<pre><code class="language-bash">cat ~/f5-cert-push-lab/lab-info.txt
+<p><strong>Load the addresses</strong> the rest of this guide uses (<code>A</code>, <code>B</code>, <code>VS1</code>-<code>VS3</code>), and look at the summary. Do this again
+in every new terminal. <strong>Run on: the Linux machine</strong>:</p>
+<pre><code class="language-bash">. ~/f5-cert-push-lab/lab-env.sh
+echo &quot;A=$A B=$B VS1=$VS1 VS2=$VS2 VS3=$VS3&quot;
+cat ~/f5-cert-push-lab/lab-info.txt
 </code></pre>
-<p><strong>Set these for the commands below</strong>: the lab's virtual server addresses, read from <code>lab-info.txt</code> (nothing to
-type):</p>
-<pre><code class="language-bash">VS1=$(grep -o 'lab-vs1 [0-9.]*' ~/f5-cert-push-lab/lab-info.txt | cut -d' ' -f2)
-VS2=$(grep -o 'lab-vs2 [0-9.]*' ~/f5-cert-push-lab/lab-info.txt | cut -d' ' -f2)
-VS3=$(grep -o 'lab-vs3 [0-9.]*' ~/f5-cert-push-lab/lab-info.txt | cut -d' ' -f2)
-echo &quot;VS1=$VS1 VS2=$VS2 VS3=$VS3&quot;
+<h2 id="2-the-tools-ssh-access-what-the-script-did-for-you">2. The tool's SSH access: what the script did for you</h2>
+<p>f5-cert-push does all its work over SSH: it logs in to each BIG-IP's management address as <strong>root</strong>, with a key
+of its own. The build set that up; in production you do it by hand, once (User guide, sections 3-4, or Setup
+guide, section 5). The steps, and where each runs:</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Runs on</th>
+<th>By hand it is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pin each unit's <strong>host key</strong>: the BIG-IP's own key, which proves it is the real BIG-IP</td>
+<td>Linux machine (compare on the BIG-IP)</td>
+<td><code>ssh-keyscan -t ecdsa $A &gt;&gt; ~/.ssh/known_hosts</code>; on the BIG-IP <code>ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub</code> shows the fingerprint to compare</td>
+</tr>
+<tr>
+<td>Create <strong>the tool's key</strong>, never on the BIG-IP</td>
+<td>Linux machine</td>
+<td><code>ssh-keygen -t ecdsa -b 384 -N '' -C f5-cert-push-lab -f ~/.ssh/f5_push_ecdsa</code> (ECDSA: BIG-IP refuses ed25519)</td>
+</tr>
+<tr>
+<td>Authorise its <strong>public</strong> half on <strong>each</strong> unit (this file is not synchronised by an HA pair)</td>
+<td>each BIG-IP, as root</td>
+<td>append the <code>.pub</code> line to <code>/var/ssh/root/authorized_keys</code>, then <code>chmod 600</code> and <code>restorecon</code> that file</td>
+</tr>
+</tbody>
+</table>
+<p>Try the login exactly as the tool will make it: no password prompt, and one unit says active, the other standby.
+<strong>Run on: the Linux machine</strong>:</p>
+<pre><code class="language-bash">for h in $A $B; do ssh -i ~/.ssh/f5_push_ecdsa -o IdentitiesOnly=yes -o BatchMode=yes root@$h 'uname -n; tmsh show sys failover | head -1'; done
 </code></pre>
-<p>The <code>echo</code> shows the three addresses <code>lab-info.txt</code> lists (<code>198.51.100.201</code>-<code>.203</code> in this guide's example).</p>
+<p>The comment <code>f5-cert-push-lab</code> is how <code>remove-lab.sh</code> finds the key on each unit again at the end (section 16).</p>
 <h2 id="3-read-the-documentation-first-2-minutes">3. Read the documentation first (2 minutes)</h2>
 <p><code>~/f5-cert-push/html/index.html</code> is the documentation as web pages (copy the <code>html/</code> folder to your desktop
-and open it). Sections 5-6 of the <strong>User guide</strong> are what you do next (its sections 3-4, the SSH key, you
-did in section 1).</p>
+and open it). Sections 5-6 of the <strong>User guide</strong> are what you do next (its sections 3-4, the SSH key, the build did
+for you: section 2).</p>
 <h2 id="4-save-the-certificate-files-you-were-sent">4. Save the certificate files you were sent</h2>
 <p>The tool wants three PEM files per certificate: the certificate, the chain (intermediates) and the private key.
 Make one folder per certificate, private to you:</p>
@@ -399,22 +394,31 @@ ssh -i ~/.ssh/f5_push_ecdsa root@$B 'tmsh run sys failover standby'
 <h2 id="16-remove-the-lab">16. Remove the lab</h2>
 <p><code>remove-lab.sh</code> finds and removes every lab item, whoever created it: the lab virtual servers, profiles,
 certificates and keys (including every version the tool installed), the backup sets on each unit, and the
-<code>f5-cert-push-lab</code> SSH key; then it synchronises the pair. It works at any point of the lab. Look first, then remove:</p>
-<pre><code class="language-bash">./lab/remove-lab.sh --host $A --peer $B --dry-run
-./lab/remove-lab.sh --host $A --peer $B --local ~/f5-cert-push-lab
+<code>f5-cert-push-lab</code> SSH key on each unit; then it synchronises the pair. With <code>--cleanup</code> it reads the addresses
+from <code>~/f5-cert-push-lab/lab-env.sh</code> (nothing to type), finds the other unit of the pair by itself, and also
+deletes, on this machine, the lab directory and the tool's lab key <code>~/.ssh/f5_push_ecdsa</code>. It works at any point
+of the lab. Look first, then remove: it lists what it found on each BIG-IP and asks before it changes anything.
+<strong>Run on: the Linux machine</strong>:</p>
+<pre><code class="language-bash">cd ~/f5-cert-push
+./lab/remove-lab.sh --cleanup --dry-run
+./lab/remove-lab.sh --cleanup
 </code></pre>
-<p>(Standalone: leave out <code>--peer</code>. If the lab was left failed over, it finds the active unit itself.) It reports,
-and leaves alone, anything of yours that uses a lab item. If the pair was not In Sync before the removal, it does
-not synchronise (that would publish other pending changes): the other unit then keeps its copy of the lab, and the
-script says so and exits 1. Check what else is pending, then rerun with <code>--sync</code> (or sync the pair yourself).</p>
+<p>It asks <code>Remove these lab items from both BIG-IPs (...) and this machine? [y/N]</code> (one BIG-IP for a standalone
+lab). If the lab directory is already gone, it asks for the active unit's address instead. If the lab was left
+failed over, it finds the active unit itself. It reports, and leaves alone, anything of yours that uses a lab
+item. If the pair was not In Sync before the removal, it does not synchronise (that would publish other pending
+changes): the other unit then keeps its copy of the lab, and the script says so and exits 1. Check what else is
+pending, then rerun with <code>--sync</code> (or sync the pair yourself).</p>
 <p>If you quit half way, the same two commands clean up whatever you got to: the deployments you made, their
 backups, a lock left by an interrupted run (add <code>--remove-stale</code>, when no f5-cert-push run is going on), and a
 lab left failed over or out of sync.</p>
-<p>Then remove what you made on this machine:</p>
-<pre><code class="language-bash">cd ~ &amp;&amp; rm -rf ~/f5-cert-push ~/certs ~/.ssh/f5_push_ecdsa ~/.ssh/f5_push_ecdsa.pub
+<p>Then remove the rest of what you made on this machine: the download, the certificate folders, and (optional) the
+BIG-IPs' host keys the build pinned:</p>
+<pre><code class="language-bash">cd ~ &amp;&amp; rm -rf ~/f5-cert-push ~/certs
 for h in $A $B; do ssh-keygen -R $h; done
 </code></pre>
-<p>(<code>ssh-keygen -R</code> also forgets the BIG-IPs' host keys for your own logins; skip it if you use them otherwise.)</p>
+<p>(<code>ssh-keygen -R</code> also forgets the BIG-IPs' host keys for your own logins; skip it if you use them otherwise. In a
+new terminal <code>A</code> and <code>B</code> are not set: give the addresses instead.)</p>
 <p>To run the lab again, start at section 0 (the line above removed the download too).</p><footer>Generated from <code>docs/LAB.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
 document.querySelectorAll('pre').forEach(function(p){
   if(!navigator.clipboard){return}
