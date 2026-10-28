@@ -127,8 +127,13 @@ A=192.0.2.10; B=192.0.2.11
 prints each unit's fingerprint. **Run on: the Linux machine**:
 
 ```bash
-for h in $A $B; do ssh-keyscan -t ecdsa $h 2>/dev/null >> ~/.ssh/known_hosts; ssh-keygen -lf <(ssh-keyscan -t ecdsa $h 2>/dev/null); done
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+for h in $A $B; do k="$(ssh-keyscan -T 5 -t ecdsa "$h" 2>/dev/null)"; if [ -n "$k" ]; then echo "$k" >> ~/.ssh/known_hosts; ssh-keygen -lf <(echo "$k"); else echo "$h: no answer on TCP 22: check the address (echo \$A \$B) and that this machine can reach it"; fi; done
 ```
+
+Each unit prints a line like `256 SHA256:gffA... 192.0.2.10 (ECDSA)`. If a unit prints **no answer on TCP 22**,
+nothing was saved for it: check `echo $A $B` (still the example addresses?), and that this machine reaches the
+management address on TCP 22 (`ssh root@$A`, firewalls, the BIG-IP's SSH IP Allow list), then run it again.
 
 Compare each with the fingerprint the BIG-IP itself shows. **Run on: each BIG-IP**, as root, in bash (from the
 Linux machine `ssh root@$A`, then `ssh root@$B`; at a `(tmos)#` prompt type `bash` first):

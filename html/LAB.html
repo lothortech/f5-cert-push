@@ -175,8 +175,12 @@ standby (<code>B</code>) unit; for a standalone BIG-IP, only <code>A</code> (see
 </code></pre>
 <p><strong>Pin each unit's host key</strong>, so this machine (and later the tool) knows it is talking to the real BIG-IP. It
 prints each unit's fingerprint. <strong>Run on: the Linux machine</strong>:</p>
-<pre><code class="language-bash">for h in $A $B; do ssh-keyscan -t ecdsa $h 2&gt;/dev/null &gt;&gt; ~/.ssh/known_hosts; ssh-keygen -lf &lt;(ssh-keyscan -t ecdsa $h 2&gt;/dev/null); done
+<pre><code class="language-bash">mkdir -p ~/.ssh &amp;&amp; chmod 700 ~/.ssh
+for h in $A $B; do k=&quot;$(ssh-keyscan -T 5 -t ecdsa &quot;$h&quot; 2&gt;/dev/null)&quot;; if [ -n &quot;$k&quot; ]; then echo &quot;$k&quot; &gt;&gt; ~/.ssh/known_hosts; ssh-keygen -lf &lt;(echo &quot;$k&quot;); else echo &quot;$h: no answer on TCP 22: check the address (echo \$A \$B) and that this machine can reach it&quot;; fi; done
 </code></pre>
+<p>Each unit prints a line like <code>256 SHA256:gffA... 192.0.2.10 (ECDSA)</code>. If a unit prints <strong>no answer on TCP 22</strong>,
+nothing was saved for it: check <code>echo $A $B</code> (still the example addresses?), and that this machine reaches the
+management address on TCP 22 (<code>ssh root@$A</code>, firewalls, the BIG-IP's SSH IP Allow list), then run it again.</p>
 <p>Compare each with the fingerprint the BIG-IP itself shows. <strong>Run on: each BIG-IP</strong>, as root, in bash (from the
 Linux machine <code>ssh root@$A</code>, then <code>ssh root@$B</code>; at a <code>(tmos)#</code> prompt type <code>bash</code> first):</p>
 <pre><code class="language-bash">ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub

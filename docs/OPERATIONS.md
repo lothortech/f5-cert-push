@@ -376,6 +376,7 @@ a record of its own.
 | You see | Cause and fix |
 |---|---|
 | `Permission denied (publickey...)` | The BIG-IP did not accept the key. Check in this order: the key is in `/var/ssh/root/authorized_keys`; that file has label `ssh_home_t` (`restorecon -v`); the key type is allowed (`grep PubkeyAcceptedKeyTypes /config/ssh/sshd_config`, use ECDSA); you are offering the right key (`ssh_key`). |
+| `/dev/fd/63 is not a public key file` (from `ssh-keygen -lf <(ssh-keyscan ...)`) | `ssh-keyscan` got no answer, so there was nothing to fingerprint: wrong address (an example address left in, or an empty variable), or TCP 22 to the management address is blocked. Run `ssh-keyscan -t ecdsa ADDRESS` alone to see. |
 | `Host key verification failed` | The BIG-IP's host key is not in known_hosts (or changed). Pin it (section 1.3). If it **changed unexpectedly**, stop and find out why. |
 | `refusing to use ... writable by group or others` | `chmod 600` the config file. |
 | `the BIG-IP configuration is not fully loaded (phase ..., last load ...)` | The BIG-IP is mid-restart or its config failed to load (for example after a license change). Fix that first. The tool will not change a BIG-IP in that state. |
