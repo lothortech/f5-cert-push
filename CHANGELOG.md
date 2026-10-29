@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.3.1
+
+From running the complete lab as written on 2.3.0, and a second adversarial review of the scripts and the
+documentation.
+
+### Tool
+- **The commands it prints can be copied and run as they are.** "done; rollback with: ...", the restore
+  commands in a failure message and the `--write-config` hint used to start with `f5-cert-push` (not a command
+  anyone has) and a relative `--config` path. They now give the script's absolute path and the configuration's
+  absolute path, shell-quoted, so the rollback command works from any folder and from cron mail. "Try: ...
+  --help" likewise.
+
+### Lab
+- `build-lab.sh`: if a build stops after it has started changing the BIG-IPs (an SSH failure, a full disk),
+  it now says how to remove what it made (`./lab/remove-lab.sh --host ... --peer ...`). Before, the lab
+  directory with `lab-env.sh` did not exist yet, so `--cleanup` could not find the BIG-IPs by itself.
+- `LAB.md` warns that `remove-lab.sh` removes **everything** named `lab-*`, whoever made it, so the lab must not
+  be used on a BIG-IP with objects of your own named like that (`build-lab.sh` refuses to start on one);
+  explains the standby's "N lab configuration item(s)" line in the removal list and the several lines
+  `ssh-keygen -R` reports.
+- `build-lab.sh` code tidy-ups (`printf` formats), no change in behaviour.
+
+### Documentation
+- **README: the certbot hook example had a comment line above `#!/usr/bin/env bash`**, so the copied file had no
+  valid interpreter line. The `#!` line is now first.
+- **Operations guide 3.2: the cron example used a `\` line continuation, which cron does not support** (the
+  job would never run). It is now one line.
+- User, Setup and Operations guides: compare the BIG-IP's host key fingerprint **before** typing the root
+  password over SSH the first time (the first SSH login is where the password could go to an impostor).
+- Manual-upload guide, section 5: full paths for the rollback commands.
+- `f5-cert-install.sh --help`: the "trust boundary" paragraph no longer splits the numbered "how it works" list.
+
 ## 2.3.0
 
 The first release for customers. `f5-cert-push.sh` and `f5-cert-install.sh` behave exactly as in 2.2.4 (only

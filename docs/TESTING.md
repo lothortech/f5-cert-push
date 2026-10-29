@@ -111,6 +111,18 @@ own connections) and pins nothing outside its temporary directory.
 | **p1-p9** HA pair (only with `F5_TEST_PEER_HOST`) | p1 `--discover` of both units shows the device group, sync status and virtual servers, and `--write-config` writes a valid draft (both units in one deployment, entries named, verify lines); p2 deploy to the active unit (standby listed first): synced, confirmed, standby `IN_SYNC` with the same objects, saved on the standby, no locks left; re-run is `UPTODATE` + `IN_SYNC`; p3 a pending unsynchronised change refuses the deploy with nothing changed and no backup; p4 a failed verification rolls back and leaves the pair In Sync on the old certificate; p5 `--rollback` restores and synchronises; p6 `sync = no` leaves the standby alone and says so; p7 after a **failover** the same file deploys to the new active unit; p8 `SIGTERM` during the switch: rolled back and the pair left In Sync; p9 nine bad certificates (expired, not yet valid, within `min_days_valid`, key from another certificate, chain from another CA, passphrase-protected key, truncated file, certificate and chain in `cert`, empty key) are each refused with the reason, nothing changed on either unit, no backup, pair still In Sync; then a good certificate deploys, syncs (`IN_SYNC`) and is served |
 | **s23** signal during the switch | `SIGTERM` arrives while the profile switch is running on the BIG-IP: the switch finishes, then the run rolls back and verifies (exit 3); both profiles and the virtual server are back on the previous certificate |
 
+## Results for 2.3.1
+
+| Suite | Where | Result |
+|---|---|---|
+| **The complete lab, as written** | webserver-101, as a new Linux user, against the lab pair (f5a active, f5b standby, BIG-IP 17.1.3.4 VE) | every `bash` block of `docs/LAB.md` 2.3.0 run in order and verbatim (download from GitHub and `SHA256SUMS`, build answering the prompts with the fingerprints compared against each BIG-IP's own, then sections 2-16), with only a person's choices filled in (one download method, the timestamp in section 13). Every result and exit code as the guide says: drafts (a second draft refused, then "already covered"), `--check` exit 4, one deployment `UPDATED` + `IN_SYNC`, four bad sets refused with their reasons before connecting, `--all`, RSA and ECDSA served, rollback `RESTORED` then exit 4 then redeployed, the out-of-sync pair refused with nothing changed, the failover deployment to bigip-b and back, and `remove-lab.sh --cleanup` leaving both units with no lab items, backups, keys, staging or locks, In Sync, and the real profile untouched |
+| `offline.sh` | webserver-101 (Ubuntu 22.04, bash 5.1, OpenSSL 3.0.2), as root | 236 passed |
+| `install.sh` | webserver-101, as root | 154 passed |
+| `regress.sh` | webserver-101, as root | 73 passed |
+| `build-lab.sh` stopping part way | webserver-101, against the lab pair | a build that fails after authorising its key prints the `remove-lab.sh --host ... --peer ...` command; that command removes the key from both units |
+| `lab/*.sh` | webserver-101 | `bash -n` and `shellcheck -S warning` clean |
+| `tools/check-docs.py` | Windows, Python 3 | OK |
+
 ## Results for 2.3.0
 
 `f5-cert-push.sh` and `f5-cert-install.sh` behave as in 2.2.4 (version, help text and header comment only), so

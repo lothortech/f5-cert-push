@@ -40,7 +40,7 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 <tbody>
 <tr>
 <td>Version</td>
-<td>2.3.0</td>
+<td>2.3.1</td>
 </tr>
 <tr>
 <td>What it is</td>
@@ -351,8 +351,8 @@ and pushes it, retrying the push until it succeeds. The upload folders must be r
 <a href="../examples/manual-upload"><code>examples/manual-upload/</code></a>.</p>
 <h2 id="automating-renewals">Automating renewals</h2>
 <p>Run it from certbot after each renewal; it does nothing if the BIG-IP already has the certificate:</p>
-<pre><code class="language-bash"># /etc/letsencrypt/renewal-hooks/deploy/f5-cert-push.sh
-#!/usr/bin/env bash
+<pre><code class="language-bash">#!/usr/bin/env bash
+# /etc/letsencrypt/renewal-hooks/deploy/f5-cert-push.sh   (chmod 750, owned by root)
 exec /opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf \
      --lineage &quot;$RENEWED_LINEAGE&quot; --quiet
 </code></pre>

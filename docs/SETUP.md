@@ -34,39 +34,39 @@ BIG-IP. Day-to-day use is in [MANUAL-UPLOAD.md](MANUAL-UPLOAD.md); the settings 
 
 Everything is in the GitHub repository [lothortech/f5-cert-push](https://github.com/lothortech/f5-cert-push):
 the tool, the documentation (Markdown, and HTML in `html/`), the examples, the lab scripts and the tests. On the
-Linux server, as root, download the **v2.3.0** release in one of these ways. Each gives the same files in
+Linux server, as root, download the **v2.3.1** release in one of these ways. Each gives the same files in
 `~/f5-cert-push` (`/root/f5-cert-push`); section 4.1 installs the scripts from there.
 
 **With curl** (or `wget -qO-` in place of `curl -fsSL`):
 
 ```bash
 mkdir -p ~/f5-cert-push && cd ~/f5-cert-push
-curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.tar.gz | tar xz --strip-components=1
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.1.tar.gz | tar xz --strip-components=1
 ```
 
 **With git:**
 
 ```bash
-git clone --depth 1 --branch v2.3.0 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
+git clone --depth 1 --branch v2.3.1 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
 cd ~/f5-cert-push
 ```
 
 (git notes that it is on a "detached HEAD": expected, as this is a release tag rather than a branch.)
 
 **Without internet access on the server:** on a PC, download
-[f5-cert-push-2.3.0.tar.gz](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.tar.gz)
-or [f5-cert-push-2.3.0.zip](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.zip), copy it to the server (`scp`, a share), then:
+[f5-cert-push-2.3.1.tar.gz](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.1.tar.gz)
+or [f5-cert-push-2.3.1.zip](https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.1.zip), copy it to the server (`scp`, a share), then:
 
 ```bash
 mkdir -p ~/f5-cert-push && cd ~/f5-cert-push
-tar xzf /path/to/f5-cert-push-2.3.0.tar.gz --strip-components=1
+tar xzf /path/to/f5-cert-push-2.3.1.tar.gz --strip-components=1
 ```
 
-From the ZIP instead (it unpacks into `f5-cert-push-2.3.0/` and loses the execute bits):
+From the ZIP instead (it unpacks into `f5-cert-push-2.3.1/` and loses the execute bits):
 
 ```bash
-cd ~ && unzip -q /path/to/f5-cert-push-2.3.0.zip
-mkdir -p ~/f5-cert-push && cp -a ~/f5-cert-push-2.3.0/. ~/f5-cert-push/ && rm -rf ~/f5-cert-push-2.3.0
+cd ~ && unzip -q /path/to/f5-cert-push-2.3.1.zip
+mkdir -p ~/f5-cert-push && cp -a ~/f5-cert-push-2.3.1/. ~/f5-cert-push/ && rm -rf ~/f5-cert-push-2.3.1
 cd ~/f5-cert-push && find . -name '*.sh' -exec chmod +x {} +
 ```
 
@@ -278,6 +278,11 @@ back it up the way you back up other secrets. If policy requires a passphrase, l
 ### 5.2 Authorise the key on each BIG-IP
 
 Copy the `.pub` line printed in 5.1, then repeat this on **each** BIG-IP. **Run on: the BIG-IP**, as root, in its bash shell: from the Linux server `ssh root@BIGIP_ADDRESS` (or the console); if you land at a `(tmos)#` prompt, type `bash` first:
+
+> **Before you type the root password over SSH:** the first time you connect, `ssh` shows the BIG-IP's
+> fingerprint (`ECDSA key fingerprint is SHA256:...`) and asks `Are you sure you want to continue connecting`.
+> Compare it with the one the BIG-IP shows on its console (`ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub`,
+> or ask whoever has console access) before you answer `yes`, so the password only goes to the real BIG-IP.
 
 ```bash
 echo 'ecdsa-sha2-nistp384 AAAA...paste the whole .pub line... f5-cert-push' >> /var/ssh/root/authorized_keys

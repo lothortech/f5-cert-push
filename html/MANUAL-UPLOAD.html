@@ -351,8 +351,8 @@ sudo /opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --all --c
 3, 4 and 5 are passed through from <code>f5-cert-push.sh</code> (3 = a push was rolled back, 5 = a rollback failed).</p>
 <h2 id="5-going-back-to-a-previous-certificate">5. Going back to a previous certificate</h2>
 <p><strong>On the BIG-IPs</strong> (what clients see), use the backups f5-cert-push keeps for every push:</p>
-<pre><code class="language-bash">f5-cert-push.sh --config /etc/f5-cert-push.conf --deploy www --list-backups
-f5-cert-push.sh --config /etc/f5-cert-push.conf --deploy www --rollback --set 20260930-224211
+<pre><code class="language-bash">/opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --deploy www --list-backups
+/opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --deploy www --rollback --set 20260930-224211
 </code></pre>
 <p><strong>On the server</strong> (so cron does not push the new one again), point <code>current</code> back at an older release, or
 upload the previous files again with <code>--allow-older</code>:</p>

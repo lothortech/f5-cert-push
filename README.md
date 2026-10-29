@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| Version | 2.3.0 |
+| Version | 2.3.1 |
 | What it is | A command-line tool (Bash) that installs renewed TLS certificates into the client-ssl profiles of F5 BIG-IP devices over SSH, with backup, verification and automatic rollback |
 | Runs on | A Linux machine (see [System requirements](#system-requirements)); nothing is installed on the BIG-IP |
 | Works with | BIG-IP LTM: a standalone unit, or an active/standby HA pair (tested on 17.1.3.4) |
@@ -181,8 +181,8 @@ and pushes it, retrying the push until it succeeds. The upload folders must be r
 Run it from certbot after each renewal; it does nothing if the BIG-IP already has the certificate:
 
 ```bash
-# /etc/letsencrypt/renewal-hooks/deploy/f5-cert-push.sh
 #!/usr/bin/env bash
+# /etc/letsencrypt/renewal-hooks/deploy/f5-cert-push.sh   (chmod 750, owned by root)
 exec /opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf \
      --lineage "$RENEWED_LINEAGE" --quiet
 ```

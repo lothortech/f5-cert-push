@@ -64,6 +64,12 @@ passphrase, load the key into an <code>ssh-agent</code> and omit <code>ssh_key</
 </blockquote>
 <h3 id="12-authorise-the-key-on-each-big-ip">1.2 Authorise the key on each BIG-IP</h3>
 <p>Repeat this on <strong>each</strong> BIG-IP. <strong>Run on: the BIG-IP</strong>, as root, in its bash shell: from the Linux machine <code>ssh root@BIGIP_ADDRESS</code> (or the console); if you land at a <code>(tmos)#</code> prompt, type <code>bash</code> first:</p>
+<blockquote>
+<p><strong>Before you type the root password over SSH:</strong> the first time you connect, <code>ssh</code> shows the BIG-IP's
+fingerprint (<code>ECDSA key fingerprint is SHA256:...</code>) and asks <code>Are you sure you want to continue connecting</code>.
+Compare it with the one the BIG-IP shows on its console (<code>ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub</code>,
+or ask whoever has console access) before you answer <code>yes</code>, so the password only goes to the real BIG-IP.</p>
+</blockquote>
 <pre><code class="language-bash">echo 'ecdsa-sha2-nistp384 AAAA...paste the .pub line... f5-cert-push' &gt;&gt; /var/ssh/root/authorized_keys
 chmod 600 /var/ssh/root/authorized_keys
 restorecon -v /var/ssh/root/authorized_keys
@@ -356,9 +362,8 @@ unaffected.</p>
 <h3 id="32-catch-drift-a-scheduled-check">3.2 Catch drift: a scheduled check</h3>
 <p>A renewal can succeed while the push fails (network, a lock, a BIG-IP that was down). Run a read-only check
 regularly and alert on exit 4:</p>
-<pre><code class="language-bash"># /etc/cron.d/f5-cert-check
-17 6 * * *  root  /opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --all --check --quiet \
-                  || logger -t f5-cert-push &quot;a BIG-IP is out of date or unreachable (exit $?)&quot;
+<pre><code class="language-bash"># /etc/cron.d/f5-cert-check   (cron has no line continuation: keep the command on one line)
+17 6 * * *  root  /opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --all --check --quiet || logger -t f5-cert-push &quot;a BIG-IP is out of date or unreachable (exit $?)&quot;
 </code></pre>
 <p><code>--check</code> takes no lock and changes nothing. Exit 4 = out of date; 1 = could not check.</p>
 <h3 id="33-exit-code-contract-for-other-systems">3.3 Exit-code contract for other systems</h3>

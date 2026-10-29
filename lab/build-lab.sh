@@ -54,7 +54,7 @@
 #   -h, --help        this help
 set -euo pipefail
 
-VERSION="2.3.0"
+VERSION="2.3.1"
 HM="${HOME:-$(cd ~ 2>/dev/null && pwd || echo .)}"
 HOST="" PEER="" PORT=22 BUSER=root KEY="" OUT="$HM/f5-cert-push-lab" VSIPS="" DOSYNC=1 YES=0
 TKEY="$HM/.ssh/f5_push_ecdsa" TCOMMENT="f5-cert-push-lab"
@@ -156,10 +156,8 @@ for h in "${UNITS[@]}"; do
   kn="$h"; [[ "$PORT" == 22 ]] || kn="[$h]:$PORT"
   k="$(ssh-keyscan -T 10 -p "$PORT" -t ecdsa "$h" 2>/dev/null | grep -v '^#')" || k=""
   [[ -n "$k" ]] || die "$h: no answer on TCP $PORT (check the address, and that this machine can reach it); nothing was changed"
-  HKFP[$h]="$(ssh-keygen -lf <(printf '%s
-' "$k") | awk '{print $2; exit}')"
-  blob="$(printf '%s
-' "$k" | awk '{print $3; exit}')"
+  HKFP[$h]="$(ssh-keygen -lf <(printf '%s\n' "$k") | awk '{print $2; exit}')"
+  blob="$(printf '%s\n' "$k" | awk '{print $3; exit}')"
   if [[ -f "$KH" ]] && ssh-keygen -F "$kn" -f "$KH" 2>/dev/null | grep -q ' ecdsa-sha2-'; then
     ssh-keygen -F "$kn" -f "$KH" 2>/dev/null | grep -qF " $blob"       || die "$h: its host key (${HKFP[$h]}) is not the one in $KH. If the BIG-IP was rebuilt, remove the old entry (ssh-keygen -R $kn) and run this again; otherwise find out why"
   else
@@ -174,8 +172,7 @@ if (( ${#NEWK[@]} )); then
   if (( ${#ASK[@]} )); then
     echo
     echo "  New SSH host keys (not in $KH yet):"
-    for h in "${ASK[@]}"; do printf '    %-18s %s
-' "$h" "${HKFP[$h]}"; done
+    for h in "${ASK[@]}"; do printf '    %-18s %s\n' "$h" "${HKFP[$h]}"; done
     if (( YES )); then
       die "with --yes, confirm each new host key with --host-fp (after comparing it with the BIG-IP's own); nothing was changed"
     fi
@@ -186,8 +183,7 @@ if (( ${#NEWK[@]} )); then
   fi
   mkdir -p "$HM/.ssh"; chmod 700 "$HM/.ssh"
   for h in "${NEWK[@]}"; do
-    printf '%s
-' "${HKLINE[$h]}" >> "$KH"
+    printf '%s\n' "${HKLINE[$h]}" >> "$KH"
     info "pinned the host key of $h (${HKFP[$h]}) in $KH"
   done
 fi
@@ -296,6 +292,10 @@ if (( ! YES )); then
   read -r -p "Build the lab on $HOST? [y/N] " a || a=""
   [[ "$a" == [yY]* ]] || die "cancelled; nothing was changed (apart from the host keys you confirmed, pinned in $KH)"
 fi
+
+# From here on the BIG-IPs (or this machine) are changed: if the build stops, say how to undo it.
+DONE=0
+trap 'rc=$?; cleanup; if (( rc != 0 && ! DONE )); then warn "the build stopped part way: remove what it made with  ./lab/remove-lab.sh --host $HOST${PEER:+ --peer $PEER}${KEY:+ --key $KEY}"; fi' EXIT
 
 # ---- the tool's SSH key ------------------------------------------------------------------
 if [[ "$TACT" == new ]]; then
@@ -466,6 +466,8 @@ VS3=${VS[2]}
 R=$R
 TOOLKEY=$TKEY
 EOF
+# shellcheck disable=SC2034  # DONE is read by the EXIT trap
+DONE=1
 echo
 ok "the lab is ready. Summary in $OUT/lab-info.txt"
 echo "    Load the addresses for the guide's commands into this shell (not a program to run):"

@@ -42,8 +42,8 @@ home folder (`~`), not under `/mnt/c`, so file permissions work.
 ```bash
 mkdir -p ~/f5-cert-push/certs ~/f5-cert-push/backups
 cd ~/f5-cert-push
-curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.tar.gz | tar xz --strip-components=1
-# or, from a downloaded copy: tar xzf /path/to/f5-cert-push-2.3.0.tar.gz --strip-components=1
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.1.tar.gz | tar xz --strip-components=1
+# or, from a downloaded copy: tar xzf /path/to/f5-cert-push-2.3.1.tar.gz --strip-components=1
 chmod 700 ~/f5-cert-push
 chmod 750 f5-cert-push.sh
 ./f5-cert-push.sh --version
@@ -108,6 +108,11 @@ and leave the `ssh_key =` line **out** of the configuration.
 ## 4. Authorise the key on each BIG-IP
 
 Do this once per BIG-IP. **Run on: the BIG-IP**, as root, in its bash shell: from the Linux machine `ssh root@BIGIP_ADDRESS` (or the console); if you land at a `(tmos)#` prompt, type `bash` first. Run these three lines, pasting your `.pub` line inside the quotes:
+
+> **Before you type the root password over SSH:** the first time you connect, `ssh` shows the BIG-IP's
+> fingerprint (`ECDSA key fingerprint is SHA256:...`) and asks `Are you sure you want to continue connecting`.
+> Compare it with the one the BIG-IP shows on its console (`ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub`,
+> or ask whoever has console access) before you answer `yes`, so the password only goes to the real BIG-IP.
 
 ```bash
 echo 'ecdsa-sha2-nistp384 AAAA...your whole public key line... f5-cert-push you' >> /var/ssh/root/authorized_keys

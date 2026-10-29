@@ -233,6 +233,53 @@ own connections) and pins nothing outside its temporary directory.</p>
 </tr>
 </tbody>
 </table>
+<h2 id="results-for-231">Results for 2.3.1</h2>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th>Where</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>The complete lab, as written</strong></td>
+<td>webserver-101, as a new Linux user, against the lab pair (f5a active, f5b standby, BIG-IP 17.1.3.4 VE)</td>
+<td>every <code>bash</code> block of <code>docs/LAB.md</code> 2.3.0 run in order and verbatim (download from GitHub and <code>SHA256SUMS</code>, build answering the prompts with the fingerprints compared against each BIG-IP's own, then sections 2-16), with only a person's choices filled in (one download method, the timestamp in section 13). Every result and exit code as the guide says: drafts (a second draft refused, then "already covered"), <code>--check</code> exit 4, one deployment <code>UPDATED</code> + <code>IN_SYNC</code>, four bad sets refused with their reasons before connecting, <code>--all</code>, RSA and ECDSA served, rollback <code>RESTORED</code> then exit 4 then redeployed, the out-of-sync pair refused with nothing changed, the failover deployment to bigip-b and back, and <code>remove-lab.sh --cleanup</code> leaving both units with no lab items, backups, keys, staging or locks, In Sync, and the real profile untouched</td>
+</tr>
+<tr>
+<td><code>offline.sh</code></td>
+<td>webserver-101 (Ubuntu 22.04, bash 5.1, OpenSSL 3.0.2), as root</td>
+<td>236 passed</td>
+</tr>
+<tr>
+<td><code>install.sh</code></td>
+<td>webserver-101, as root</td>
+<td>154 passed</td>
+</tr>
+<tr>
+<td><code>regress.sh</code></td>
+<td>webserver-101, as root</td>
+<td>73 passed</td>
+</tr>
+<tr>
+<td><code>build-lab.sh</code> stopping part way</td>
+<td>webserver-101, against the lab pair</td>
+<td>a build that fails after authorising its key prints the <code>remove-lab.sh --host ... --peer ...</code> command; that command removes the key from both units</td>
+</tr>
+<tr>
+<td><code>lab/*.sh</code></td>
+<td>webserver-101</td>
+<td><code>bash -n</code> and <code>shellcheck -S warning</code> clean</td>
+</tr>
+<tr>
+<td><code>tools/check-docs.py</code></td>
+<td>Windows, Python 3</td>
+<td>OK</td>
+</tr>
+</tbody>
+</table>
 <h2 id="results-for-230">Results for 2.3.0</h2>
 <p><code>f5-cert-push.sh</code> and <code>f5-cert-install.sh</code> behave as in 2.2.4 (version, help text and header comment only), so
 the BIG-IP suite was not rerun; its 2.2.2 result stands. The lab scripts changed only in messages and one line

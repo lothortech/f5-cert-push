@@ -37,7 +37,10 @@ you stop halfway, so you can run the lab as often as you like.</p>
 <blockquote>
 <p><strong>Use a lab BIG-IP, not a production one.</strong> The lab only creates and removes objects named <code>lab-*</code>, and the
 tool only changes the profiles you configure. But on an HA pair the lab runs config-sync, which copies the
-<strong>whole</strong> configuration from one unit to the other, not only the lab's part. Start with the pair <strong>In Sync</strong>.</p>
+<strong>whole</strong> configuration from one unit to the other, not only the lab's part. Start with the pair <strong>In Sync</strong>.
+<code>remove-lab.sh</code> removes <strong>everything</strong> whose name starts with <code>lab-</code> (virtual servers, client-ssl profiles,
+certificates, keys, <code>/shared/cert-backups/lab-*</code>), whoever made it, so do not use the lab on a BIG-IP where
+your own objects have names starting with <code>lab-</code>. <code>build-lab.sh</code> refuses to start if it finds any.</p>
 </blockquote>
 <table>
 <thead>
@@ -168,44 +171,44 @@ and if that is an internal one, answer <code>n</code> and run it again with <cod
 <tr>
 <td><code>build-lab.sh</code></td>
 <td>Builds the lab on a BIG-IP or HA pair, and sets up the tool's SSH key (section 1)</td>
-<td><a href="../lab/build-lab.sh" download>from this copy</a> · <a href="https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.3.0/lab/build-lab.sh" download>from GitHub</a></td>
+<td><a href="../lab/build-lab.sh" download>from this copy</a> · <a href="https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.3.1/lab/build-lab.sh" download>from GitHub</a></td>
 </tr>
 <tr>
 <td><code>remove-lab.sh</code></td>
 <td>Removes every lab item from both units and this machine, at any point: <code>--cleanup</code> (section 16)</td>
-<td><a href="../lab/remove-lab.sh" download>from this copy</a> · <a href="https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.3.0/lab/remove-lab.sh" download>from GitHub</a></td>
+<td><a href="../lab/remove-lab.sh" download>from this copy</a> · <a href="https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.3.1/lab/remove-lab.sh" download>from GitHub</a></td>
 </tr>
 </tbody>
 </table>
 <p>They are also in the release (<code>lab/</code>), which section 0 downloads anyway, and both have <code>--help</code>. To fetch
 only the scripts onto a Linux machine:</p>
-<pre><code class="language-bash">curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.3.0/lab/build-lab.sh
-curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.3.0/lab/remove-lab.sh
+<pre><code class="language-bash">curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.3.1/lab/build-lab.sh
+curl -fsSLO https://raw.githubusercontent.com/lothortech/f5-cert-push/v2.3.1/lab/remove-lab.sh
 chmod +x build-lab.sh remove-lab.sh
 </code></pre>
 <h2 id="0-download-the-files">0. Download the files</h2>
 <p>Everything is in the GitHub repository <a href="https://github.com/lothortech/f5-cert-push">lothortech/f5-cert-push</a>:
 the tool, the lab scripts, the documentation (Markdown, and HTML in <code>html/</code>), the examples and the tests. Download
-the <strong>v2.3.0</strong> release onto the Linux machine you will run the lab from, in one of these ways. Each gives the same
+the <strong>v2.3.1</strong> release onto the Linux machine you will run the lab from, in one of these ways. Each gives the same
 files in <code>~/f5-cert-push</code>. <strong>Run on: the Linux machine</strong>, as your normal user (not root).</p>
 <p><strong>With curl</strong> (or <code>wget -qO-</code> in place of <code>curl -fsSL</code>):</p>
 <pre><code class="language-bash">mkdir -p ~/f5-cert-push &amp;&amp; cd ~/f5-cert-push
-curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.tar.gz | tar xz --strip-components=1
+curl -fsSL https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.1.tar.gz | tar xz --strip-components=1
 </code></pre>
 <p><strong>With git:</strong></p>
-<pre><code class="language-bash">git clone --depth 1 --branch v2.3.0 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
+<pre><code class="language-bash">git clone --depth 1 --branch v2.3.1 https://github.com/lothortech/f5-cert-push.git ~/f5-cert-push
 cd ~/f5-cert-push
 </code></pre>
 <p>(git notes that it is on a "detached HEAD": expected, as this is a release tag rather than a branch.)</p>
 <p><strong>Without internet access on the Linux machine:</strong> on a PC, download
-<a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.tar.gz">f5-cert-push-2.3.0.tar.gz</a>
-or <a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.0.zip">f5-cert-push-2.3.0.zip</a>, copy it across (<code>scp</code>, a share), then:</p>
+<a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.1.tar.gz">f5-cert-push-2.3.1.tar.gz</a>
+or <a href="https://github.com/lothortech/f5-cert-push/archive/refs/tags/v2.3.1.zip">f5-cert-push-2.3.1.zip</a>, copy it across (<code>scp</code>, a share), then:</p>
 <pre><code class="language-bash">mkdir -p ~/f5-cert-push &amp;&amp; cd ~/f5-cert-push
-tar xzf /path/to/f5-cert-push-2.3.0.tar.gz --strip-components=1
+tar xzf /path/to/f5-cert-push-2.3.1.tar.gz --strip-components=1
 </code></pre>
-<p>From the ZIP instead (it unpacks into <code>f5-cert-push-2.3.0/</code> and loses the execute bits):</p>
-<pre><code class="language-bash">cd ~ &amp;&amp; unzip -q /path/to/f5-cert-push-2.3.0.zip
-mkdir -p ~/f5-cert-push &amp;&amp; cp -a ~/f5-cert-push-2.3.0/. ~/f5-cert-push/ &amp;&amp; rm -rf ~/f5-cert-push-2.3.0
+<p>From the ZIP instead (it unpacks into <code>f5-cert-push-2.3.1/</code> and loses the execute bits):</p>
+<pre><code class="language-bash">cd ~ &amp;&amp; unzip -q /path/to/f5-cert-push-2.3.1.zip
+mkdir -p ~/f5-cert-push &amp;&amp; cp -a ~/f5-cert-push-2.3.1/. ~/f5-cert-push/ &amp;&amp; rm -rf ~/f5-cert-push-2.3.1
 cd ~/f5-cert-push &amp;&amp; find . -name '*.sh' -exec chmod +x {} +
 </code></pre>
 <p>Check the download (every file against <code>SHA256SUMS</code>; silence means all match) and the version:</p>
@@ -457,7 +460,9 @@ rm -f ~/f5-cert-push/bad.conf
 <pre><code class="language-bash">./f5-cert-push.sh --all
 ./f5-cert-push.sh --check --all; echo &quot;exit $?&quot;
 </code></pre>
-<p><code>--all</code> runs every enabled deployment. app2, the RSA wildcard and the ECDSA wildcard are <code>UPDATED</code> and
+<p><code>--all</code> runs every enabled deployment. Each successful deployment also prints the exact command that would
+roll it back (<code>done; rollback with: ...</code>), including its timestamp: another way to find the one section 13
+asks for. app2, the RSA wildcard and the ECDSA wildcard are <code>UPDATED</code> and
 synchronised (app1 is <code>UPTODATE</code>: done in section 10, so there is nothing to do); then <code>--check</code> exits 0.
 <code>lab-vs3</code> serves both renewed wildcards: the RSA one to clients that ask for RSA, the ECDSA one to the others.
 This asks for each type in turn:</p>
@@ -504,13 +509,14 @@ certificates and keys (including every version the tool installed), the backup s
 from <code>~/f5-cert-push-lab/lab-env.sh</code> (nothing to type), finds the other unit of the pair by itself, and also
 deletes, on this machine, the lab directory and the tool's lab key <code>~/.ssh/f5_push_ecdsa</code>. It works at any point
 of the lab. Look first, then remove: it lists what it found on each BIG-IP and asks before it changes anything.
-<strong>Run on: the Linux machine</strong>:</p>
+Read that list: everything on it that starts with <code>lab-</code> is deleted. <strong>Run on: the Linux machine</strong>:</p>
 <pre><code class="language-bash">cd ~/f5-cert-push
 ./lab/remove-lab.sh --cleanup --dry-run
 ./lab/remove-lab.sh --cleanup
 </code></pre>
 <p>It asks <code>Remove these lab items from both BIG-IPs (...) and this machine? [y/N]</code> (one BIG-IP for a standalone
-lab). If the lab directory is already gone, it asks for the active unit's address instead. If the lab was left
+lab). The standby is listed with "N lab configuration item(s); removed there when the group is synchronised":
+that is its synchronised copy of the lab, and it goes when the script synchronises the pair at the end. If the lab directory is already gone, it asks for the active unit's address instead. If the lab was left
 failed over, it finds the active unit itself. It reports, and leaves alone, anything of yours that uses a lab
 item. If the pair was not In Sync before the removal, it does not synchronise (that would publish other pending
 changes): the other unit then keeps its copy of the lab, and the script says so and exits 1. Check what else is
@@ -523,8 +529,9 @@ BIG-IPs' host keys the build pinned:</p>
 <pre><code class="language-bash">cd ~ &amp;&amp; rm -rf ~/f5-cert-push ~/certs
 for h in $A $B; do ssh-keygen -R $h; done
 </code></pre>
-<p>(<code>ssh-keygen -R</code> also forgets the BIG-IPs' host keys for your own logins; skip it if you use them otherwise. In a
-new terminal <code>A</code> and <code>B</code> are not set: give the addresses instead.)</p>
+<p>(<code>ssh-keygen -R</code> also forgets the BIG-IPs' host keys for your own logins; skip it if you use them otherwise. It
+may report several lines per address: ssh also records the BIG-IP's other host key types. In a new terminal <code>A</code>
+and <code>B</code> are not set: give the addresses instead.)</p>
 <p>To run the lab again, start at section 0 (the line above removed the download too).</p><footer>Generated from <code>docs/LAB.md</code>. Edit the Markdown file and run <code>python tools/build-html.py</code> to regenerate.</footer></main></div><script>
 document.querySelectorAll('pre').forEach(function(p){
   if(!navigator.clipboard){return}

@@ -33,8 +33,12 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.3.0"
+readonly VERSION="2.3.1"
 readonly PROG="f5-cert-push"
+# How to call this script again, for the commands it prints (rollback, validate): its
+# absolute path, shell-quoted, so the printed command can be copied and pasted as is.
+SELF_BIN="$(printf '%q' "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")"
+SELF_CMD="${SELF_BIN}"   # plus --config FILE once the configuration is chosen
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
   echo "$PROG: bash 4.2 or newer is required (found ${BASH_VERSION})" >&2
@@ -93,7 +97,7 @@ ok()   { local l; l="$(_fmt '[+]' "$@")"; _logfile "$l"; if (( ! QUIET )); then 
 warn() { local l; l="$(_fmt '[!]' "$@")"; _logfile "$l"; printf '%s\n' "$l" >&2; }
 err()  { local l; l="$(_fmt '[-]' "$@")"; _logfile "$l"; printf '%s\n' "$l" >&2; }
 die()  { err "$@"; exit "${EX_ERR}"; }
-usage_die() { err "$@"; echo "Try: ${PROG} --help" >&2; exit "${EX_USAGE}"; }
+usage_die() { err "$@"; echo "Try: ${SELF_BIN} --help" >&2; exit "${EX_USAGE}"; }
 
 #######################################################################
 # Cleanup and signal handling
@@ -2889,7 +2893,7 @@ job_handle_failure() {   # job_handle_failure REASON
     if [[ -z "${J_MSG}" ]]; then J_MSG="$reason"; fi
     return 0
   fi
-  local manual="${PROG} --config ${CONFIG_FILE} --deploy ${J_DEP} --f5 ${J_F5} --rollback --set ${J_TS}"
+  local manual="${SELF_CMD} --deploy ${J_DEP} --f5 ${J_F5} --rollback --set ${J_TS}"
   if (( J_CHANGED == 0 && J_UNKNOWN )); then
     # Nothing was switched, but a step never reported its outcome: it may still be
     # running. Keep other runs out until it is understood.
@@ -3085,7 +3089,7 @@ run_job() {   # run_job DEPLOY F5NAME   -> sets J_RESULT, J_RC, J_MSG
     J_MSG="deployed and verified (expires ${CERT_END[$J_CERT]}), but pruning old backups or objects on the BIG-IP never reported its outcome and may still be running. Check the BIG-IP (--check) before running again"
     err "${J_MSG}"
   fi
-  ok "done; rollback with: ${PROG} --config ${CONFIG_FILE} --deploy ${J_DEP} --f5 ${J_F5} --rollback --set ${J_TS}"
+  ok "done; rollback with: ${SELF_CMD} --deploy ${J_DEP} --f5 ${J_F5} --rollback --set ${J_TS}"
   lock_release
   return 0
 }
@@ -3574,7 +3578,7 @@ write_draft_config() {   # write_draft_config FILE F5NAME...
     rm -f -- "$tmp"; err "not writing ${file}: something already exists at that name"; return 1
   fi
   rm -f -- "$tmp"
-  ok "wrote ${file}: your configuration plus the suggested sections. Edit the certificate paths, review each deployment, set enabled = yes, then: ${PROG} --config ${file} --validate"
+  ok "wrote ${file}: your configuration plus the suggested sections. Edit the certificate paths, review each deployment, set enabled = yes, then: ${SELF_BIN} --config $(printf '%q' "${file}") --validate"
   return 0
 }
 
@@ -3802,6 +3806,7 @@ main() {
     [[ -n "$CONFIG_FILE" ]] || usage_die "no configuration file: use --config FILE (see f5-cert-push.conf.example)"
   fi
   check_config_permissions "$CONFIG_FILE"
+  SELF_CMD="${SELF_BIN} --config $(printf '%q' "$(readlink -f -- "$CONFIG_FILE" 2>/dev/null || printf '%s' "$CONFIG_FILE")")"
   parse_config "$CONFIG_FILE"
   validate_config
   if (( CFG_ERRORS > 0 )); then

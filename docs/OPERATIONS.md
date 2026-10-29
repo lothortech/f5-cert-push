@@ -41,6 +41,11 @@ cat /root/.ssh/f5_push_ecdsa.pub           # one line starting ecdsa-sha2-nistp3
 
 Repeat this on **each** BIG-IP. **Run on: the BIG-IP**, as root, in its bash shell: from the Linux machine `ssh root@BIGIP_ADDRESS` (or the console); if you land at a `(tmos)#` prompt, type `bash` first:
 
+> **Before you type the root password over SSH:** the first time you connect, `ssh` shows the BIG-IP's
+> fingerprint (`ECDSA key fingerprint is SHA256:...`) and asks `Are you sure you want to continue connecting`.
+> Compare it with the one the BIG-IP shows on its console (`ssh-keygen -lf /config/ssh/ssh_host_ecdsa_key.pub`,
+> or ask whoever has console access) before you answer `yes`, so the password only goes to the real BIG-IP.
+
 ```bash
 echo 'ecdsa-sha2-nistp384 AAAA...paste the .pub line... f5-cert-push' >> /var/ssh/root/authorized_keys
 chmod 600 /var/ssh/root/authorized_keys
@@ -241,9 +246,8 @@ A renewal can succeed while the push fails (network, a lock, a BIG-IP that was d
 regularly and alert on exit 4:
 
 ```bash
-# /etc/cron.d/f5-cert-check
-17 6 * * *  root  /opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --all --check --quiet \
-                  || logger -t f5-cert-push "a BIG-IP is out of date or unreachable (exit $?)"
+# /etc/cron.d/f5-cert-check   (cron has no line continuation: keep the command on one line)
+17 6 * * *  root  /opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --all --check --quiet || logger -t f5-cert-push "a BIG-IP is out of date or unreachable (exit $?)"
 ```
 
 `--check` takes no lock and changes nothing. Exit 4 = out of date; 1 = could not check.

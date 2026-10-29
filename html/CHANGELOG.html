@@ -29,11 +29,44 @@ footer{margin-top:3em;color:var(--mut);font-size:13px}
 @media (max-width:820px){.wrap{display:block}nav{width:auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px 16px 60px}}
 @media print{nav,.copy{display:none}main{max-width:none;padding:0}pre{white-space:pre-wrap}}
 </style></head><body><div class="wrap"><nav><p class="t">f5-cert-push</p><a href="index.html">Overview</a><a href="USER-GUIDE.html">User guide (manual use)</a><a href="SETUP.html">Server and BIG-IP setup</a><a href="MANUAL-UPLOAD.html">Uploaded certificates</a><a href="CONFIGURATION.html">Configuration reference</a><a href="OPERATIONS.html">Operations</a><a href="SECURITY.html">Security</a><a href="TESTING.html">Testing</a><a href="REVIEW.html">Review brief</a><a href="CHANGELOG.html" class="cur">Changelog</a><a href="LAB.html">Lab: hands-on walkthrough</a></nav><main><h1 id="changelog">Changelog</h1>
+<h2 id="231">2.3.1</h2>
+<p>From running the complete lab as written on 2.3.0, and a second adversarial review of the scripts and the
+documentation.</p>
+<h3 id="tool">Tool</h3>
+<ul>
+<li><strong>The commands it prints can be copied and run as they are.</strong> "done; rollback with: ...", the restore
+  commands in a failure message and the <code>--write-config</code> hint used to start with <code>f5-cert-push</code> (not a command
+  anyone has) and a relative <code>--config</code> path. They now give the script's absolute path and the configuration's
+  absolute path, shell-quoted, so the rollback command works from any folder and from cron mail. "Try: ...
+  --help" likewise.</li>
+</ul>
+<h3 id="lab">Lab</h3>
+<ul>
+<li><code>build-lab.sh</code>: if a build stops after it has started changing the BIG-IPs (an SSH failure, a full disk),
+  it now says how to remove what it made (<code>./lab/remove-lab.sh --host ... --peer ...</code>). Before, the lab
+  directory with <code>lab-env.sh</code> did not exist yet, so <code>--cleanup</code> could not find the BIG-IPs by itself.</li>
+<li><code>LAB.md</code> warns that <code>remove-lab.sh</code> removes <strong>everything</strong> named <code>lab-*</code>, whoever made it, so the lab must not
+  be used on a BIG-IP with objects of your own named like that (<code>build-lab.sh</code> refuses to start on one);
+  explains the standby's "N lab configuration item(s)" line in the removal list and the several lines
+  <code>ssh-keygen -R</code> reports.</li>
+<li><code>build-lab.sh</code> code tidy-ups (<code>printf</code> formats), no change in behaviour.</li>
+</ul>
+<h3 id="documentation">Documentation</h3>
+<ul>
+<li><strong>README: the certbot hook example had a comment line above <code>#!/usr/bin/env bash</code></strong>, so the copied file had no
+  valid interpreter line. The <code>#!</code> line is now first.</li>
+<li><strong>Operations guide 3.2: the cron example used a <code>\</code> line continuation, which cron does not support</strong> (the
+  job would never run). It is now one line.</li>
+<li>User, Setup and Operations guides: compare the BIG-IP's host key fingerprint <strong>before</strong> typing the root
+  password over SSH the first time (the first SSH login is where the password could go to an impostor).</li>
+<li>Manual-upload guide, section 5: full paths for the rollback commands.</li>
+<li><code>f5-cert-install.sh --help</code>: the "trust boundary" paragraph no longer splits the numbered "how it works" list.</li>
+</ul>
 <h2 id="230">2.3.0</h2>
 <p>The first release for customers. <code>f5-cert-push.sh</code> and <code>f5-cert-install.sh</code> behave exactly as in 2.2.4 (only
 their version, help text and header comment changed); this release is a full review of the documentation and
 the lab, for correctness and for readers new to F5 and Linux.</p>
-<h3 id="documentation">Documentation</h3>
+<h3 id="documentation_1">Documentation</h3>
 <ul>
 <li><strong>README: a title block and a "System requirements" section</strong>: the tested and expected-to-work Linux
   distributions, bash and OpenSSL versions, BIG-IP versions and platforms, the root/bash access it needs (not
@@ -58,13 +91,13 @@ the lab, for correctness and for readers new to F5 and Linux.</p>
   (<code>OPERATIONS.md</code>, section 2, "When the BIG-IP changes"; a pointer in <code>USER-GUIDE.md</code> section 6; the lab's
   section 7 runs the draft a second time), and <code>source ~/f5-cert-push-lab/lab-env.sh</code> in place of <code>. FILE</code>.</li>
 </ul>
-<h3 id="lab">Lab</h3>
+<h3 id="lab_1">Lab</h3>
 <ul>
 <li><code>lab-env.sh</code> also sets <code>R</code>, the folder of received certificates, so the guide's commands work in a new
   terminal after <code>source</code>; the guide no longer sets it by hand.</li>
 <li><code>build-lab.sh</code> names the full path (<code>./lab/remove-lab.sh</code>) when it finds lab items left on a BIG-IP.</li>
 </ul>
-<h3 id="tool">Tool</h3>
+<h3 id="tool_1">Tool</h3>
 <ul>
 <li><code>--help</code> shows <code>--config FILE</code> as optional (it defaults to <code>./f5-cert-push.conf</code>, then <code>/etc/f5-cert-push.conf</code>).</li>
 </ul>
@@ -81,7 +114,7 @@ the lab, for correctness and for readers new to F5 and Linux.</p>
 <h2 id="223">2.2.3</h2>
 <p><code>f5-cert-push.sh</code> and <code>f5-cert-install.sh</code> are unchanged apart from the version; this release is the lab and
 the documentation.</p>
-<h3 id="lab_1">Lab</h3>
+<h3 id="lab_2">Lab</h3>
 <ul>
 <li><strong><code>lab/build-lab.sh</code> sets up the tool's SSH access.</strong> Run without options, it asks for the management IPs of
   the active and the standby unit, shows both host key fingerprints and pins them in <code>~/.ssh/known_hosts</code> only

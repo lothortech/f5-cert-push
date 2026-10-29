@@ -25,6 +25,14 @@
 #      READY file is removed, so it is not retried until someone fixes it and
 #      creates READY again.
 #
+#   3. If anything was installed (or an earlier push did not succeed), it runs
+#        f5-cert-push.sh --config <config> --all     (or --env LABEL ...)
+#      and keeps retrying on later runs until that push succeeds.
+#
+# In f5-cert-push.conf, point each certificate at its "current" directory:
+#     [cert:www]
+#     le_dir = /etc/f5-certs/www/current
+#
 # TRUST BOUNDARY: this runs as root over folders that other people can write to.
 # It refuses to run unless <incoming> and every directory above it can be changed
 # only by root (or the user running it), and it skips an upload folder that is not
@@ -33,13 +41,6 @@
 # in it. Root never opens a path in an upload folder for writing: FAILED is written
 # to a new private file and renamed into place, and uploads are removed with
 # unlink(), which never follows a link.
-#   3. If anything was installed (or an earlier push did not succeed), it runs
-#        f5-cert-push.sh --config <config> --all     (or --env LABEL ...)
-#      and keeps retrying on later runs until that push succeeds.
-#
-# In f5-cert-push.conf, point each certificate at its "current" directory:
-#     [cert:www]
-#     le_dir = /etc/f5-certs/www/current
 #
 # Usage:
 #   f5-cert-install.sh [options]
@@ -70,7 +71,7 @@ set -f
 export LC_ALL=C
 umask 077
 
-readonly VERSION="2.3.0"
+readonly VERSION="2.3.1"
 readonly PROG="f5-cert-install"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then

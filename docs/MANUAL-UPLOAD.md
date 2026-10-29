@@ -208,8 +208,8 @@ Exit codes: 0 ok; 1 an upload was rejected or a push failed; 2 usage error; 6 an
 **On the BIG-IPs** (what clients see), use the backups f5-cert-push keeps for every push:
 
 ```bash
-f5-cert-push.sh --config /etc/f5-cert-push.conf --deploy www --list-backups
-f5-cert-push.sh --config /etc/f5-cert-push.conf --deploy www --rollback --set 20260930-224211
+/opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --deploy www --list-backups
+/opt/f5-cert-push/f5-cert-push.sh --config /etc/f5-cert-push.conf --deploy www --rollback --set 20260930-224211
 ```
 
 **On the server** (so cron does not push the new one again), point `current` back at an older release, or
